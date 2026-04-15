@@ -43,6 +43,7 @@ def package(
     patch_data: bytes,
     metadata: dict,
     output_path: Path,
+    icon_path: Path | None = None,
 ) -> Path:
     """
     Build the output .exe by appending patch_data and metadata to the stub.
@@ -56,6 +57,10 @@ def package(
     """
     stub_path = _stub_path(stub_engine, arch, compression)
     stub_bytes = stub_path.read_bytes()
+
+    if icon_path is not None:
+        from . import pe_icon
+        stub_bytes = pe_icon.inject(stub_bytes, Path(icon_path))
 
     patch_data_offset = len(stub_bytes)
     patch_data_size = len(patch_data)

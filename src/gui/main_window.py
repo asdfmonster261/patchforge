@@ -14,7 +14,10 @@ from PySide6.QtWidgets import (
 )
 
 from .theme import QSS, ACCENT, SUCCESS, ERROR, WARN, TEXT_DIM
-from ..core.compression import LEVELS, requires_full_stub, label_for, JOJODIFF_UNSUPPORTED
+
+from ..core.engines.hdiffpatch import HDiffPatchEngine, THREAD_OPTIONS
+from ..core.engines.jojodiff import JojoDiffEngine
+from ..core.engines.xdelta3 import XDelta3Engine
 from ..core.project import ProjectSettings, save as save_project, load as load_project
 from ..core.patch_builder import build, BuildResult
 from ..core import verification
@@ -187,6 +190,26 @@ class MainWindow(QMainWindow):
         self.desc_edit.setPlaceholderText("Optional description shown in patcher")
         mg.addWidget(self.desc_edit, 1, 1, 1, 3)
 
+        mg.addWidget(QLabel("Icon (.ico):"), 2, 0)
+        icon_row = QHBoxLayout()
+        icon_row.setSpacing(4)
+        self.icon_edit = QLineEdit()
+        self.icon_edit.setPlaceholderText("Optional — leave blank for default icon")
+        self.icon_edit.setReadOnly(True)
+        icon_row.addWidget(self.icon_edit)
+        self.icon_browse_btn = QPushButton("Browse…")
+        self.icon_browse_btn.setFixedWidth(70)
+        self.icon_browse_btn.clicked.connect(self._on_icon_browse)
+        icon_row.addWidget(self.icon_browse_btn)
+        self.icon_clear_btn = QPushButton("✕")
+        self.icon_clear_btn.setFixedWidth(24)
+        self.icon_clear_btn.setToolTip("Clear icon")
+        self.icon_clear_btn.clicked.connect(lambda: self.icon_edit.setText(""))
+        icon_row.addWidget(self.icon_clear_btn)
+        icon_container = QWidget()
+        icon_container.setLayout(icon_row)
+        mg.addWidget(icon_container, 2, 1, 1, 3)
+
         layout.addWidget(meta_grp)
 
         # Engine + compression + verify
@@ -199,7 +222,7 @@ class MainWindow(QMainWindow):
         eg.addWidget(QLabel("Engine:"),      0, 0)
         self.engine_combo = QComboBox()
         self.engine_combo.addItems([
-            "HDiffPatch 4.5.2",
+            "HDiffPatch 4.12.2",
             "xdelta3 3.0.8",
             "JojoDiff 0.8.1",
         ])
@@ -209,12 +232,18 @@ class MainWindow(QMainWindow):
         self.comp_combo = QComboBox()
         eg.addWidget(self.comp_combo, 0, 3)
 
-        eg.addWidget(QLabel("Verify:"),      1, 0)
+        eg.addWidget(QLabel("Threads:"),     1, 0)
+        self.threads_combo = QComboBox()
+        for t in THREAD_OPTIONS:
+            self.threads_combo.addItem(str(t), userData=t)
+        eg.addWidget(self.threads_combo, 1, 1)
+
+        eg.addWidget(QLabel("Verify:"),      2, 0)
         self.verify_combo = QComboBox()
         self.verify_combo.addItems(["CRC32C SUM", "MD5 HASH", "FILESIZE"])
-        eg.addWidget(self.verify_combo, 1, 1)
+        eg.addWidget(self.verify_combo, 2, 1)
 
-        eg.addWidget(QLabel("Architecture:"), 1, 2)
+        eg.addWidget(QLabel("Architecture:"), 2, 2)
         arch_widget = QWidget()
         arch_layout = QHBoxLayout(arch_widget)
         arch_layout.setContentsMargins(0, 0, 0, 0)
@@ -227,14 +256,14 @@ class MainWindow(QMainWindow):
         arch_layout.addWidget(self.arch_x64)
         arch_layout.addWidget(self.arch_x86)
         arch_layout.addStretch()
-        eg.addWidget(arch_widget, 1, 3)
+        eg.addWidget(arch_widget, 2, 3)
 
         # Stub warning label
         self.stub_warn_lbl = QLabel()
         self.stub_warn_lbl.setObjectName("dim")
         self.stub_warn_lbl.setWordWrap(True)
         self.stub_warn_lbl.hide()
-        eg.addWidget(self.stub_warn_lbl, 2, 0, 1, 4)
+        eg.addWidget(self.stub_warn_lbl, 3, 0, 1, 4)
 
         layout.addWidget(eng_grp)
 
@@ -370,15 +399,28 @@ class MainWindow(QMainWindow):
         self.comp_combo.blockSignals(True)
         self.comp_combo.clear()
 
-        if engine == "jojodiff":
-            self.comp_combo.addItem("none")
-            self.comp_combo.setEnabled(False)
-        else:
-            for lvl in LEVELS:
-                self.comp_combo.addItem(label_for(lvl), userData=lvl)
-            # Default to lzma/ultra
+        if engine == "hdiffpatch":
+            for key, lbl in HDiffPatchEngine.presets().items():
+                self.comp_combo.addItem(lbl, userData=key)
+            # Default to set5
             for i in range(self.comp_combo.count()):
-                if self.comp_combo.itemData(i) == "lzma/ultra":
+                if self.comp_combo.itemData(i) == HDiffPatchEngine.default_preset():
+                    self.comp_combo.setCurrentIndex(i)
+                    break
+            self.comp_combo.setEnabled(True)
+        elif engine == "jojodiff":
+            for key, lbl in JojoDiffEngine.presets().items():
+                self.comp_combo.addItem(lbl, userData=key)
+            for i in range(self.comp_combo.count()):
+                if self.comp_combo.itemData(i) == JojoDiffEngine.default_preset():
+                    self.comp_combo.setCurrentIndex(i)
+                    break
+            self.comp_combo.setEnabled(True)
+        else:  # xdelta3
+            for key, lbl in XDelta3Engine.presets().items():
+                self.comp_combo.addItem(lbl, userData=key)
+            for i in range(self.comp_combo.count()):
+                if self.comp_combo.itemData(i) == XDelta3Engine.default_preset():
                     self.comp_combo.setCurrentIndex(i)
                     break
             self.comp_combo.setEnabled(True)
@@ -387,19 +429,14 @@ class MainWindow(QMainWindow):
         self._on_compression_changed()
 
     def _on_compression_changed(self):
-        engine = self._engine_key()
-        comp = self._compression_key()
-        if engine == "hdiffpatch" and requires_full_stub(comp):
-            arch = "x64" if self.arch_x64.isChecked() else "x86"
-            self.stub_warn_lbl.setText(
-                f"⚠  '{comp}' requires the full HDiffPatch stub "
-                f"(hdiffpatch_full_{arch}.exe). "
-                f"Run 'make full' in stub/ if not yet built."
-            )
-            self.stub_warn_lbl.setStyleSheet(f"color: {WARN};")
-            self.stub_warn_lbl.show()
-        else:
-            self.stub_warn_lbl.hide()
+        self.stub_warn_lbl.hide()
+
+    def _on_icon_browse(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Icon", "", "Icon files (*.ico)"
+        )
+        if path:
+            self.icon_edit.setText(path)
 
     def _on_find_method_changed(self):
         self.reg_panel.setVisible(self.find_registry.isChecked())
@@ -527,6 +564,8 @@ class MainWindow(QMainWindow):
             ini_section   = self.ini_section_edit.text().strip(),
             ini_key       = self.ini_key_edit.text().strip(),
             arch          = "x64" if self.arch_x64.isChecked() else "x86",
+            threads       = self.threads_combo.currentData(),
+            icon_path     = self.icon_edit.text().strip(),
         )
         if validate:
             errors = []
@@ -575,6 +614,13 @@ class MainWindow(QMainWindow):
 
         self.arch_x64.setChecked(s.arch == "x64")
         self.arch_x86.setChecked(s.arch == "x86")
+
+        self.icon_edit.setText(s.icon_path)
+
+        for i in range(self.threads_combo.count()):
+            if self.threads_combo.itemData(i) == s.threads:
+                self.threads_combo.setCurrentIndex(i)
+                break
 
     def _clear_fields(self):
         self._apply_settings(ProjectSettings())

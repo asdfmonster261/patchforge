@@ -17,6 +17,7 @@
 #include <dwmapi.h>
 #include <commdlg.h>
 #include <shlobj.h>
+#include <wincrypt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +47,13 @@
 #define IDC_BTN_CANCEL  1005
 #define IDC_FILEPATH    1006
 #define IDC_LOG         1007
+#define IDC_CHK_BACKUP  1008
+#define IDC_CHK_VERIFY  1009
+
+/* ---- Thread messages ---- */
+#define WM_PATCH_DONE  (WM_USER + 1)
+#define WM_PATCH_PROG  (WM_USER + 2)
+#define WM_LOG_MSG     (WM_USER + 3)
 
 /* ---- Patch metadata (populated from JSON at startup) ---- */
 typedef struct {
@@ -55,16 +63,13 @@ typedef struct {
     char engine[32];        /* "xdelta3", "jojodiff", "hdiffpatch" */
     char compression[32];   /* e.g. "lzma/ultra" */
     char verify_method[32]; /* "crc32c", "md5", "filesize" */
-    char orig_checksum[64];
-    char new_checksum[64];
-    int64_t orig_size;
-    int64_t new_size;
     char find_method[32];   /* "manual", "registry", "ini" */
     char registry_key[512];
     char registry_value[256];
     char ini_path[512];
     char ini_section[128];
     char ini_key[128];
+    char *checksums;        /* malloc'd "rel/path1|hash1;rel/path2|hash2;..." or NULL */
     int64_t patch_data_offset; /* byte offset in this exe where patch data starts */
     int64_t patch_data_size;
 } PatchMeta;
@@ -123,6 +128,35 @@ static int64_t json_get_int(const char *json, const char *key)
     p += strlen(search);
     while (*p == ' ' || *p == ':' || *p == ' ') p++;
     return (int64_t)_atoi64(p);
+}
+
+/* Like json_get_str but malloc's the result — caller must free(). */
+static char *json_get_str_alloc(const char *json, const char *key)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return NULL;
+    p += strlen(search);
+    while (*p == ' ' || *p == ':' || *p == ' ') p++;
+    if (*p != '"') return NULL;
+    p++;
+    /* Measure length, accounting for escape sequences */
+    const char *start = p;
+    size_t len = 0;
+    while (*p && *p != '"') {
+        if (*p == '\\' && *(p+1)) { p++; }
+        len++; p++;
+    }
+    char *out = (char *)malloc(len + 1);
+    if (!out) return NULL;
+    p = start; size_t i = 0;
+    while (*p && *p != '"' && i < len) {
+        if (*p == '\\' && *(p+1)) { p++; }
+        out[i++] = *p++;
+    }
+    out[i] = '\0';
+    return out;
 }
 
 /* ---- Read patch metadata and data from end of this exe ---- */
@@ -192,18 +226,15 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     json_get_str(json, "engine",         meta->engine,        sizeof(meta->engine));
     json_get_str(json, "compression",    meta->compression,   sizeof(meta->compression));
     json_get_str(json, "verify_method",  meta->verify_method, sizeof(meta->verify_method));
-    json_get_str(json, "orig_checksum",  meta->orig_checksum, sizeof(meta->orig_checksum));
-    json_get_str(json, "new_checksum",   meta->new_checksum,  sizeof(meta->new_checksum));
     json_get_str(json, "find_method",    meta->find_method,   sizeof(meta->find_method));
     json_get_str(json, "registry_key",   meta->registry_key,  sizeof(meta->registry_key));
     json_get_str(json, "registry_value", meta->registry_value,sizeof(meta->registry_value));
     json_get_str(json, "ini_path",       meta->ini_path,      sizeof(meta->ini_path));
     json_get_str(json, "ini_section",    meta->ini_section,   sizeof(meta->ini_section));
     json_get_str(json, "ini_key",        meta->ini_key,       sizeof(meta->ini_key));
-    meta->orig_size        = json_get_int(json, "orig_size");
-    meta->new_size         = json_get_int(json, "new_size");
-    meta->patch_data_offset= data_start;
-    meta->patch_data_size  = data_size;
+    meta->checksums         = json_get_str_alloc(json, "checksums");
+    meta->patch_data_offset = data_start;
+    meta->patch_data_size   = data_size;
 
     if (json_out) *json_out = json; else free(json);
     *data_out      = data;
@@ -283,6 +314,159 @@ static void paint_button(DRAWITEMSTRUCT *dis, COLORREF bg, COLORREF text_col)
     SetTextColor(dc, text_col);
     SelectObject(dc, g_font_normal);
     DrawTextA(dc, buf, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+}
+
+/* ---- CRC32C (Castagnoli) implementation ---- */
+static uint32_t _pfg_crc32c(const char *path)
+{
+    static uint32_t tbl[256];
+    static int tbl_ready = 0;
+    if (!tbl_ready) {
+        for (int i = 0; i < 256; i++) {
+            uint32_t c = (uint32_t)i;
+            for (int j = 0; j < 8; j++)
+                c = (c >> 1) ^ (0x82F63B78u & (uint32_t)(-(int)(c & 1)));
+            tbl[i] = c;
+        }
+        tbl_ready = 1;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint32_t crc = 0xFFFFFFFFu;
+    unsigned char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        for (size_t i = 0; i < n; i++)
+            crc = (crc >> 8) ^ tbl[(crc ^ buf[i]) & 0xFF];
+    fclose(f);
+    return crc ^ 0xFFFFFFFFu;
+}
+
+/* ---- MD5 via Windows CryptAPI ---- */
+static int _pfg_md5(const char *path, char out_hex[33])
+{
+    HCRYPTPROV prov = 0;
+    HCRYPTHASH hash = 0;
+    int ok = 0;
+
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    if (!CryptAcquireContextA(&prov, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT))
+        goto md5_done;
+    if (!CryptCreateHash(prov, CALG_MD5, 0, 0, &hash))
+        goto md5_done;
+
+    unsigned char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        if (!CryptHashData(hash, buf, (DWORD)n, 0)) goto md5_done;
+
+    BYTE digest[16];
+    DWORD dlen = 16;
+    if (!CryptGetHashParam(hash, HP_HASHVAL, digest, &dlen, 0))
+        goto md5_done;
+
+    for (int i = 0; i < 16; i++)
+        snprintf(out_hex + i * 2, 3, "%02x", (unsigned)digest[i]);
+    ok = 1;
+
+md5_done:
+    if (hash) CryptDestroyHash(hash);
+    if (prov) CryptReleaseContext(prov, 0);
+    fclose(f);
+    return ok;
+}
+
+/*
+ * Compute checksum for path using method and return 1 if it matches expected.
+ * Returns 1 (pass) if verify_method or expected are empty (nothing to check).
+ */
+static int verify_file(const char *path, const char *method, const char *expected)
+{
+    if (!method[0] || !expected[0]) return 1;
+
+    char computed[64] = {0};
+
+    if (_stricmp(method, "crc32c") == 0) {
+        uint32_t crc = _pfg_crc32c(path);
+        snprintf(computed, sizeof(computed), "%08x", (unsigned)crc);
+    } else if (_stricmp(method, "md5") == 0) {
+        char hex[33] = {0};
+        if (!_pfg_md5(path, hex)) return 0;
+        strncpy(computed, hex, sizeof(computed) - 1);
+    } else if (_stricmp(method, "filesize") == 0) {
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fa)) return 0;
+        int64_t sz = ((int64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
+        snprintf(computed, sizeof(computed), "%lld", (long long)sz);
+    } else {
+        return 1; /* unknown method — skip */
+    }
+
+    return _stricmp(computed, expected) == 0;
+}
+
+/*
+ * Verify all files listed in the checksums string against the patched game dir.
+ * checksums format: "rel/path1|hash1;rel/path2|hash2;..."
+ * Returns 1 if all pass (or if checksums is NULL/empty), 0 if any fail.
+ * Posts log lines via WM_LOG_MSG to g_hwnd — safe to call from a worker thread.
+ */
+static int verify_all_checksums(const char *game_dir, const PatchMeta *meta)
+{
+    if (!meta->checksums || !meta->checksums[0]) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("No verification data in this patch."));
+        return 1;
+    }
+    if (!meta->verify_method[0]) return 1;
+
+    char *buf = _strdup(meta->checksums);
+    if (!buf) return 0;
+
+    int all_pass = 1, total = 0, passed = 0;
+    char *entry = buf;
+
+    while (entry && *entry) {
+        char *next = strchr(entry, ';');
+        if (next) *next = '\0';
+
+        char *pipe = strchr(entry, '|');
+        if (pipe) {
+            *pipe = '\0';
+            const char *rel_path = entry;
+            const char *expected = pipe + 1;
+
+            char full_path[MAX_PATH];
+            snprintf(full_path, MAX_PATH, "%s\\%s", game_dir, rel_path);
+            for (char *p = full_path; *p; p++)
+                if (*p == '/') *p = '\\';
+
+            total++;
+            int ok = verify_file(full_path, meta->verify_method, expected);
+            if (ok) passed++;
+            else    all_pass = 0;
+
+            size_t rlen = strlen(rel_path);
+            char *log_line = (char *)malloc(rlen + 10);
+            if (log_line) {
+                snprintf(log_line, rlen + 10, "  %s: %s",
+                         ok ? "OK" : "FAIL", rel_path);
+                PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)log_line);
+            }
+        }
+
+        entry = next ? next + 1 : NULL;
+    }
+    free(buf);
+
+    char *summary = (char *)malloc(64);
+    if (summary) {
+        snprintf(summary, 64, "Verification: %d/%d passed.", passed, total);
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)summary);
+    }
+    return all_pass;
 }
 
 /* ---- Log and status helpers ---- */

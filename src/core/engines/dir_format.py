@@ -17,6 +17,7 @@ Matching C parser: stub/dir_patch_format.h
 from __future__ import annotations
 
 import struct
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -33,6 +34,7 @@ def build(
     target: Path,
     output: Path,
     make_patch: Callable[[Path, Path], bytes],
+    workers: int = 1,
 ) -> None:
     """
     Walk source/target directories and write a PFMD container to output.
@@ -53,6 +55,9 @@ def build(
 
     entries: list[tuple[int, str, bytes]] = []
 
+    # Collect which files need patching (OP_PATCH) so we can parallelise them.
+    patch_jobs: list[tuple[str, Path, Path]] = []
+
     for rel in sorted(set(src_files) | set(tgt_files)):
         in_src = rel in src_files
         in_tgt = rel in tgt_files
@@ -62,12 +67,27 @@ def build(
         elif not in_src and in_tgt:
             entries.append((OP_NEW, rel, tgt_files[rel].read_bytes()))
         else:
-            # both present — skip unchanged files
             if src_files[rel].stat().st_size == tgt_files[rel].stat().st_size and \
                src_files[rel].read_bytes() == tgt_files[rel].read_bytes():
                 continue
-            patch_bytes = make_patch(src_files[rel], tgt_files[rel])
-            entries.append((OP_PATCH, rel, patch_bytes))
+            patch_jobs.append((rel, src_files[rel], tgt_files[rel]))
+
+    # Run patch jobs — parallel if workers > 1, sequential otherwise.
+    if workers > 1 and patch_jobs:
+        patch_results: dict[str, bytes] = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(make_patch, src_f, tgt_f): rel
+                for rel, src_f, tgt_f in patch_jobs
+            }
+            for future in as_completed(futures):
+                rel = futures[future]
+                patch_results[rel] = future.result()  # propagates exceptions
+        for rel, _, _ in patch_jobs:
+            entries.append((OP_PATCH, rel, patch_results[rel]))
+    else:
+        for rel, src_f, tgt_f in patch_jobs:
+            entries.append((OP_PATCH, rel, make_patch(src_f, tgt_f)))
 
     with open(output, "wb") as fh:
         fh.write(_MAGIC)

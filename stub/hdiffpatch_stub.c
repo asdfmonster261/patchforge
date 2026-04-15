@@ -39,7 +39,8 @@ HWND g_hwnd_progress = NULL;
 HWND g_hwnd_filepath = NULL;
 HWND g_hwnd_log      = NULL;
 HWND g_hwnd_btn_patch = NULL;
-HWND g_hwnd_chk_backup = NULL;
+HWND g_hwnd_chk_backup  = NULL;
+HWND g_hwnd_chk_verify  = NULL;
 HBRUSH g_brush_bg    = NULL;
 HBRUSH g_brush_light = NULL;
 HFONT g_font_normal  = NULL;
@@ -49,10 +50,7 @@ char g_exe_path[MAX_PATH] = {0};
 #include "stub_common.h"
 
 /* ---- Extra control IDs ---- */
-#define WM_PATCH_DONE  (WM_USER + 1)
-#define WM_PATCH_PROG  (WM_USER + 2)
-#define WM_LOG_MSG     (WM_USER + 3)
-#define IDC_CHK_BACKUP 1008
+/* WM_PATCH_DONE/PROG/LOG_MSG and IDC_CHK_* are defined in stub_common.h */
 
 /* ---- Patch metadata ---- */
 PatchMeta g_meta;
@@ -310,6 +308,7 @@ cleanup_files:
 struct PatchArgs {
     char game_dir[MAX_PATH];
     int  do_backup;
+    int  do_verify;
 };
 
 static DWORD WINAPI patch_thread(LPVOID arg)
@@ -337,6 +336,15 @@ static DWORD WINAPI patch_thread(LPVOID arg)
     PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Applying patch (in-place)..."));
 
     int ok = apply_dir_hdiff(a->game_dir, g_patch_data, g_patch_size);
+
+    if (ok && a->do_verify) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Verifying..."));
+        if (!verify_all_checksums(a->game_dir, &g_meta)) {
+            ok = 0;
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+                (LPARAM)_strdup("WARNING: One or more files failed verification."));
+        }
+    }
 
     g_patch_result = ok;
     PostMessageA(g_hwnd, WM_PATCH_PROG, 100, 0);
@@ -417,32 +425,39 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SendMessageA(g_hwnd_chk_backup, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         SendMessageA(g_hwnd_chk_backup, BM_SETCHECK, BST_CHECKED, 0);
 
+        /* Verify checkbox */
+        g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON", "Verify after patching",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            20, 152, 260, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
+        SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
+
         /* Log area */
         g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            20, 162, 552, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            20, 184, 552, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 284, 552, 12, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+            20, 306, 552, 12, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
 
         /* Status */
         g_hwnd_status = CreateWindowExA(0, "STATIC",
             "Select the game folder and click Patch.",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 302, 440, 18, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+            20, 324, 440, 18, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
         SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Patch / Cancel buttons */
         g_hwnd_btn_patch = CreateWindowExA(0, "BUTTON", "Patch",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            412, 330, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
+            412, 352, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
         CreateWindowExA(0, "BUTTON", "Cancel",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            500, 330, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+            500, 352, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
         /* Auto-detect game folder */
         char auto_path[MAX_PATH] = {0};
@@ -521,6 +536,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             strncpy(args->game_dir, path, MAX_PATH - 1);
             args->game_dir[MAX_PATH - 1] = '\0';
             args->do_backup = (SendMessageA(g_hwnd_chk_backup,
+                                            BM_GETCHECK, 0, 0) == BST_CHECKED);
+            args->do_verify = (SendMessageA(g_hwnd_chk_verify,
                                             BM_GETCHECK, 0, 0) == BST_CHECKED);
             CloseHandle(CreateThread(NULL, 0, patch_thread, args, 0, NULL));
         } else if (id == IDC_BTN_CANCEL) {
@@ -649,7 +666,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     HWND hwnd = CreateWindowExA(
         0, "PatchForgeStub", title,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 380,
+        CW_USEDEFAULT, CW_USEDEFAULT, 600, 402,
         NULL, NULL, hi, NULL);
 
     ShowWindow(hwnd, show);
@@ -661,6 +678,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
         DispatchMessageA(&msg);
     }
 
+    free(g_meta.checksums);
     free(g_patch_data);
     DeleteObject(g_brush_bg);
     DeleteObject(g_brush_light);

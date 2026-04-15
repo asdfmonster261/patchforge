@@ -146,9 +146,6 @@ def _cmd_build(args):
               f"(hdiffpatch_full_{settings.arch}.exe). "
               f"Run 'make full' in stub/ if you haven't already.")
 
-    if settings.engine == "jojodiff" and settings.compression != "none":
-        _die("JojoDiff does not support compression. Use --compression none.")
-
     # Save project if requested
     if args.save_project:
         try:

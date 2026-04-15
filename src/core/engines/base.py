@@ -30,6 +30,7 @@ class PatchEngine(ABC):
         target: Path,
         output: Path,
         compression: str = "lzma/ultra",
+        threads: int = 1,
     ) -> EngineResult:
         """Generate a binary diff from source → target, writing to output."""
         ...
@@ -39,8 +40,11 @@ class PatchEngine(ABC):
         """Return list of compression level strings this engine supports."""
         ...
 
-    # Compression levels that require zlib/bzip2 (not available in Win32 stubs)
-    WIN_STUB_UNSUPPORTED = {"zip/1", "zip/9", "bzip/5", "bzip/9"}
+    # Compression / preset keys whose decompressor is NOT compiled into the
+    # Windows stubs (zlib and bzip2 require extra third-party sources).
+    # HDiffPatch preset keys ("set1"…"set6") are all lzma2-based and are
+    # supported by default; only xdelta3/jojodiff zip and bzip modes hit this.
+    WIN_STUB_UNSUPPORTED: set[str] = {"zip/1", "zip/9", "bzip/5", "bzip/9"}
 
     def stub_supports_compression(self, compression: str) -> bool:
         return compression not in self.WIN_STUB_UNSUPPORTED

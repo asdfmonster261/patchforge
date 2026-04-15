@@ -23,6 +23,8 @@ ZLIB64   = $(TP)/zlib/x64
 ZLIB32   = $(TP)/zlib/x86
 BZ2_64   = $(TP)/bzip2/x64
 BZ2_32   = $(TP)/bzip2/x86
+XZ64     = $(TP)/liblzma/x64
+XZ32     = $(TP)/liblzma/x86
 
 DIRPATCH = $(HDIFF)/dirDiffPatch/dir_patch
 
@@ -65,11 +67,17 @@ CFLAGS_HDIFF_FULL32 = $(CFLAGS_HDIFF_BASE) \
     -I$(ZLIB32)/include \
     -I$(BZ2_32)/include
 
-CFLAGS_XD3 = $(CFLAGS_COMMON) \
+CFLAGS_XD3_BASE = $(CFLAGS_COMMON) \
     -DXD3_MAIN=0 -DXD3_WIN32=1 -DXD3_DEBUG=0 \
     -DXD3_USE_LARGEFILE64=1 \
-    -DSECONDARY_DJW=1 -DSECONDARY_FGK=1 \
+    -DSECONDARY_DJW=1 -DSECONDARY_FGK=1 -DSECONDARY_LZMA=1 \
+    -DHAVE_LZMA_H=1 \
     -DEXTERNAL_COMPRESSION=0
+
+CFLAGS_XD3 = $(CFLAGS_XD3_BASE) \
+    -I$(XZ64)/include
+CFLAGS_XD3_32 = $(CFLAGS_XD3_BASE) \
+    -I$(XZ32)/include
 
 CFLAGS_JOJO = $(CFLAGS_COMMON)
 
@@ -135,6 +143,7 @@ $(OUT)/hdiffpatch_x86.exe: hdiffpatch_stub.c stub_common.h $(HDIFF_SRCS) | $(OUT
 $(OUT)/xdelta3_x64.exe: xdelta3_stub.c stub_common.h | $(OUT)
 	$(CC64) $(CFLAGS_XD3) \
 	    xdelta3_stub.c \
+	    -L$(XZ64)/lib -llzma \
 	    $(LIBS) \
 	    -o $@
 	$(STRIP64) $@
@@ -142,8 +151,9 @@ $(OUT)/xdelta3_x64.exe: xdelta3_stub.c stub_common.h | $(OUT)
 
 # xdelta3 stub x86
 $(OUT)/xdelta3_x86.exe: xdelta3_stub.c stub_common.h | $(OUT)
-	$(CC32) $(CFLAGS_XD3) \
+	$(CC32) $(CFLAGS_XD3_32) \
 	    xdelta3_stub.c \
+	    -L$(XZ32)/lib -llzma \
 	    $(LIBS) \
 	    -o $@
 	$(STRIP32) $@

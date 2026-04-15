@@ -33,7 +33,8 @@ HWND g_hwnd_progress  = NULL;
 HWND g_hwnd_filepath  = NULL;
 HWND g_hwnd_log       = NULL;
 HWND g_hwnd_btn_patch = NULL;
-HWND g_hwnd_chk_backup = NULL;
+HWND g_hwnd_chk_backup  = NULL;
+HWND g_hwnd_chk_verify  = NULL;
 HBRUSH g_brush_bg    = NULL;
 HBRUSH g_brush_light = NULL;
 HFONT g_font_normal  = NULL;
@@ -43,48 +44,83 @@ char g_exe_path[MAX_PATH] = {0};
 #include "stub_common.h"
 #include "dir_patch_format.h"
 
-#define WM_PATCH_DONE  (WM_USER + 1)
-#define WM_PATCH_PROG  (WM_USER + 2)
-#define WM_LOG_MSG     (WM_USER + 3)
-#define IDC_CHK_BACKUP 1008
+/* WM_PATCH_DONE/PROG/LOG_MSG and IDC_CHK_* are defined in stub_common.h */
 
-/* jdiff binary opcodes */
-#define JESC     0xF5
-#define JMOD     0xF5   /* modify: out = old ^ patch_byte  */
-#define JINS     0xF6   /* insert: out = patch_byte        */
-#define JDEL     0xF7   /* delete N source bytes           */
-#define JBKT     0xF8   /* backtrack N source bytes        */
-#define JEQL     0xF9   /* copy N source bytes to output   */
-#define JLITESC  0xFA   /* literal 0xF5 output byte        */
+/* jdiff binary opcodes (from JDefs.h in jojodiff source) */
+#define JJ_ESC  0xA7
+#define JJ_MOD  0xA6   /* modify: output new bytes (source cursor advances via lzMod) */
+#define JJ_INS  0xA5   /* insert: output new bytes (source cursor unchanged)          */
+#define JJ_DEL  0xA4   /* delete: skip N source bytes                                 */
+#define JJ_EQL  0xA3   /* equal: copy N source bytes to output                        */
+#define JJ_BKT  0xA2   /* backtrack: rewind source by N bytes                         */
 
 PatchMeta g_meta;
 static char  *g_patch_data = NULL;
 static size_t g_patch_size = 0;
 static int    g_patch_result = 0;
 
-/* ---- Read a variable-length unsigned int from a FILE stream ---- */
-static long jdiff_read_varint(FILE *f)
+/*
+ * Read a JojoDiff length value from the patch stream (ufGetInt from jpatch.cpp).
+ * Encoding:
+ *   0..251       → value + 1          (1 byte,  range 1..252)
+ *   252  + B1    → 253 + B1           (2 bytes, range 253..508)
+ *   253  + B1 B2 → (B1<<8)|B2        (3 bytes, 16-bit BE)
+ *   254  + 4B    → 32-bit BE          (5 bytes)
+ *   255  + 8B    → 64-bit BE          (9 bytes)
+ * Returns -1 on read error.
+ */
+static long jdiff_read_len(FILE *f)
 {
-    unsigned char b;
-    long acc = 0;
-    int  shift = 0;
-    while (fread(&b, 1, 1, f) == 1) {
-        acc |= (long)(b & 0x7F) << shift;
-        shift += 7;
-        if (!(b & 0x80)) break;
+    int b0 = fgetc(f);
+    if (b0 == EOF) return -1;
+    if (b0 <= 251) return (long)(b0 + 1);
+    if (b0 == 252) {
+        int b1 = fgetc(f);
+        if (b1 == EOF) return -1;
+        return (long)(253 + b1);
     }
-    return acc;
+    if (b0 == 253) {
+        int hi = fgetc(f), lo = fgetc(f);
+        if (hi == EOF || lo == EOF) return -1;
+        return (long)((hi << 8) | lo);
+    }
+    if (b0 == 254) {
+        int b[4];
+        for (int i = 0; i < 4; i++) { b[i] = fgetc(f); if (b[i] == EOF) return -1; }
+        return (long)(((unsigned long)b[0] << 24) | ((unsigned long)b[1] << 16) |
+                      ((unsigned long)b[2] <<  8) |  (unsigned long)b[3]);
+    }
+    /* 255: 64-bit value — read 8 bytes and return low 32 bits (game files won't exceed 4 GB) */
+    {
+        long val = 0;
+        for (int i = 0; i < 8; i++) {
+            int b = fgetc(f);
+            if (b == EOF) return -1;
+            val = (val << 8) | b;
+        }
+        return val;
+    }
 }
 
 /*
  * Apply a jdiff patch (in-memory) to old_path, writing result to new_path.
- * The patch bytes are written to a temp file so the existing FILE-based loop
- * can operate on them without change.
+ *
+ * JojoDiff binary format (from JDefs.h + JOutBin.cpp + jpatch.cpp):
+ *   All operations begin with ESC(0xA7) followed by an opcode byte.
+ *   MOD(0xA6): data bytes follow; each byte goes to output; source cursor is
+ *              advanced implicitly via lzMod counter (not by fread).
+ *   INS(0xA5): data bytes follow; inserted into output; source unchanged.
+ *   DEL(0xA4): length follows; skip (len + lzMod) source bytes; lzMod = 0.
+ *   EQL(0xA3): length follows; flush lzMod, then copy len source bytes to output.
+ *   BKT(0xA2): length follows; seek source by (lzMod - len); lzMod = 0.
+ *   ESC ESC:   literal ESC(0xA7) byte in the data stream.
+ *   Data bytes equal to ESC are escaped: ESC <next-byte>; the decoder outputs
+ *   ESC then next-byte (via the lbEsc flag for unknown-opcode escapes).
  */
 static int apply_jojodiff(const char *old_path, const unsigned char *patch_data,
                             uint32_t patch_len, const char *new_path)
 {
-    /* Write patch to temp file */
+    /* Write patch to temp file so we can use FILE* streaming */
     char tmp_dir[MAX_PATH], tmp_patch[MAX_PATH];
     GetTempPathA(MAX_PATH, tmp_dir);
     GetTempFileNameA(tmp_dir, "pfgj", 0, tmp_patch);
@@ -94,9 +130,9 @@ static int apply_jojodiff(const char *old_path, const unsigned char *patch_data,
     fwrite(patch_data, 1, patch_len, fptmp);
     fclose(fptmp);
 
-    FILE *fold   = fopen(old_path,   "rb");
-    FILE *fpatch = fopen(tmp_patch,  "rb");
-    FILE *fnew   = fopen(new_path,   "wb");
+    FILE *fold   = fopen(old_path,  "rb");
+    FILE *fpatch = fopen(tmp_patch, "rb");
+    FILE *fnew   = fopen(new_path,  "wb");
     if (!fold || !fpatch || !fnew) {
         if (fold)   fclose(fold);
         if (fpatch) fclose(fpatch);
@@ -105,57 +141,84 @@ static int apply_jojodiff(const char *old_path, const unsigned char *patch_data,
         return 0;
     }
 
-    unsigned char op;
-    int ok = 1;
+    int  liOpr = JJ_ESC;  /* current operation */
+    long lzMod = 0;       /* source bytes consumed implicitly by MOD */
+    int  ok    = 1;
+    int  liInp;
 
-    while (fread(&op, 1, 1, fpatch) == 1) {
-        if (op < JESC) {
-            /* Equal byte: advance source cursor; op IS the output byte. */
-            unsigned char dummy;
-            if (fread(&dummy, 1, 1, fold) != 1) { ok = 0; break; }
-            fwrite(&op, 1, 1, fnew);
-        } else {
-            switch (op) {
-            case JMOD: {
-                unsigned char mod_byte, old_byte;
-                if (fread(&mod_byte, 1, 1, fpatch) != 1) { ok = 0; goto done; }
-                if (fread(&old_byte, 1, 1, fold)   != 1) { ok = 0; goto done; }
-                unsigned char out_byte = old_byte ^ mod_byte;
-                fwrite(&out_byte, 1, 1, fnew);
+    while ((liInp = fgetc(fpatch)) != EOF) {
+        int lbChg = 0;  /* set when opcode consumed the byte — skip data handler */
+        int lbEsc = 0;  /* set for unknown ESC sequences — prefix output with ESC */
+
+        if (liInp == JJ_ESC) {
+            liInp = fgetc(fpatch);
+            if (liInp == EOF) { ok = 0; goto done; }
+            switch (liInp) {
+            case JJ_MOD:
+                liOpr = JJ_MOD;
+                lbChg = 1;
+                break;
+            case JJ_INS:
+                liOpr = JJ_INS;
+                lbChg = 1;
+                break;
+            case JJ_DEL: {
+                long lzOff = jdiff_read_len(fpatch);
+                if (lzOff < 0 || fseek(fold, lzOff + lzMod, SEEK_CUR) != 0)
+                    { ok = 0; goto done; }
+                lzMod = 0;
+                lbChg = 1;
                 break;
             }
-            case JINS: {
-                unsigned char ins_byte;
-                if (fread(&ins_byte, 1, 1, fpatch) != 1) { ok = 0; goto done; }
-                fwrite(&ins_byte, 1, 1, fnew);
+            case JJ_EQL: {
+                long lzOff = jdiff_read_len(fpatch);
+                if (lzOff < 0) { ok = 0; goto done; }
+                if (lzMod > 0) {
+                    if (fseek(fold, lzMod, SEEK_CUR) != 0) { ok = 0; goto done; }
+                    lzMod = 0;
+                }
+                unsigned char eql_buf[4096];
+                long rem = lzOff;
+                while (rem > 0) {
+                    long chunk = rem < 4096 ? rem : 4096;
+                    if ((long)fread(eql_buf, 1, (size_t)chunk, fold) != chunk)
+                        { ok = 0; goto done; }
+                    fwrite(eql_buf, 1, (size_t)chunk, fnew);
+                    rem -= chunk;
+                }
+                lbChg = 1;
                 break;
             }
-            case JDEL: {
-                long len = jdiff_read_varint(fpatch);
-                fseek(fold, len, SEEK_CUR);
+            case JJ_BKT: {
+                long lzOff = jdiff_read_len(fpatch);
+                if (lzOff < 0 || fseek(fold, lzMod - lzOff, SEEK_CUR) != 0)
+                    { ok = 0; goto done; }
+                lzMod = 0;
+                lbChg = 1;
                 break;
             }
-            case JBKT: {
-                long len = jdiff_read_varint(fpatch);
-                fseek(fold, -len, SEEK_CUR);
+            case JJ_ESC:
+                /* ESC ESC = literal ESC byte; lbEsc stays 0, liInp = JJ_ESC */
                 break;
-            }
-            case JEQL: {
-                long len = jdiff_read_varint(fpatch);
-                unsigned char *buf = (unsigned char *)malloc(len);
-                if (!buf) { ok = 0; goto done; }
-                if ((long)fread(buf, 1, len, fold) != len) { free(buf); ok = 0; goto done; }
-                fwrite(buf, 1, len, fnew);
-                free(buf);
-                break;
-            }
-            case JLITESC: {
-                unsigned char esc = JESC;
-                fwrite(&esc, 1, 1, fnew);
-                break;
-            }
             default:
-                /* Unknown opcode — skip silently */
+                /* Unknown escape — treat preceding ESC as literal data */
+                lbEsc = 1;
+                break;
+            }
+        }
+
+        if (!lbChg) {
+            switch (liOpr) {
+            case JJ_MOD:
+                if (lbEsc) { fputc(JJ_ESC, fnew); lzMod++; }
+                fputc(liInp, fnew);
+                lzMod++;
+                break;
+            case JJ_INS:
+                if (lbEsc) fputc(JJ_ESC, fnew);
+                fputc(liInp, fnew);
+                break;
+            default:
                 break;
             }
         }
@@ -265,6 +328,7 @@ static int apply_dir_jojodiff(const char *game_dir,
 struct PatchArgs {
     char game_dir[MAX_PATH];
     int  do_backup;
+    int  do_verify;
 };
 
 static DWORD WINAPI patch_thread(LPVOID arg)
@@ -292,6 +356,15 @@ static DWORD WINAPI patch_thread(LPVOID arg)
     PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Applying patch (in-place)..."));
 
     int ok = apply_dir_jojodiff(a->game_dir, g_patch_data, g_patch_size);
+
+    if (ok && a->do_verify) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Verifying..."));
+        if (!verify_all_checksums(a->game_dir, &g_meta)) {
+            ok = 0;
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+                (LPARAM)_strdup("WARNING: One or more files failed verification."));
+        }
+    }
 
     g_patch_result = ok;
     PostMessageA(g_hwnd, WM_PATCH_PROG, 100, 0);
@@ -373,32 +446,40 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SendMessageA(g_hwnd_chk_backup, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         SendMessageA(g_hwnd_chk_backup, BM_SETCHECK, BST_CHECKED, 0);
 
+        /* Verify checkbox */
+        g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON",
+            "Verify after patching",
+            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+            20, 152, 260, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
+        SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
+
         /* Log area */
         g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            20, 162, 552, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            20, 184, 552, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 284, 552, 12, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+            20, 306, 552, 12, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
 
         /* Status */
         g_hwnd_status = CreateWindowExA(0, "STATIC",
             "Select the game folder and click Patch.",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 302, 440, 18, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+            20, 324, 440, 18, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
         SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Patch / Cancel buttons */
         g_hwnd_btn_patch = CreateWindowExA(0, "BUTTON", "Patch",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            412, 330, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
+            412, 352, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
         CreateWindowExA(0, "BUTTON", "Cancel",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            500, 330, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+            500, 352, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
         /* Auto-detect game folder */
         char auto_path[MAX_PATH] = {0};
@@ -471,6 +552,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             strncpy(args->game_dir, path, MAX_PATH - 1);
             args->game_dir[MAX_PATH - 1] = '\0';
             args->do_backup = (SendMessageA(g_hwnd_chk_backup,
+                                            BM_GETCHECK, 0, 0) == BST_CHECKED);
+            args->do_verify = (SendMessageA(g_hwnd_chk_verify,
                                             BM_GETCHECK, 0, 0) == BST_CHECKED);
             CloseHandle(CreateThread(NULL, 0, patch_thread, args, 0, NULL));
         } else if (id == IDC_BTN_CANCEL) {
@@ -591,7 +674,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     HWND hwnd = CreateWindowExA(
         0, "PatchForgeStub", title,
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 380,
+        CW_USEDEFAULT, CW_USEDEFAULT, 600, 402,
         NULL, NULL, hi, NULL);
 
     ShowWindow(hwnd, show);
@@ -603,6 +686,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
         DispatchMessageA(&msg);
     }
 
+    free(g_meta.checksums);
     free(g_patch_data);
     DeleteObject(g_brush_bg);
     DeleteObject(g_brush_light);
