@@ -2,11 +2,10 @@
 patch_builder.py — Orchestrates the full patch build process.
 
 Steps:
-  1. Validate inputs
-  2. Compute source/target checksums
-  3. Run the selected engine to generate the raw patch
-  4. Package stub + patch data + metadata into output .exe
-  5. Clean up temp files
+  1. Validate inputs (source/target must be directories)
+  2. Run the selected engine to generate the raw patch
+  3. Package stub + patch data + metadata into output .exe
+  4. Clean up temp files
 """
 
 import tempfile
@@ -15,7 +14,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import compression as comp_mod
-from . import verification
 from .engines import HDiffPatchEngine, JojoDiffEngine, XDelta3Engine, PatchEngine
 from .exe_packager import package
 from .project import ProjectSettings
@@ -35,8 +33,6 @@ class BuildResult:
     output_path: Optional[Path] = None
     patch_size: int = 0
     output_size: int = 0
-    orig_checksum: str = ""
-    new_checksum: str = ""
     error: str = ""
 
 
@@ -57,40 +53,34 @@ def build(
     # ------------------------------------------------------------------ #
     # 1. Validate                                                          #
     # ------------------------------------------------------------------ #
-    source = Path(settings.source_file)
-    target = Path(settings.target_file)
+    source = Path(settings.source_dir)
+    target = Path(settings.target_dir)
 
     if not source.exists():
-        return BuildResult(success=False, error=f"Source file not found: {source}")
+        return BuildResult(success=False, error=f"Source directory not found: {source}")
+    if not source.is_dir():
+        return BuildResult(success=False, error=f"Source path is not a directory: {source}")
     if not target.exists():
-        return BuildResult(success=False, error=f"Target file not found: {target}")
+        return BuildResult(success=False, error=f"Target directory not found: {target}")
+    if not target.is_dir():
+        return BuildResult(success=False, error=f"Target path is not a directory: {target}")
     if not settings.app_name.strip():
         return BuildResult(success=False, error="App name is required")
     if settings.engine not in _ENGINE_MAP:
         return BuildResult(success=False, error=f"Unknown engine: {settings.engine!r}")
 
-    # JojoDiff doesn't support compression
     if settings.engine == "jojodiff" and settings.compression != "none":
         return BuildResult(
             success=False,
             error="JojoDiff does not support compression — set compression to 'none'",
         )
 
-    _progress(5, "Validating files...")
+    _progress(5, "Validating directories...")
 
     # ------------------------------------------------------------------ #
-    # 2. Checksums                                                         #
+    # 2. Generate patch                                                    #
     # ------------------------------------------------------------------ #
-    _progress(10, f"Computing {settings.verify_method.upper()} checksum of source...")
-    orig_checksum = verification.compute(source, settings.verify_method)
-
-    _progress(20, f"Computing {settings.verify_method.upper()} checksum of target...")
-    new_checksum = verification.compute(target, settings.verify_method)
-
-    # ------------------------------------------------------------------ #
-    # 3. Generate patch                                                    #
-    # ------------------------------------------------------------------ #
-    _progress(30, f"Generating patch with {settings.engine}...")
+    _progress(15, f"Generating directory patch with {settings.engine}...")
 
     engine_cls = _ENGINE_MAP[settings.engine]
     engine: PatchEngine = engine_cls(ENGINE_DIR)
@@ -106,7 +96,7 @@ def build(
         patch_data = raw_patch.read_bytes()
 
     # ------------------------------------------------------------------ #
-    # 4. Build metadata                                                    #
+    # 3. Build metadata                                                    #
     # ------------------------------------------------------------------ #
     _progress(80, "Packaging output exe...")
 
@@ -117,10 +107,6 @@ def build(
         "engine":         settings.engine,
         "compression":    settings.compression,
         "verify_method":  settings.verify_method,
-        "orig_checksum":  orig_checksum,
-        "new_checksum":   new_checksum,
-        "orig_size":      source.stat().st_size,
-        "new_size":       target.stat().st_size,
         "find_method":    settings.find_method,
         "registry_key":   settings.registry_key,
         "registry_value": settings.registry_value,
@@ -130,9 +116,9 @@ def build(
     }
 
     # ------------------------------------------------------------------ #
-    # 5. Package                                                           #
+    # 4. Package                                                           #
     # ------------------------------------------------------------------ #
-    output_dir = Path(settings.output_dir) if settings.output_dir else source.parent
+    output_dir = Path(settings.output_dir) if settings.output_dir else Path.cwd()
     safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in settings.app_name)
     version_tag = f"_{settings.version}" if settings.version else ""
     output_path = output_dir / f"{safe_name}{version_tag}_patch_{settings.arch}.exe"
@@ -156,6 +142,4 @@ def build(
         output_path=output_path,
         patch_size=len(patch_data),
         output_size=output_path.stat().st_size,
-        orig_checksum=orig_checksum,
-        new_checksum=new_checksum,
     )

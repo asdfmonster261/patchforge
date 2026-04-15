@@ -13,10 +13,10 @@ class ProjectSettings:
     version: str = ""
     description: str = ""
 
-    # Files
-    source_file: str = ""   # original (old) file path
-    target_file: str = ""   # patched (new) file path
-    output_dir: str = ""    # where to write the output .exe
+    # Directories
+    source_dir: str = ""   # original (old) game folder
+    target_dir: str = ""   # patched (new) game folder
+    output_dir: str = ""   # where to write the output .exe
 
     # Engine + compression
     engine: str = "hdiffpatch"       # "hdiffpatch" | "xdelta3" | "jojodiff"

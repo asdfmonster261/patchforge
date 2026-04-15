@@ -38,12 +38,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 _EPILOG = """\
 Examples:
-  # Build a patch directly
-  patchforge build --source v1.0.exe --target v1.1.exe --app-name "My Game" --version 1.1
+  # Build a patch directly from two game folders
+  patchforge build --source-dir game_v1/ --target-dir game_v2/ --app-name "My Game" --version 1.1
 
   # Create a project file, then build from it
   patchforge new-project --output patch.xpm
-  patchforge build --project patch.xpm --source v1.0.exe --target v1.1.exe
+  patchforge build --project patch.xpm --source-dir game_v1/ --target-dir game_v2/
 
   # Show a saved project
   patchforge show-project patch.xpm
@@ -61,11 +61,13 @@ def _add_build(sub):
     p.add_argument("--project", metavar="FILE",
                    help="Load settings from a .xpm project file (flags override)")
 
-    # File paths
-    p.add_argument("--source", metavar="FILE", help="Original (old) file")
-    p.add_argument("--target", metavar="FILE", help="Patched (new) file")
+    # Directory paths
+    p.add_argument("--source-dir", metavar="DIR", dest="source_dir",
+                   help="Original (old) game folder")
+    p.add_argument("--target-dir", metavar="DIR", dest="target_dir",
+                   help="Patched (new) game folder")
     p.add_argument("--output-dir", metavar="DIR",
-                   help="Directory to write the output .exe (default: same as source)")
+                   help="Directory to write the output .exe (default: current directory)")
 
     # Metadata
     p.add_argument("--app-name", metavar="NAME", help="Application name shown in patcher")
@@ -121,8 +123,8 @@ def _cmd_build(args):
         settings = ProjectSettings()
 
     # Apply flag overrides
-    if args.source:        settings.source_file  = args.source
-    if args.target:        settings.target_file  = args.target
+    if args.source_dir:    settings.source_dir   = args.source_dir
+    if args.target_dir:    settings.target_dir   = args.target_dir
     if args.output_dir:    settings.output_dir   = args.output_dir
     if args.app_name:      settings.app_name     = args.app_name
     if args.version:       settings.version      = args.version
@@ -172,8 +174,6 @@ def _cmd_build(args):
     print(f"\nOutput:      {result.output_path}")
     print(f"Patch size:  {_fmt_size(result.patch_size)}")
     print(f"Output size: {_fmt_size(result.output_size)}")
-    print(f"Orig {settings.verify_method.upper()}: {result.orig_checksum}")
-    print(f"New  {settings.verify_method.upper()}: {result.new_checksum}")
 
 
 # ---------------------------------------------------------------------------
