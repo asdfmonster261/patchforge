@@ -36,6 +36,12 @@ class ProjectSettings:
     # Stub architecture
     arch: str = "x64"   # "x64" | "x86"
 
+    # Thread count for patch generation (HDiffPatch: -p-N; xdelta3/jojodiff dir mode)
+    threads: int = 1
+
+    # Optional icon (.ico) to embed in the output exe
+    icon_path: str = ""
+
 
 def save(settings: ProjectSettings, path: Path) -> None:
     path = Path(path)

@@ -69,11 +69,6 @@ def build(
     if settings.engine not in _ENGINE_MAP:
         return BuildResult(success=False, error=f"Unknown engine: {settings.engine!r}")
 
-    if settings.engine == "jojodiff" and settings.compression != "none":
-        return BuildResult(
-            success=False,
-            error="JojoDiff does not support compression — set compression to 'none'",
-        )
 
     _progress(5, "Validating directories...")
 
@@ -88,7 +83,8 @@ def build(
     with tempfile.TemporaryDirectory(prefix="patchforge_") as tmpdir:
         raw_patch = Path(tmpdir) / "patch.bin"
 
-        result = engine.generate(source, target, raw_patch, settings.compression)
+        result = engine.generate(source, target, raw_patch, settings.compression,
+                                 threads=settings.threads)
         if not result.success:
             return BuildResult(success=False, error=f"Patch generation failed: {result.error}")
 
@@ -115,6 +111,36 @@ def build(
         "ini_key":        settings.ini_key,
     }
 
+    if settings.verify_method:
+        # Compute checksums for every file the patch writes (new or modified vs source).
+        _progress(78, "Computing verification checksums...")
+        from . import verification as _ver
+        src_files = {
+            f.relative_to(source).as_posix(): f
+            for f in source.rglob("*") if f.is_file()
+        }
+        tgt_files = {
+            f.relative_to(target).as_posix(): f
+            for f in target.rglob("*") if f.is_file()
+        }
+        entries = []
+        for rel, tgt_f in sorted(tgt_files.items()):
+            if rel not in src_files:
+                # New file — always include
+                entries.append((rel, tgt_f))
+            else:
+                # Modified file — include only if content differs
+                src_f = src_files[rel]
+                if src_f.stat().st_size != tgt_f.stat().st_size or \
+                   src_f.read_bytes() != tgt_f.read_bytes():
+                    entries.append((rel, tgt_f))
+        if entries:
+            checksums = ";".join(
+                f"{rel}|{_ver.compute(tgt_f, settings.verify_method)}"
+                for rel, tgt_f in entries
+            )
+            metadata["checksums"] = checksums
+
     # ------------------------------------------------------------------ #
     # 4. Package                                                           #
     # ------------------------------------------------------------------ #
@@ -124,6 +150,7 @@ def build(
     output_path = output_dir / f"{safe_name}{version_tag}_patch_{settings.arch}.exe"
 
     try:
+        icon = Path(settings.icon_path) if settings.icon_path else None
         package(
             stub_engine=settings.engine,
             arch=settings.arch,
@@ -131,6 +158,7 @@ def build(
             patch_data=patch_data,
             metadata=metadata,
             output_path=output_path,
+            icon_path=icon,
         )
     except Exception as exc:
         return BuildResult(success=False, error=str(exc))
