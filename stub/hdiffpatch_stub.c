@@ -252,9 +252,18 @@ static int apply_dir_hdiff(const char *game_dir,
     /* Use tempDirPatchListener for in-place update */
     IHPatchDirListener listener = tempDirPatchListener;
     listener.base.listenerImport = &listener; /* fix self-pointer after copy */
+
+    /* patchBegin must be called manually before openNewDirAsStream */
+    if (!listener.patchBegin(&listener, &patcher)) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("ERROR: patchBegin failed"));
+        goto cleanup_refs;
+    }
+
     if (!TDirPatcher_openNewDirAsStream(&patcher, &listener.base, &new_dir_stream)) {
         PostMessageA(g_hwnd, WM_LOG_MSG, 0,
             (LPARAM)_strdup("ERROR: TDirPatcher_openNewDirAsStream failed"));
+        listener.patchFinish(&listener, hpatch_FALSE);
         goto cleanup_refs;
     }
     PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("New dir stream OK — patching..."));
@@ -265,6 +274,7 @@ static int apply_dir_hdiff(const char *game_dir,
     if (!cache) {
         PostMessageA(g_hwnd, WM_LOG_MSG, 0,
             (LPARAM)_strdup("ERROR: out of memory for patch cache"));
+        listener.patchFinish(&listener, hpatch_FALSE);
         goto cleanup_streams;
     }
 
@@ -273,9 +283,56 @@ static int apply_dir_hdiff(const char *game_dir,
         cache, cache + DIR_CACHE_SIZE, 1);
 
     free(cache);
-    ok = (patch_ok == hpatch_TRUE);
+
+    /* patchFinish does the actual in-place move (tempDirPatchListener) */
+    hpatch_BOOL finish_ok = listener.patchFinish(&listener, patch_ok);
+    ok = (patch_ok == hpatch_TRUE) && (finish_ok == hpatch_TRUE);
     PostMessageA(g_hwnd, WM_LOG_MSG, 0,
-        (LPARAM)_strdup(ok ? "TDirPatcher_patch OK" : "ERROR: TDirPatcher_patch FAILED"));
+        (LPARAM)_strdup(patch_ok  ? "TDirPatcher_patch OK"  : "ERROR: TDirPatcher_patch FAILED"));
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+        (LPARAM)_strdup(finish_ok ? "patchFinish OK (files moved)" : "ERROR: patchFinish FAILED (move-back failed)"));
+
+    /* --- Diagnostics: did the in-place move actually happen? --- */
+    {
+        /* 1. Does tmp_new still exist? If yes, move-back failed. */
+        DWORD tattr = GetFileAttributesA(tmp_new);
+        snprintf(msg, sizeof(msg), "Temp new dir after patch: %s",
+            tattr == INVALID_FILE_ATTRIBUTES ? "gone (good)" : "STILL EXISTS — move-back may have failed");
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+
+        /* 2+3. Check size-sensitive files in game_dir and tmp_new.
+         * Expected new sizes: level0=289008, Assembly-CSharp.dll=1278976 */
+        const char *probes[] = {
+            "CloverPit_Data\\level0",
+            "CloverPit_Data\\Managed\\Assembly-CSharp.dll",
+            NULL
+        };
+        for (int pi = 0; probes[pi]; pi++) {
+            char check[MAX_PATH];
+            /* in game_dir */
+            snprintf(check, MAX_PATH, "%s\\%s", game_dir, probes[pi]);
+            HANDLE fh = CreateFileA(check, GENERIC_READ, FILE_SHARE_READ, NULL,
+                                    OPEN_EXISTING, 0, NULL);
+            if (fh != INVALID_HANDLE_VALUE) {
+                LARGE_INTEGER fsz; GetFileSizeEx(fh, &fsz); CloseHandle(fh);
+                snprintf(msg, sizeof(msg), "game_dir\\%s: %lld bytes", probes[pi], fsz.QuadPart);
+            } else {
+                snprintf(msg, sizeof(msg), "game_dir\\%s: NOT FOUND", probes[pi]);
+            }
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+            /* in tmp_new */
+            snprintf(check, MAX_PATH, "%s\\%s", tmp_new, probes[pi]);
+            fh = CreateFileA(check, GENERIC_READ, FILE_SHARE_READ, NULL,
+                             OPEN_EXISTING, 0, NULL);
+            if (fh != INVALID_HANDLE_VALUE) {
+                LARGE_INTEGER fsz; GetFileSizeEx(fh, &fsz); CloseHandle(fh);
+                snprintf(msg, sizeof(msg), "tmp_new\\%s: %lld bytes", probes[pi], fsz.QuadPart);
+            } else {
+                snprintf(msg, sizeof(msg), "tmp_new\\%s: not found", probes[pi]);
+            }
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+        }
+    }
 
 cleanup_streams:
     TDirPatcher_closeNewDirStream(&patcher);
