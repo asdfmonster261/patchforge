@@ -15,7 +15,7 @@ _COMPRESSION_MAP: dict[str, str] = {
     "lzma/fast":     "lzma2-1",
     "lzma/normal":   "lzma2-6",
     "lzma/ultra":    "lzma2-9",
-    "lzma/ultra64":  "lzma2-9x",
+    "lzma/ultra64":  "lzma2-9-64m",
 }
 
 
