@@ -130,7 +130,7 @@ static int apply_dir_hdiff(const char *game_dir,
 {
     char msg[MAX_PATH + 128];
 
-    /* Write patch data to a temp file (use system temp — just data, no moves needed) */
+    /* Write patch data to a temp file (system temp is fine — no rename needed) */
     char tmp_dir[MAX_PATH], tmp_patch[MAX_PATH], tmp_new[MAX_PATH];
     GetTempPathA(MAX_PATH, tmp_dir);
 
@@ -147,48 +147,38 @@ static int apply_dir_hdiff(const char *game_dir,
         fwrite(patch_data, 1, patch_size, fp);
         fclose(fp);
     }
-    snprintf(msg, sizeof(msg), "Patch data written (%zu bytes)", patch_size);
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
 
     /*
-     * IMPORTANT: tmp_new must be on the SAME drive/filesystem as game_dir.
-     * tempDirPatchListener uses rename() to move patched files back in-place,
-     * which fails across drive letters (e.g. C: temp vs Z: game on Wine/Proton).
-     * Place tmp_new as a sibling directory next to game_dir instead.
+     * tmp_new MUST be on the same drive/filesystem as game_dir.
+     * tempDirPatchListener uses rename() to move files back in-place;
+     * rename() fails across drive letters (e.g. C:\Temp vs Z:\game on Wine).
+     * Place tmp_new as a sibling of game_dir so they share the same device.
      */
     {
-        /* Find the parent directory of game_dir */
         char parent[MAX_PATH];
         strncpy(parent, game_dir, MAX_PATH - 1);
         parent[MAX_PATH - 1] = '\0';
-        /* Strip trailing slash if present */
         size_t plen = strlen(parent);
         if (plen > 1 && (parent[plen-1] == '\\' || parent[plen-1] == '/'))
             parent[--plen] = '\0';
-        /* Find last separator */
         char *sep = strrchr(parent, '\\');
         if (!sep) sep = strrchr(parent, '/');
         if (sep) {
             *sep = '\0';
         } else {
-            /* game_dir has no parent — fall back to system temp */
             strncpy(parent, tmp_dir, MAX_PATH - 1);
         }
-        /* Generate a unique name in parent */
         GetTempFileNameA(parent, "pfgn", 0, tmp_new);
         DeleteFileA(tmp_new);
     }
 
     if (!CreateDirectoryA(tmp_new, NULL)) {
         snprintf(msg, sizeof(msg),
-            "ERROR: failed to create temp new dir: %s (err %lu)",
-            tmp_new, GetLastError());
+            "ERROR: failed to create temp new dir (err %lu)", GetLastError());
         PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
         DeleteFileA(tmp_patch);
         return 0;
     }
-    snprintf(msg, sizeof(msg), "Temp new dir: %s", tmp_new);
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
 
     /* Open diff as stream */
     hpatch_TFileStreamInput diff_stream;
@@ -206,18 +196,13 @@ static int apply_dir_hdiff(const char *game_dir,
     memset(&ddi, 0, sizeof(ddi));
     if (!getDirDiffInfo(&ddi, &diff_stream.base)) {
         PostMessageA(g_hwnd, WM_LOG_MSG, 0,
-            (LPARAM)_strdup("ERROR: getDirDiffInfo failed — patch data corrupt or not a dir diff"));
+            (LPARAM)_strdup("ERROR: patch data corrupt or not a dir diff"));
         goto cleanup_stream;
     }
-    snprintf(msg, sizeof(msg), "Diff info OK — compress type: \"%s\"",
-             (const char*)ddi.hdiffInfo.compressType);
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
     hpatch_TFileStreamInput_setOffset(&diff_stream, 0);
 
     hpatch_TDecompress *dec = _pick_decompressor(
         (const char*)ddi.hdiffInfo.compressType);
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0,
-        (LPARAM)_strdup(dec ? "Decompressor: found" : "Decompressor: none (uncompressed)"));
 
     /* Initialise patcher */
     TDirPatcher patcher;
@@ -229,14 +214,12 @@ static int apply_dir_hdiff(const char *game_dir,
             (LPARAM)_strdup("ERROR: TDirPatcher_open failed"));
         goto cleanup_patcher;
     }
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("TDirPatcher_open OK"));
 
     if (!TDirPatcher_loadDirData(&patcher, dec, game_dir, tmp_new)) {
         PostMessageA(g_hwnd, WM_LOG_MSG, 0,
             (LPARAM)_strdup("ERROR: TDirPatcher_loadDirData failed"));
         goto cleanup_patcher;
     }
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("TDirPatcher_loadDirData OK"));
 
     /* Open streams */
     const hpatch_TStreamInput  *old_ref = NULL;
@@ -247,13 +230,13 @@ static int apply_dir_hdiff(const char *game_dir,
             (LPARAM)_strdup("ERROR: TDirPatcher_openOldRefAsStream failed"));
         goto cleanup_patcher;
     }
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Old ref stream OK"));
 
-    /* Use tempDirPatchListener for in-place update */
+    /* tempDirPatchListener: patches to tmp_new, then patchFinish moves
+     * everything back in-place. patchBegin/patchFinish must be called
+     * manually — the library does not call them automatically. */
     IHPatchDirListener listener = tempDirPatchListener;
-    listener.base.listenerImport = &listener; /* fix self-pointer after copy */
+    listener.base.listenerImport = &listener;
 
-    /* patchBegin must be called manually before openNewDirAsStream */
     if (!listener.patchBegin(&listener, &patcher)) {
         PostMessageA(g_hwnd, WM_LOG_MSG, 0,
             (LPARAM)_strdup("ERROR: patchBegin failed"));
@@ -266,9 +249,9 @@ static int apply_dir_hdiff(const char *game_dir,
         listener.patchFinish(&listener, hpatch_FALSE);
         goto cleanup_refs;
     }
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("New dir stream OK — patching..."));
 
-    /* Patch cache: 4 MB */
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Applying patch..."));
+
     #define DIR_CACHE_SIZE (4 * 1024 * 1024)
     hpatch_byte *cache = (hpatch_byte *)malloc(DIR_CACHE_SIZE);
     if (!cache) {
@@ -284,54 +267,13 @@ static int apply_dir_hdiff(const char *game_dir,
 
     free(cache);
 
-    /* patchFinish does the actual in-place move (tempDirPatchListener) */
+    /* patchFinish moves files from tmp_new into game_dir in-place */
     hpatch_BOOL finish_ok = listener.patchFinish(&listener, patch_ok);
     ok = (patch_ok == hpatch_TRUE) && (finish_ok == hpatch_TRUE);
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0,
-        (LPARAM)_strdup(patch_ok  ? "TDirPatcher_patch OK"  : "ERROR: TDirPatcher_patch FAILED"));
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0,
-        (LPARAM)_strdup(finish_ok ? "patchFinish OK (files moved)" : "ERROR: patchFinish FAILED (move-back failed)"));
 
-    /* --- Diagnostics: did the in-place move actually happen? --- */
-    {
-        /* 1. Does tmp_new still exist? If yes, move-back failed. */
-        DWORD tattr = GetFileAttributesA(tmp_new);
-        snprintf(msg, sizeof(msg), "Temp new dir after patch: %s",
-            tattr == INVALID_FILE_ATTRIBUTES ? "gone (good)" : "STILL EXISTS — move-back may have failed");
-        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
-
-        /* 2+3. Check size-sensitive files in game_dir and tmp_new.
-         * Expected new sizes: level0=289008, Assembly-CSharp.dll=1278976 */
-        const char *probes[] = {
-            "CloverPit_Data\\level0",
-            "CloverPit_Data\\Managed\\Assembly-CSharp.dll",
-            NULL
-        };
-        for (int pi = 0; probes[pi]; pi++) {
-            char check[MAX_PATH];
-            /* in game_dir */
-            snprintf(check, MAX_PATH, "%s\\%s", game_dir, probes[pi]);
-            HANDLE fh = CreateFileA(check, GENERIC_READ, FILE_SHARE_READ, NULL,
-                                    OPEN_EXISTING, 0, NULL);
-            if (fh != INVALID_HANDLE_VALUE) {
-                LARGE_INTEGER fsz; GetFileSizeEx(fh, &fsz); CloseHandle(fh);
-                snprintf(msg, sizeof(msg), "game_dir\\%s: %lld bytes", probes[pi], fsz.QuadPart);
-            } else {
-                snprintf(msg, sizeof(msg), "game_dir\\%s: NOT FOUND", probes[pi]);
-            }
-            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
-            /* in tmp_new */
-            snprintf(check, MAX_PATH, "%s\\%s", tmp_new, probes[pi]);
-            fh = CreateFileA(check, GENERIC_READ, FILE_SHARE_READ, NULL,
-                             OPEN_EXISTING, 0, NULL);
-            if (fh != INVALID_HANDLE_VALUE) {
-                LARGE_INTEGER fsz; GetFileSizeEx(fh, &fsz); CloseHandle(fh);
-                snprintf(msg, sizeof(msg), "tmp_new\\%s: %lld bytes", probes[pi], fsz.QuadPart);
-            } else {
-                snprintf(msg, sizeof(msg), "tmp_new\\%s: not found", probes[pi]);
-            }
-            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
-        }
+    if (!ok) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup(patch_ok ? "ERROR: file move-back failed" : "ERROR: patch failed"));
     }
 
 cleanup_streams:
