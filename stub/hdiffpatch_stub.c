@@ -128,79 +128,131 @@ static int _copy_dir_recursive(const char *src, const char *dst)
 static int apply_dir_hdiff(const char *game_dir,
                             const char *patch_data, size_t patch_size)
 {
+    char msg[MAX_PATH + 128];
+
     /* Write patch data to a temp file */
     char tmp_dir[MAX_PATH], tmp_patch[MAX_PATH], tmp_new[MAX_PATH];
     GetTempPathA(MAX_PATH, tmp_dir);
+    snprintf(msg, sizeof(msg), "Temp dir: %s", tmp_dir);
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+
     GetTempFileNameA(tmp_dir, "pfgp", 0, tmp_patch);
-    DeleteFileA(tmp_patch); /* GetTempFileName creates it; dir patcher needs a real path */
+    DeleteFileA(tmp_patch);
 
     {
         FILE *fp = fopen(tmp_patch, "wb");
-        if (!fp) return 0;
+        if (!fp) {
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+                (LPARAM)_strdup("ERROR: failed to create temp patch file"));
+            return 0;
+        }
         fwrite(patch_data, 1, patch_size, fp);
         fclose(fp);
     }
+    snprintf(msg, sizeof(msg), "Patch data written (%zu bytes): %s",
+             patch_size, tmp_patch);
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
 
-    /* Temp dir for new files (tempDirPatchListener moves them in-place on success) */
+    /* Temp dir for new files */
     GetTempFileNameA(tmp_dir, "pfgn", 0, tmp_new);
     DeleteFileA(tmp_new);
     if (!CreateDirectoryA(tmp_new, NULL)) {
+        snprintf(msg, sizeof(msg),
+            "ERROR: failed to create temp new dir: %s (err %lu)",
+            tmp_new, GetLastError());
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
         DeleteFileA(tmp_patch);
         return 0;
     }
+    snprintf(msg, sizeof(msg), "Temp new dir: %s", tmp_new);
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
 
     /* Open diff as stream */
     hpatch_TFileStreamInput diff_stream;
     hpatch_TFileStreamInput_init(&diff_stream);
     int ok = 0;
 
-    if (!hpatch_TFileStreamInput_open(&diff_stream, tmp_patch))
+    if (!hpatch_TFileStreamInput_open(&diff_stream, tmp_patch)) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("ERROR: failed to open patch file stream"));
         goto cleanup_files;
+    }
 
     /* Select decompressor */
     TDirDiffInfo ddi;
     memset(&ddi, 0, sizeof(ddi));
-    if (!getDirDiffInfo(&ddi, &diff_stream.base))
+    if (!getDirDiffInfo(&ddi, &diff_stream.base)) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("ERROR: getDirDiffInfo failed — patch data corrupt or not a dir diff"));
         goto cleanup_stream;
+    }
+    snprintf(msg, sizeof(msg), "Diff info OK — compress type: \"%s\"",
+             (const char*)ddi.hdiffInfo.compressType);
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
     hpatch_TFileStreamInput_setOffset(&diff_stream, 0);
 
     hpatch_TDecompress *dec = _pick_decompressor(
         (const char*)ddi.hdiffInfo.compressType);
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+        (LPARAM)_strdup(dec ? "Decompressor: found" : "Decompressor: none (uncompressed)"));
 
     /* Initialise patcher */
     TDirPatcher patcher;
     TDirPatcher_init(&patcher);
 
     const TDirDiffInfo *pddi = NULL;
-    if (!TDirPatcher_open(&patcher, &diff_stream.base, &pddi))
+    if (!TDirPatcher_open(&patcher, &diff_stream.base, &pddi)) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("ERROR: TDirPatcher_open failed"));
         goto cleanup_patcher;
+    }
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("TDirPatcher_open OK"));
 
-    if (!TDirPatcher_loadDirData(&patcher, dec, game_dir, tmp_new))
+    if (!TDirPatcher_loadDirData(&patcher, dec, game_dir, tmp_new)) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("ERROR: TDirPatcher_loadDirData failed"));
         goto cleanup_patcher;
+    }
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("TDirPatcher_loadDirData OK"));
 
     /* Open streams */
     const hpatch_TStreamInput  *old_ref = NULL;
-    const hpatch_TStreamOutput *new_dir = NULL;
+    const hpatch_TStreamOutput *new_dir_stream = NULL;
 
-    if (!TDirPatcher_openOldRefAsStream(&patcher, 32, &old_ref))
+    if (!TDirPatcher_openOldRefAsStream(&patcher, 32, &old_ref)) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("ERROR: TDirPatcher_openOldRefAsStream failed"));
         goto cleanup_patcher;
+    }
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Old ref stream OK"));
 
     /* Use tempDirPatchListener for in-place update */
     IHPatchDirListener listener = tempDirPatchListener;
-    if (!TDirPatcher_openNewDirAsStream(&patcher, &listener.base, &new_dir))
+    listener.base.listenerImport = &listener; /* fix self-pointer after copy */
+    if (!TDirPatcher_openNewDirAsStream(&patcher, &listener.base, &new_dir_stream)) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("ERROR: TDirPatcher_openNewDirAsStream failed"));
         goto cleanup_refs;
+    }
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("New dir stream OK — patching..."));
 
     /* Patch cache: 4 MB */
     #define DIR_CACHE_SIZE (4 * 1024 * 1024)
     hpatch_byte *cache = (hpatch_byte *)malloc(DIR_CACHE_SIZE);
-    if (!cache) goto cleanup_streams;
+    if (!cache) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("ERROR: out of memory for patch cache"));
+        goto cleanup_streams;
+    }
 
     hpatch_BOOL patch_ok = TDirPatcher_patch(
-        &patcher, new_dir, old_ref,
+        &patcher, new_dir_stream, old_ref,
         cache, cache + DIR_CACHE_SIZE, 1);
 
     free(cache);
     ok = (patch_ok == hpatch_TRUE);
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+        (LPARAM)_strdup(ok ? "TDirPatcher_patch OK" : "ERROR: TDirPatcher_patch FAILED"));
 
 cleanup_streams:
     TDirPatcher_closeNewDirStream(&patcher);
@@ -212,9 +264,8 @@ cleanup_stream:
     hpatch_TFileStreamInput_close(&diff_stream);
 cleanup_files:
     DeleteFileA(tmp_patch);
-    /* tempDirPatchListener removes tmp_new on success; clean up on failure */
     if (!ok) {
-        /* Best-effort recursive delete of temp dir — ignore errors */
+        /* Best-effort recursive delete of temp dir */
         char search[MAX_PATH];
         snprintf(search, MAX_PATH, "%s\\*", tmp_new);
         WIN32_FIND_DATAA fd;
