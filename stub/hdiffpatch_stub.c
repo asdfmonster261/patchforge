@@ -130,11 +130,9 @@ static int apply_dir_hdiff(const char *game_dir,
 {
     char msg[MAX_PATH + 128];
 
-    /* Write patch data to a temp file */
+    /* Write patch data to a temp file (use system temp — just data, no moves needed) */
     char tmp_dir[MAX_PATH], tmp_patch[MAX_PATH], tmp_new[MAX_PATH];
     GetTempPathA(MAX_PATH, tmp_dir);
-    snprintf(msg, sizeof(msg), "Temp dir: %s", tmp_dir);
-    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
 
     GetTempFileNameA(tmp_dir, "pfgp", 0, tmp_patch);
     DeleteFileA(tmp_patch);
@@ -149,13 +147,38 @@ static int apply_dir_hdiff(const char *game_dir,
         fwrite(patch_data, 1, patch_size, fp);
         fclose(fp);
     }
-    snprintf(msg, sizeof(msg), "Patch data written (%zu bytes): %s",
-             patch_size, tmp_patch);
+    snprintf(msg, sizeof(msg), "Patch data written (%zu bytes)", patch_size);
     PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
 
-    /* Temp dir for new files */
-    GetTempFileNameA(tmp_dir, "pfgn", 0, tmp_new);
-    DeleteFileA(tmp_new);
+    /*
+     * IMPORTANT: tmp_new must be on the SAME drive/filesystem as game_dir.
+     * tempDirPatchListener uses rename() to move patched files back in-place,
+     * which fails across drive letters (e.g. C: temp vs Z: game on Wine/Proton).
+     * Place tmp_new as a sibling directory next to game_dir instead.
+     */
+    {
+        /* Find the parent directory of game_dir */
+        char parent[MAX_PATH];
+        strncpy(parent, game_dir, MAX_PATH - 1);
+        parent[MAX_PATH - 1] = '\0';
+        /* Strip trailing slash if present */
+        size_t plen = strlen(parent);
+        if (plen > 1 && (parent[plen-1] == '\\' || parent[plen-1] == '/'))
+            parent[--plen] = '\0';
+        /* Find last separator */
+        char *sep = strrchr(parent, '\\');
+        if (!sep) sep = strrchr(parent, '/');
+        if (sep) {
+            *sep = '\0';
+        } else {
+            /* game_dir has no parent — fall back to system temp */
+            strncpy(parent, tmp_dir, MAX_PATH - 1);
+        }
+        /* Generate a unique name in parent */
+        GetTempFileNameA(parent, "pfgn", 0, tmp_new);
+        DeleteFileA(tmp_new);
+    }
+
     if (!CreateDirectoryA(tmp_new, NULL)) {
         snprintf(msg, sizeof(msg),
             "ERROR: failed to create temp new dir: %s (err %lu)",
