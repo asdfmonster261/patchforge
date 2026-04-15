@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+*.egg
+
+# Stub build artifacts
+stub/prebuilt/*.exe
+stub/third_party/_build/
+stub/third_party/zlib/*/bin/
+stub/third_party/zlib/*/lib/pkgconfig/
+
+# Engine binaries (built locally via build_linux_engines.sh)
+engines/linux-x64/
+engines/linux-x86/
+
+# Patch output
+*.xpatch
+*.patch_tmp
+
+# IDE
+.vscode/
+.idea/
+*.swp
