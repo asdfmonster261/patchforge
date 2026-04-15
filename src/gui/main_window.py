@@ -153,13 +153,13 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(8)
 
-        # Files
-        files_grp = QGroupBox("Files")
+        # Directories
+        files_grp = QGroupBox("Directories")
         fg = QVBoxLayout(files_grp)
         fg.setSpacing(5)
-        self.src_picker = FilePicker("Source file:", "open", "All files (*)")
-        self.tgt_picker = FilePicker("Target file:", "open", "All files (*)")
-        self.out_picker = FilePicker("Output dir:",  "dir")
+        self.src_picker = FilePicker("Source dir:", "dir")
+        self.tgt_picker = FilePicker("Target dir:", "dir")
+        self.out_picker = FilePicker("Output dir:", "dir")
         fg.addWidget(self.src_picker)
         fg.addWidget(self.tgt_picker)
         fg.addWidget(self.out_picker)
@@ -441,8 +441,6 @@ class MainWindow(QMainWindow):
             self._log(f"   Output:      {result.output_path}")
             self._log(f"   Patch size:  {_fmt_size(result.patch_size)}")
             self._log(f"   Output size: {_fmt_size(result.output_size)}")
-            self._log(f"   Orig checksum: {result.orig_checksum}")
-            self._log(f"   New  checksum: {result.new_checksum}")
             self.status_bar.showMessage(f"Built: {Path(result.output_path).name}")
             self.status_lbl.setText("Build complete")
         else:
@@ -516,8 +514,8 @@ class MainWindow(QMainWindow):
             app_name      = self.app_name_edit.text().strip(),
             version       = self.version_edit.text().strip(),
             description   = self.desc_edit.text().strip(),
-            source_file   = self.src_picker.path,
-            target_file   = self.tgt_picker.path,
+            source_dir    = self.src_picker.path,
+            target_dir    = self.tgt_picker.path,
             output_dir    = self.out_picker.path,
             engine        = self._engine_key(),
             compression   = self._compression_key(),
@@ -534,10 +532,10 @@ class MainWindow(QMainWindow):
             errors = []
             if not s.app_name:
                 errors.append("App name is required")
-            if not s.source_file:
-                errors.append("Source file is required")
-            if not s.target_file:
-                errors.append("Target file is required")
+            if not s.source_dir:
+                errors.append("Source directory is required")
+            if not s.target_dir:
+                errors.append("Target directory is required")
             if errors:
                 for e in errors:
                     self._log(f"✗  {e}", color=ERROR)
@@ -548,8 +546,8 @@ class MainWindow(QMainWindow):
         self.app_name_edit.setText(s.app_name)
         self.version_edit.setText(s.version)
         self.desc_edit.setText(s.description)
-        self.src_picker.path = s.source_file
-        self.tgt_picker.path = s.target_file
+        self.src_picker.path = s.source_dir
+        self.tgt_picker.path = s.target_dir
         self.out_picker.path = s.output_dir
 
         engine_map = {"hdiffpatch": 0, "xdelta3": 1, "jojodiff": 2}

@@ -37,10 +37,13 @@ class HDiffPatchEngine(PatchEngine):
         compression: str = "lzma/ultra",
     ) -> EngineResult:
         codec = _COMPRESSION_MAP.get(compression, _COMPRESSION_MAP["lzma/ultra"])
+        # Append "/" so hdiffz treats paths as directories even without trailing slash
+        src_arg = str(source).rstrip("/") + "/"
+        tgt_arg = str(target).rstrip("/") + "/"
         cmd = [str(self._binary()), "-f"]
         if codec:
             cmd += [f"-c-{codec}"]
-        cmd += [str(source), str(target), str(output)]
+        cmd += [src_arg, tgt_arg, str(output)]
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)

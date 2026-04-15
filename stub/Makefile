@@ -24,8 +24,12 @@ ZLIB32   = $(TP)/zlib/x86
 BZ2_64   = $(TP)/bzip2/x64
 BZ2_32   = $(TP)/bzip2/x86
 
+DIRPATCH = $(HDIFF)/dirDiffPatch/dir_patch
+
 CFLAGS_COMMON = -O2 -Wall -mwindows \
     -I$(HDIFF) -I$(HDIFF)/libHDiffPatch/HPatch \
+    -I$(HDIFF)/dirDiffPatch \
+    -I$(DIRPATCH) \
     -I$(XD3) \
     -I$(JOJO)/headers \
     -I$(LZMA) \
@@ -39,9 +43,11 @@ CFLAGS_HDIFF_BASE = $(CFLAGS_COMMON) \
     -D_IS_NEED_DEFAULT_ChecksumPlugin=0 \
     -D_CompressPlugin_lzma \
     -D_CompressPlugin_lzma2 \
-    -D_IS_NEED_DIR_DIFF_PATCH=0 \
+    -D_IS_NEED_DIR_DIFF_PATCH=1 \
     -D_IS_NEED_BSDIFF=0 \
-    -D_IS_NEED_VCDIFF=0
+    -D_IS_NEED_VCDIFF=0 \
+    -D_IS_NEED_SINGLE_STREAM_DIFF=0 \
+    -D_IS_NEED_tempDirPatchListener=1
 
 # lzma only (no zlib/bz2 deps) — default if build_deps.sh not yet run
 CFLAGS_HDIFF = $(CFLAGS_HDIFF_BASE)
@@ -67,13 +73,19 @@ CFLAGS_XD3 = $(CFLAGS_COMMON) \
 
 CFLAGS_JOJO = $(CFLAGS_COMMON)
 
-LIBS     = -lcomdlg32 -lshell32 -ldwmapi -ladvapi32
+LIBS     = -lcomdlg32 -lshell32 -ldwmapi -ladvapi32 -lole32
 LIBS_FULL64 = -L$(ZLIB64)/lib -L$(BZ2_64)/lib -lz -lbz2 $(LIBS)
 LIBS_FULL32 = -L$(ZLIB32)/lib -L$(BZ2_32)/lib -lz -lbz2 $(LIBS)
 
 HDIFF_SRCS = \
     $(HDIFF)/libHDiffPatch/HPatch/patch.c \
     $(HDIFF)/file_for_patch.c \
+    $(DIRPATCH)/dir_patch.c \
+    $(DIRPATCH)/dir_patch_tools.c \
+    $(DIRPATCH)/new_dir_output.c \
+    $(DIRPATCH)/new_stream.c \
+    $(DIRPATCH)/ref_stream.c \
+    $(DIRPATCH)/res_handle_limit.c \
     $(LZMA)/LzmaDec.c \
     $(LZMA)/Lzma2Dec.c \
     $(LZMA)/7zStream.c \
