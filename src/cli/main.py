@@ -330,7 +330,7 @@ def _cmd_show_project(args):
 
     print(f"Project: {args.project}")
     for key, val in asdict(s).items():
-        if val:
+        if val is not None and val != "" and val != []:
             print(f"  {key:<20} {val}")
 
 

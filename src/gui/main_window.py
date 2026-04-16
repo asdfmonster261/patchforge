@@ -862,6 +862,15 @@ class MainWindow(QMainWindow):
                 errors.append("Source directory is required")
             if not s.target_dir:
                 errors.append("Target directory is required")
+            if s.find_method == "registry" and not s.registry_key:
+                errors.append("Registry key is required when find method is Registry")
+            if s.find_method == "ini":
+                if not s.ini_path:
+                    errors.append("INI file path is required when find method is INI")
+                if not s.ini_section:
+                    errors.append("INI section is required when find method is INI")
+                if not s.ini_key:
+                    errors.append("INI key is required when find method is INI")
             if errors:
                 for e in errors:
                     self._log(f"✗  {e}", color=ERROR)
