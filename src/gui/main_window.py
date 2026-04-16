@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject
-from PySide6.QtGui import QFont, QTextCursor, QColor
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QUrl
+from PySide6.QtGui import QFont, QTextCursor, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
@@ -61,6 +61,8 @@ class FilePicker(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
+        self.setAcceptDrops(True)
+
         self.lbl = QLabel(label)
         self.lbl.setFixedWidth(90)
         self.edit = QLineEdit()
@@ -88,6 +90,27 @@ class FilePicker(QWidget):
                                                    self._filter)
         if path:
             self.edit.setText(path)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls:
+                local = urls[0].toLocalFile()
+                if self._mode == "dir":
+                    if Path(local).is_dir():
+                        event.acceptProposedAction()
+                        return
+                else:
+                    if Path(local).is_file():
+                        event.acceptProposedAction()
+                        return
+        event.ignore()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls:
+            self.edit.setText(urls[0].toLocalFile())
+            event.acceptProposedAction()
 
     @property
     def path(self) -> str:
@@ -475,6 +498,10 @@ class MainWindow(QMainWindow):
         self.log.setPlaceholderText("Build output will appear here…")
         og.addWidget(self.log, 1)
 
+        self.open_folder_btn = QPushButton("Open Output Folder")
+        self.open_folder_btn.setVisible(False)
+        og.addWidget(self.open_folder_btn)
+
         layout.addWidget(out_grp, 1)
         return w
 
@@ -669,10 +696,20 @@ class MainWindow(QMainWindow):
             self._log(f"   Output size: {_fmt_size(result.output_size)}")
             self.status_bar.showMessage(f"Built: {Path(result.output_path).name}")
             self.status_lbl.setText("Build complete")
+            out_dir = str(Path(result.output_path).parent)
+            try:
+                self.open_folder_btn.clicked.disconnect()
+            except RuntimeError:
+                pass
+            self.open_folder_btn.clicked.connect(
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(out_dir))
+            )
+            self.open_folder_btn.setVisible(True)
         else:
             self._log(f"\n✗  Build failed: {result.error}", color=ERROR)
             self.status_bar.showMessage("Build failed")
             self.status_lbl.setText("Failed")
+            self.open_folder_btn.setVisible(False)
 
     def _on_thread_done(self):
         self.build_btn.setEnabled(True)
