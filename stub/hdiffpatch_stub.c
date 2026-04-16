@@ -493,6 +493,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             char b[128]; snprintf(b, sizeof(b), "Compression: %s", g_meta.compression);
             log_append(b);
         }
+        if (g_meta.company_info[0]) {
+            char b[256]; snprintf(b, sizeof(b), "Publisher: %s", g_meta.company_info);
+            log_append(b);
+        }
+        if (g_meta.copyright[0]) {
+            char b[256]; snprintf(b, sizeof(b), "%s", g_meta.copyright);
+            log_append(b);
+        }
         break;
     }
 
@@ -701,7 +709,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     RegisterClassExA(&wc);
 
-    const char *title = g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher";
+    const char *title = g_meta.window_title[0] ? g_meta.window_title :
+                        (g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher");
     /* Compute outer window size from desired client area so the non-client
        frame (title bar + borders) never clips controls at the bottom. */
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
