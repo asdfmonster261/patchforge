@@ -2,10 +2,14 @@
  * stub_common.h — shared Win32 UI and patch-data reading for PatchForge stubs
  *
  * Patch file layout (read from end of exe):
- *   [patch data bytes .............]
- *   [JSON metadata null-terminated ]
- *   [metadata length  — 4 bytes LE ]
- *   [magic "XPATCH01" — 8 bytes    ]
+ *   [patch data bytes            ]
+ *   [extra_file_0 bytes          ]  \
+ *   [extra_file_1 bytes          ]   > zero or more extra files
+ *   ...                              /
+ *   [backdrop image bytes        ]   (zero bytes if no backdrop)
+ *   [JSON metadata UTF-8         ]
+ *   [metadata length  — 4 bytes LE]
+ *   [magic "XPATCH01" — 8 bytes  ]
  */
 
 #ifndef STUB_COMMON_H
@@ -14,10 +18,12 @@
 #define WIN32_LEAN_AND_MEAN
 #define _WIN32_WINNT 0x0600  /* Vista+ for DWM */
 #include <windows.h>
+#include <shellapi.h>
 #include <dwmapi.h>
 #include <commdlg.h>
 #include <shlobj.h>
 #include <wincrypt.h>
+#include <wincodec.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,13 +61,21 @@
 #define WM_PATCH_PROG  (WM_USER + 2)
 #define WM_LOG_MSG     (WM_USER + 3)
 
+/* ---- Extra-file metadata (one per bundled file) ---- */
+#define MAX_EXTRA_FILES 64
+typedef struct {
+    char    dest[512];    /* destination path relative to game folder */
+    int64_t offset;       /* byte offset in this exe */
+    int64_t size;         /* byte length */
+} ExtraFileMeta;
+
 /* ---- Patch metadata (populated from JSON at startup) ---- */
 typedef struct {
     char app_name[256];
     char version[64];
     char description[512];
     char engine[32];        /* "xdelta3", "jojodiff", "hdiffpatch" */
-    char compression[32];   /* e.g. "lzma/ultra" */
+    char compression[32];
     char verify_method[32]; /* "crc32c", "md5", "filesize" */
     char find_method[32];   /* "manual", "registry", "ini" */
     char registry_key[512];
@@ -69,9 +83,24 @@ typedef struct {
     char ini_path[512];
     char ini_section[128];
     char ini_key[128];
-    char *checksums;        /* malloc'd "rel/path1|hash1;rel/path2|hash2;..." or NULL */
-    int64_t patch_data_offset; /* byte offset in this exe where patch data starts */
+    char *checksums;        /* malloc'd or NULL */
+    int64_t patch_data_offset;
     int64_t patch_data_size;
+
+    /* New: patching behaviour */
+    int  delete_extra_files;    /* 1 = delete files absent from target (default) */
+    char run_before[512];       /* command to run before patching */
+    char run_after[512];        /* command to run after patching */
+    char backup_at[32];         /* "disabled"|"same_folder"|"custom" */
+    char backup_path[512];      /* used when backup_at == "custom" */
+
+    /* New: backdrop image */
+    int64_t backdrop_offset;
+    int64_t backdrop_size;
+
+    /* New: extra bundled files */
+    int          num_extra_files;
+    ExtraFileMeta extra_files_meta[MAX_EXTRA_FILES];
 } PatchMeta;
 
 /* ---- Global state ---- */
@@ -87,6 +116,12 @@ extern HFONT g_font_normal;
 extern HFONT g_font_title;
 extern PatchMeta g_meta;
 extern char g_exe_path[MAX_PATH];
+
+/* Pre-selected game folder path (set from argv[1] on elevated relaunch) */
+static char g_preset_path[MAX_PATH] = {0};
+
+/* Cached backdrop bitmap (NULL if no backdrop) */
+static HBITMAP g_backdrop_bmp = NULL;
 
 /* ---- Forward declarations ---- */
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -141,7 +176,6 @@ static char *json_get_str_alloc(const char *json, const char *key)
     while (*p == ' ' || *p == ':' || *p == ' ') p++;
     if (*p != '"') return NULL;
     p++;
-    /* Measure length, accounting for escape sequences */
     const char *start = p;
     size_t len = 0;
     while (*p && *p != '"') {
@@ -157,6 +191,56 @@ static char *json_get_str_alloc(const char *json, const char *key)
     }
     out[i] = '\0';
     return out;
+}
+
+/* ---- Parse extra_files array from JSON ---- */
+static void json_parse_extra_files(const char *json, PatchMeta *meta)
+{
+    meta->num_extra_files = 0;
+    const char *p = strstr(json, "\"extra_files\"");
+    if (!p) return;
+    p += strlen("\"extra_files\"");
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '[') return;
+    p++;
+
+    int n = 0;
+    while (*p && *p != ']' && n < MAX_EXTRA_FILES) {
+        while (*p == ' ' || *p == ',') p++;
+        if (*p != '{') break;
+        /* Find matching closing brace */
+        const char *obj_start = p;
+        int depth = 0;
+        const char *q = p;
+        while (*q) {
+            if (*q == '{') depth++;
+            else if (*q == '}') { depth--; if (depth == 0) break; }
+            q++;
+        }
+        if (depth != 0) break;
+        /* Copy object into a temp buffer for simple key extraction */
+        size_t obj_len = (size_t)(q - obj_start + 1);
+        char *obj = (char *)malloc(obj_len + 1);
+        if (!obj) break;
+        memcpy(obj, obj_start, obj_len);
+        obj[obj_len] = '\0';
+
+        char dest[512] = {0};
+        json_get_str(obj, "dest", dest, sizeof(dest));
+        int64_t offset = json_get_int(obj, "offset");
+        int64_t size   = json_get_int(obj, "size");
+        free(obj);
+
+        if (dest[0] && size > 0) {
+            strncpy(meta->extra_files_meta[n].dest, dest, 511);
+            meta->extra_files_meta[n].dest[511] = '\0';
+            meta->extra_files_meta[n].offset = offset;
+            meta->extra_files_meta[n].size   = size;
+            n++;
+        }
+        p = q + 1;
+    }
+    meta->num_extra_files = n;
 }
 
 /* ---- Read patch metadata and data from end of this exe ---- */
@@ -190,7 +274,7 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     pos.QuadPart = file_size - PATCH_MAGIC_LEN - 4;
     SetFilePointerEx(f, pos, NULL, FILE_BEGIN);
     ReadFile(f, &meta_len, 4, &rd, NULL);
-    if (meta_len == 0 || meta_len > 65536) { CloseHandle(f); return 0; }
+    if (meta_len == 0 || meta_len > (1 << 20)) { CloseHandle(f); return 0; }
 
     /* Read JSON metadata */
     char *json = (char *)malloc(meta_len + 1);
@@ -200,10 +284,11 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     json[meta_len] = '\0';
 
     /* Read patch data */
-    int64_t data_end = file_size - PATCH_MAGIC_LEN - 4 - meta_len;
+    int64_t data_end   = file_size - PATCH_MAGIC_LEN - 4 - meta_len;
     int64_t data_start = json_get_int(json, "patch_data_offset");
-    int64_t data_size  = data_end - data_start;
+    int64_t data_size  = json_get_int(json, "patch_data_size");
     if (data_size <= 0 || data_start < 0) { free(json); CloseHandle(f); return 0; }
+    (void)data_end;
 
     char *data = (char *)malloc((size_t)data_size);
     pos.QuadPart = data_start;
@@ -236,6 +321,27 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     meta->patch_data_offset = data_start;
     meta->patch_data_size   = data_size;
 
+    /* Patching-behaviour fields (default delete_extra_files=1) */
+    meta->delete_extra_files = (int)json_get_int(json, "delete_extra_files");
+    if (meta->delete_extra_files == 0) {
+        /* Explicitly set to 0 — honour it.  JSON default absent means 1. */
+        char tmp[8] = {0};
+        if (!json_get_str(json, "delete_extra_files", tmp, sizeof(tmp)) || !tmp[0])
+            meta->delete_extra_files = 1;
+    }
+    json_get_str(json, "run_before",  meta->run_before,  sizeof(meta->run_before));
+    json_get_str(json, "run_after",   meta->run_after,   sizeof(meta->run_after));
+    json_get_str(json, "backup_at",   meta->backup_at,   sizeof(meta->backup_at));
+    if (!meta->backup_at[0]) strcpy(meta->backup_at, "same_folder");
+    json_get_str(json, "backup_path", meta->backup_path, sizeof(meta->backup_path));
+
+    /* Backdrop */
+    meta->backdrop_offset = json_get_int(json, "backdrop_offset");
+    meta->backdrop_size   = json_get_int(json, "backdrop_size");
+
+    /* Extra files */
+    json_parse_extra_files(json, meta);
+
     if (json_out) *json_out = json; else free(json);
     *data_out      = data;
     *data_size_out = (size_t)data_size;
@@ -247,7 +353,6 @@ static int find_via_registry(const PatchMeta *meta, char *out, int out_len)
 {
     if (!meta->registry_key[0]) return 0;
     HKEY root = HKEY_LOCAL_MACHINE;
-    /* Try HKLM first, then HKCU */
     for (int i = 0; i < 2; i++) {
         root = (i == 0) ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
         HKEY hk;
@@ -277,9 +382,7 @@ static int find_via_ini(const PatchMeta *meta, char *out, int out_len)
 /* ---- Dark-theme Win32 helpers ---- */
 static void enable_dark_titlebar(HWND hwnd)
 {
-    /* Windows 10 1809+ dark titlebar */
     BOOL dark = TRUE;
-    /* DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (older) or 19 */
     DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
     DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
 }
@@ -298,7 +401,6 @@ static void paint_button(DRAWITEMSTRUCT *dis, COLORREF bg, COLORREF text_col)
     FillRect(dc, &r, br);
     DeleteObject(br);
 
-    /* Border */
     HPEN pen = CreatePen(PS_SOLID, 1, COL_BORDER);
     HPEN old = (HPEN)SelectObject(dc, pen);
     HBRUSH nb = (HBRUSH)GetStockObject(NULL_BRUSH);
@@ -307,7 +409,6 @@ static void paint_button(DRAWITEMSTRUCT *dis, COLORREF bg, COLORREF text_col)
     SelectObject(dc, old); SelectObject(dc, ob);
     DeleteObject(pen);
 
-    /* Text */
     char buf[128] = {0};
     GetWindowTextA(dis->hwndItem, buf, sizeof(buf));
     SetBkMode(dc, TRANSPARENT);
@@ -378,10 +479,6 @@ md5_done:
     return ok;
 }
 
-/*
- * Compute checksum for path using method and return 1 if it matches expected.
- * Returns 1 (pass) if verify_method or expected are empty (nothing to check).
- */
 static int verify_file(const char *path, const char *method, const char *expected)
 {
     if (!method[0] || !expected[0]) return 1;
@@ -401,18 +498,12 @@ static int verify_file(const char *path, const char *method, const char *expecte
         int64_t sz = ((int64_t)fa.nFileSizeHigh << 32) | fa.nFileSizeLow;
         snprintf(computed, sizeof(computed), "%lld", (long long)sz);
     } else {
-        return 1; /* unknown method — skip */
+        return 1;
     }
 
     return _stricmp(computed, expected) == 0;
 }
 
-/*
- * Verify all files listed in the checksums string against the patched game dir.
- * checksums format: "rel/path1|hash1;rel/path2|hash2;..."
- * Returns 1 if all pass (or if checksums is NULL/empty), 0 if any fail.
- * Posts log lines via WM_LOG_MSG to g_hwnd — safe to call from a worker thread.
- */
 static int verify_all_checksums(const char *game_dir, const PatchMeta *meta)
 {
     if (!meta->checksums || !meta->checksums[0]) {
@@ -467,6 +558,312 @@ static int verify_all_checksums(const char *game_dir, const PatchMeta *meta)
         PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)summary);
     }
     return all_pass;
+}
+
+/* ---- Recursive directory copy (used for backup) ---- */
+static int pfg_copy_dir(const char *src, const char *dst)
+{
+    if (!CreateDirectoryA(dst, NULL) && GetLastError() != ERROR_ALREADY_EXISTS)
+        return 0;
+
+    char search[MAX_PATH];
+    snprintf(search, MAX_PATH, "%s\\*", src);
+
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(search, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 1;
+
+    int ok = 1;
+    do {
+        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+        char s[MAX_PATH], d[MAX_PATH];
+        snprintf(s, MAX_PATH, "%s\\%s", src, fd.cFileName);
+        snprintf(d, MAX_PATH, "%s\\%s", dst, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            if (!pfg_copy_dir(s, d)) ok = 0;
+        } else {
+            if (!CopyFileA(s, d, FALSE)) ok = 0;
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return ok;
+}
+
+/* ---- Create parent directories for a full path ---- */
+static void pfg_ensure_parent_dirs(const char *full_path)
+{
+    char tmp[MAX_PATH];
+    strncpy(tmp, full_path, MAX_PATH - 1);
+    tmp[MAX_PATH - 1] = '\0';
+    /* Skip drive root, e.g. "C:\" */
+    for (char *p = tmp + 3; *p; p++) {
+        if (*p == '\\') {
+            *p = '\0';
+            CreateDirectoryA(tmp, NULL);
+            *p = '\\';
+        }
+    }
+}
+
+/* ---- Run a command and wait for it to exit ---- */
+static void pfg_run_and_wait(const char *cmd)
+{
+    if (!cmd || !cmd[0]) return;
+    char buf[1024];
+    strncpy(buf, cmd, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    STARTUPINFOA si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+    memset(&pi, 0, sizeof(pi));
+    if (CreateProcessA(NULL, buf, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+}
+
+/* ---- Perform backup using the configured backup_at setting ---- */
+static int pfg_do_backup(const char *game_dir, const PatchMeta *meta)
+{
+    if (_stricmp(meta->backup_at, "disabled") == 0) return 1;
+
+    char backup[MAX_PATH];
+    if (_stricmp(meta->backup_at, "custom") == 0 && meta->backup_path[0]) {
+        snprintf(backup, MAX_PATH, "%s\\%s_backup",
+                 meta->backup_path,
+                 meta->app_name[0] ? meta->app_name : "game");
+    } else {
+        /* same_folder: place sibling of game_dir */
+        snprintf(backup, MAX_PATH, "%s_pfg_backup", game_dir);
+    }
+
+    int ok = pfg_copy_dir(game_dir, backup);
+    if (ok) {
+        char msg[MAX_PATH + 32];
+        snprintf(msg, sizeof(msg), "Backup saved: %s", backup);
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+    } else {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("WARNING: backup incomplete, continuing anyway."));
+    }
+    return ok;
+}
+
+/* ---- Write extra bundled files into the game folder ---- */
+static void pfg_write_extra_files(const char *game_dir, const PatchMeta *meta)
+{
+    if (meta->num_extra_files == 0) return;
+
+    HANDLE exe = CreateFileA(g_exe_path, GENERIC_READ, FILE_SHARE_READ,
+                             NULL, OPEN_EXISTING, 0, NULL);
+    if (exe == INVALID_HANDLE_VALUE) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+            (LPARAM)_strdup("WARNING: could not open exe to extract extra files."));
+        return;
+    }
+
+    for (int i = 0; i < meta->num_extra_files && i < MAX_EXTRA_FILES; i++) {
+        const ExtraFileMeta *ef = &meta->extra_files_meta[i];
+        if (ef->size <= 0 || !ef->dest[0]) continue;
+
+        /* Build full destination path */
+        char full[MAX_PATH];
+        /* If dest starts with drive letter or backslash, use as absolute path */
+        if ((ef->dest[1] == ':') || (ef->dest[0] == '\\')) {
+            strncpy(full, ef->dest, MAX_PATH - 1);
+        } else {
+            snprintf(full, MAX_PATH, "%s\\%s", game_dir, ef->dest);
+        }
+        /* Ensure parent directories exist */
+        pfg_ensure_parent_dirs(full);
+
+        /* Seek to file data in exe */
+        LARGE_INTEGER pos;
+        pos.QuadPart = ef->offset;
+        SetFilePointerEx(exe, pos, NULL, FILE_BEGIN);
+
+        /* Write output file */
+        HANDLE out = CreateFileA(full, GENERIC_WRITE, 0, NULL,
+                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (out == INVALID_HANDLE_VALUE) {
+            char msg[MAX_PATH + 64];
+            snprintf(msg, sizeof(msg), "WARNING: could not create: %s", ef->dest);
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+            continue;
+        }
+
+        int64_t rem = ef->size;
+        char buf[65536];
+        while (rem > 0) {
+            DWORD chunk = (DWORD)(rem > (int64_t)sizeof(buf) ? sizeof(buf) : rem);
+            DWORD rd, wr;
+            ReadFile(exe, buf, chunk, &rd, NULL);
+            WriteFile(out, buf, rd, &wr, NULL);
+            rem -= rd;
+        }
+        CloseHandle(out);
+
+        char msg[MAX_PATH + 32];
+        snprintf(msg, sizeof(msg), "  Installed: %s", ef->dest);
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+    }
+    CloseHandle(exe);
+}
+
+/* ---- Load backdrop image from exe using WIC ---- */
+static void pfg_load_backdrop(void)
+{
+    if (g_meta.backdrop_size <= 0 || g_meta.backdrop_offset <= 0) return;
+
+    /* Read backdrop blob from exe */
+    HANDLE f = CreateFileA(g_exe_path, GENERIC_READ, FILE_SHARE_READ,
+                           NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) return;
+
+    size_t bd_size = (size_t)g_meta.backdrop_size;
+    char *blob = (char *)malloc(bd_size);
+    if (!blob) { CloseHandle(f); return; }
+
+    LARGE_INTEGER pos;
+    pos.QuadPart = g_meta.backdrop_offset;
+    SetFilePointerEx(f, pos, NULL, FILE_BEGIN);
+    DWORD rd;
+    ReadFile(f, blob, (DWORD)bd_size, &rd, NULL);
+    CloseHandle(f);
+
+    /* Create IStream over the memory blob */
+    HGLOBAL hmem = GlobalAlloc(GMEM_MOVEABLE, bd_size);
+    if (!hmem) { free(blob); return; }
+    void *mp = GlobalLock(hmem);
+    memcpy(mp, blob, bd_size);
+    GlobalUnlock(hmem);
+    free(blob);
+
+    IStream *stream = NULL;
+    if (CreateStreamOnHGlobal(hmem, TRUE, &stream) != S_OK) {
+        GlobalFree(hmem);
+        return;
+    }
+
+    /* Create WIC factory via COM */
+    IWICImagingFactory *factory = NULL;
+    if (CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+                         &IID_IWICImagingFactory, (void **)&factory) != S_OK) {
+        stream->lpVtbl->Release(stream);
+        return;
+    }
+
+    IWICBitmapDecoder *decoder = NULL;
+    factory->lpVtbl->CreateDecoderFromStream(
+        factory, stream, NULL, WICDecodeMetadataCacheOnDemand, &decoder);
+    stream->lpVtbl->Release(stream);
+
+    if (!decoder) { factory->lpVtbl->Release(factory); return; }
+
+    IWICBitmapFrameDecode *frame = NULL;
+    decoder->lpVtbl->GetFrame(decoder, 0, &frame);
+    decoder->lpVtbl->Release(decoder);
+
+    if (!frame) { factory->lpVtbl->Release(factory); return; }
+
+    /* Convert to 32bpp BGR */
+    IWICFormatConverter *conv = NULL;
+    factory->lpVtbl->CreateFormatConverter(factory, &conv);
+    conv->lpVtbl->Initialize(conv, (IWICBitmapSource *)frame,
+        &GUID_WICPixelFormat32bppBGR, WICBitmapDitherTypeNone,
+        NULL, 0.0, WICBitmapPaletteTypeCustom);
+    frame->lpVtbl->Release(frame);
+
+    UINT w = 0, h = 0;
+    conv->lpVtbl->GetSize(conv, &w, &h);
+
+    if (w == 0 || h == 0) {
+        conv->lpVtbl->Release(conv);
+        factory->lpVtbl->Release(factory);
+        return;
+    }
+
+    BITMAPINFO bmi;
+    memset(&bmi, 0, sizeof(bmi));
+    bmi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth       = (LONG)w;
+    bmi.bmiHeader.biHeight      = -(LONG)h; /* top-down */
+    bmi.bmiHeader.biPlanes      = 1;
+    bmi.bmiHeader.biBitCount    = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void *bits = NULL;
+    HDC screen = GetDC(NULL);
+    g_backdrop_bmp = CreateDIBSection(screen, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+    ReleaseDC(NULL, screen);
+
+    if (g_backdrop_bmp && bits) {
+        UINT stride = w * 4;
+        conv->lpVtbl->CopyPixels(conv, NULL, stride, stride * h, (BYTE *)bits);
+    }
+
+    conv->lpVtbl->Release(conv);
+    factory->lpVtbl->Release(factory);
+}
+
+/* ---- Render backdrop (or solid fill) for WM_PAINT ---- */
+static void pfg_paint_background(HWND hwnd, HDC dc)
+{
+    RECT r;
+    GetClientRect(hwnd, &r);
+    if (g_backdrop_bmp) {
+        HDC mem = CreateCompatibleDC(dc);
+        HGDIOBJ old = SelectObject(mem, g_backdrop_bmp);
+        BITMAP bm;
+        GetObjectA(g_backdrop_bmp, sizeof(bm), &bm);
+        StretchBlt(dc, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                   mem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+        SelectObject(mem, old);
+        DeleteDC(mem);
+    } else {
+        FillRect(dc, &r, g_brush_bg);
+    }
+}
+
+/* ---- Smart UAC elevation ---- */
+/* Returns 1 if we have write access (proceed), 0 if we relaunched elevated
+   (the current window will close; do NOT start the patch thread). */
+static int pfg_check_elevate(const char *path)
+{
+    /* Write-test: create a temp file in the target directory */
+    char probe[MAX_PATH];
+    snprintf(probe, MAX_PATH, "%s\\.pfg_uac_probe", path);
+    HANDLE h = CreateFileA(probe, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
+    if (h != INVALID_HANDLE_VALUE) {
+        CloseHandle(h);
+        return 1; /* have write access */
+    }
+    if (GetLastError() != ERROR_ACCESS_DENIED) return 1; /* not a permission issue */
+
+    /* Need elevation — relaunch as administrator, passing path as argument */
+    char params[MAX_PATH + 2];
+    snprintf(params, sizeof(params), "\"%s\"", path);
+
+    SHELLEXECUTEINFOA sei;
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize       = sizeof(sei);
+    sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
+    sei.hwnd         = g_hwnd;
+    sei.lpVerb       = "runas";
+    sei.lpFile       = g_exe_path;
+    sei.lpParameters = params;
+    sei.nShow        = SW_SHOWNORMAL;
+
+    if (ShellExecuteExA(&sei)) {
+        if (sei.hProcess) CloseHandle(sei.hProcess);
+        /* Self-close so the elevated instance is the only one running */
+        PostMessageA(g_hwnd, WM_DESTROY, 0, 0);
+        return 0;
+    }
+    /* User declined UAC or ShellExecuteEx failed — proceed without elevation */
+    return 1;
 }
 
 /* ---- Log and status helpers ---- */

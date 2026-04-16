@@ -90,37 +90,7 @@ static hpatch_TDecompress *_pick_decompressor(const char *compressType)
     return NULL; /* no compression */
 }
 
-/* ---- Recursively copy a directory (for backup) ---- */
-static int _copy_dir_recursive(const char *src, const char *dst)
-{
-    /* Create destination */
-    if (!CreateDirectoryA(dst, NULL) &&
-        GetLastError() != ERROR_ALREADY_EXISTS)
-        return 0;
-
-    char search[MAX_PATH];
-    snprintf(search, MAX_PATH, "%s\\*", src);
-
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(search, &fd);
-    if (h == INVALID_HANDLE_VALUE) return 1; /* empty dir is ok */
-
-    int ok = 1;
-    do {
-        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, ".."))
-            continue;
-        char s[MAX_PATH], d[MAX_PATH];
-        snprintf(s, MAX_PATH, "%s\\%s", src, fd.cFileName);
-        snprintf(d, MAX_PATH, "%s\\%s", dst, fd.cFileName);
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            if (!_copy_dir_recursive(s, d)) ok = 0;
-        } else {
-            if (!CopyFileA(s, d, FALSE)) ok = 0;
-        }
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-    return ok;
-}
+/* _copy_dir_recursive is now pfg_copy_dir in stub_common.h */
 
 /* ---- Apply directory patch using TDirPatcher ---- */
 static int apply_dir_hdiff(const char *game_dir,
@@ -318,18 +288,16 @@ static DWORD WINAPI patch_thread(LPVOID arg)
     PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Reading patch data..."));
     PostMessageA(g_hwnd, WM_PATCH_PROG, 5, 0);
 
+    /* Run before */
+    if (g_meta.run_before[0]) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Running pre-patch command..."));
+        pfg_run_and_wait(g_meta.run_before);
+    }
+
+    /* Backup */
     if (a->do_backup) {
         PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Creating backup..."));
-        char backup[MAX_PATH];
-        snprintf(backup, MAX_PATH, "%s_pfg_backup", a->game_dir);
-        if (!_copy_dir_recursive(a->game_dir, backup)) {
-            PostMessageA(g_hwnd, WM_LOG_MSG, 0,
-                (LPARAM)_strdup("WARNING: backup incomplete, continuing anyway."));
-        } else {
-            char msg[MAX_PATH + 32];
-            snprintf(msg, sizeof(msg), "Backup saved: %s", backup);
-            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
-        }
+        pfg_do_backup(a->game_dir, &g_meta);
     }
 
     PostMessageA(g_hwnd, WM_PATCH_PROG, 15, 0);
@@ -344,6 +312,18 @@ static DWORD WINAPI patch_thread(LPVOID arg)
             PostMessageA(g_hwnd, WM_LOG_MSG, 0,
                 (LPARAM)_strdup("WARNING: One or more files failed verification."));
         }
+    }
+
+    /* Extra files */
+    if (ok && g_meta.num_extra_files > 0) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Installing extra files..."));
+        pfg_write_extra_files(a->game_dir, &g_meta);
+    }
+
+    /* Run after */
+    if (ok && g_meta.run_after[0]) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Running post-patch command..."));
+        pfg_run_and_wait(g_meta.run_after);
     }
 
     g_patch_result = ok;
@@ -459,14 +439,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             500, 352, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
-        /* Auto-detect game folder */
+        /* Auto-detect game folder; preset path (from UAC relaunch) takes priority */
         char auto_path[MAX_PATH] = {0};
         if (strcmp(g_meta.find_method, "registry") == 0)
             find_via_registry(&g_meta, auto_path, MAX_PATH);
         else if (strcmp(g_meta.find_method, "ini") == 0)
             find_via_ini(&g_meta, auto_path, MAX_PATH);
-        if (auto_path[0])
-            SetWindowTextA(g_hwnd_filepath, auto_path);
+        {
+            const char *init = g_preset_path[0] ? g_preset_path : auto_path;
+            if (init[0]) SetWindowTextA(g_hwnd_filepath, init);
+        }
 
         log_append("Engine: HDiffPatch (directory patch)");
         if (g_meta.version[0]) {
@@ -529,6 +511,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 set_status("Folder not found. Please select a valid directory.", COL_ERROR);
                 return 0;
             }
+            /* Smart UAC: test write access; relaunch elevated if needed */
+            if (!pfg_check_elevate(path)) return 0;
+
             EnableWindow(g_hwnd_btn_patch, FALSE);
             set_status("Patching...", COL_TEXT);
 
@@ -578,9 +563,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(hwnd, &ps);
-        RECT r;
-        GetClientRect(hwnd, &r);
-        FillRect(dc, &r, g_brush_bg);
+        pfg_paint_background(hwnd, dc);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -632,7 +615,19 @@ int do_patch(const char *t, const char *d, size_t s) { (void)t;(void)d;(void)s; 
 /* ---- WinMain ---- */
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
 {
-    (void)hp; (void)cmd;
+    (void)hp;
+
+    /* Parse first argument as pre-selected game folder (from UAC relaunch) */
+    if (cmd && cmd[0]) {
+        char *src = cmd;
+        char *dst = g_preset_path;
+        char *end = g_preset_path + MAX_PATH - 1;
+        if (*src == '"') src++;
+        while (*src && *src != '"' && dst < end) *dst++ = *src++;
+        *dst = '\0';
+    }
+
+    CoInitialize(NULL);
 
     if (!read_patch_meta_impl(&g_meta, NULL, &g_patch_data, &g_patch_size)) {
         MessageBoxA(NULL,
@@ -641,6 +636,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
             "PatchForge", MB_OK | MB_ICONERROR);
         return 1;
     }
+
+    pfg_load_backdrop();
 
     g_brush_bg    = CreateSolidBrush(COL_BG);
     g_brush_light = CreateSolidBrush(COL_BG_LIGHT);
@@ -685,9 +682,11 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
 
     free(g_meta.checksums);
     free(g_patch_data);
+    if (g_backdrop_bmp) DeleteObject(g_backdrop_bmp);
     DeleteObject(g_brush_bg);
     DeleteObject(g_brush_light);
     DeleteObject(g_font_normal);
     DeleteObject(g_font_title);
+    CoUninitialize();
     return (int)msg.wParam;
 }

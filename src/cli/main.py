@@ -112,6 +112,33 @@ def _add_build(sub):
     p.add_argument("--icon-path", metavar="FILE", dest="icon_path",
                    help="Optional .ico file to embed as the patcher's application icon")
 
+    # Feature: custom diff args
+    p.add_argument("--extra-args", metavar="ARGS", dest="extra_diff_args",
+                   help="Extra CLI arguments passed verbatim to the diff engine")
+
+    # Feature: patching behaviour
+    p.add_argument("--delete-extra-files", action="store_true", default=None,
+                   dest="delete_extra_files",
+                   help="Delete game files absent from the target version (default: on)")
+    p.add_argument("--no-delete-extra-files", action="store_false",
+                   dest="delete_extra_files",
+                   help="Keep game files absent from the target version")
+    p.add_argument("--run-before", metavar="CMD", dest="run_before",
+                   help="Shell command to run before patching starts")
+    p.add_argument("--run-after",  metavar="CMD", dest="run_after",
+                   help="Shell command to run after patching succeeds")
+
+    # Feature: backup
+    p.add_argument("--backup-at", choices=["disabled", "same_folder", "custom"],
+                   dest="backup_at",
+                   help="Backup behaviour: disabled / same_folder (default) / custom")
+    p.add_argument("--backup-path", metavar="DIR", dest="backup_path",
+                   help="Backup directory (used when --backup-at custom)")
+
+    # Feature: backdrop
+    p.add_argument("--backdrop", metavar="FILE", dest="backdrop_path",
+                   help="Background image for the patcher window (PNG/JPEG/BMP)")
+
     # Save project after build
     p.add_argument("--save-project", metavar="FILE",
                    help="Save resolved settings to a .xpm project file after building")
@@ -152,6 +179,14 @@ def _cmd_build(args):
     if args.ini_key:        settings.ini_key       = args.ini_key
     if args.arch:           settings.arch          = args.arch
     if args.icon_path:      settings.icon_path     = args.icon_path
+    if args.extra_diff_args:    settings.extra_diff_args    = args.extra_diff_args
+    if args.delete_extra_files is not None:
+                            settings.delete_extra_files = args.delete_extra_files
+    if args.run_before:     settings.run_before    = args.run_before
+    if args.run_after:      settings.run_after     = args.run_after
+    if args.backup_at:      settings.backup_at     = args.backup_at
+    if args.backup_path:    settings.backup_path   = args.backup_path
+    if args.backdrop_path:  settings.backdrop_path = args.backdrop_path
 
     # Save project if requested
     if args.save_project:
@@ -201,6 +236,13 @@ def _add_new_project(sub):
                    dest="verify_method")
     p.add_argument("--arch",        choices=["x64", "x86"])
     p.add_argument("--icon-path",   metavar="FILE", dest="icon_path")
+    p.add_argument("--extra-args",  metavar="ARGS", dest="extra_diff_args")
+    p.add_argument("--run-before",  metavar="CMD",  dest="run_before")
+    p.add_argument("--run-after",   metavar="CMD",  dest="run_after")
+    p.add_argument("--backup-at",   choices=["disabled", "same_folder", "custom"],
+                   dest="backup_at")
+    p.add_argument("--backup-path", metavar="DIR",  dest="backup_path")
+    p.add_argument("--backdrop",    metavar="FILE", dest="backdrop_path")
     p.set_defaults(func=_cmd_new_project)
 
 
@@ -218,6 +260,12 @@ def _cmd_new_project(args):
     if args.verify_method: s.verify_method = args.verify_method
     if args.arch:          s.arch          = args.arch
     if args.icon_path:     s.icon_path     = args.icon_path
+    if args.extra_diff_args:   s.extra_diff_args   = args.extra_diff_args
+    if args.run_before:        s.run_before        = args.run_before
+    if args.run_after:         s.run_after         = args.run_after
+    if args.backup_at:         s.backup_at         = args.backup_at
+    if args.backup_path:       s.backup_path       = args.backup_path
+    if args.backdrop_path:     s.backdrop_path     = args.backdrop_path
 
     out = Path(args.output)
     save(s, out)

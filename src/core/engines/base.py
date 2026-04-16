@@ -32,6 +32,7 @@ class PatchEngine(ABC):
         compression: str = "lzma/ultra",
         threads: int = 1,
         compressor_quality: str = "max",
+        extra_diff_args: str = "",
     ) -> EngineResult:
         """Generate a binary diff from source → target, writing to output."""
         ...

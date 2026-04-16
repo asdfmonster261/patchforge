@@ -11,6 +11,7 @@ Presets mirror ISXPM's three JojoDiff modes (GENERATING_SPEED2=0/1/2):
   minimal — -ff (fastest: skip out-of-buffer compares and pre-scanning)
 """
 
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -56,16 +57,19 @@ class JojoDiffEngine(PatchEngine):
         compression: str = _DEFAULT_PRESET,
         threads: int = 1,
         compressor_quality: str = "max",
+        extra_diff_args: str = "",
     ) -> EngineResult:
         _label, flags = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])
+        extra = shlex.split(extra_diff_args) if extra_diff_args else []
         if source.is_dir():
-            return self._generate_dir(source, target, output, flags, threads)
-        return self._generate_file(source, target, output, flags)
+            return self._generate_dir(source, target, output, flags, threads, extra)
+        return self._generate_file(source, target, output, flags, extra)
 
     # ------------------------------------------------------------------ #
 
-    def _generate_file(self, source, target, output, flags: list[str] = []) -> EngineResult:
-        cmd = [str(self._binary())] + flags + [str(source), str(target), str(output)]
+    def _generate_file(self, source, target, output, flags: list[str] = [],
+                        extra: list[str] = []) -> EngineResult:
+        cmd = [str(self._binary())] + flags + extra + [str(source), str(target), str(output)]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -83,14 +87,15 @@ class JojoDiffEngine(PatchEngine):
         except Exception as exc:
             return EngineResult(success=False, patch_path=None, patch_size=0, error=str(exc))
 
-    def _generate_dir(self, source, target, output, flags: list[str] = [], threads=1) -> EngineResult:
+    def _generate_dir(self, source, target, output, flags: list[str] = [], threads=1,
+                       extra: list[str] = []) -> EngineResult:
         binary = str(self._binary())
 
         def make_patch(src_file: Path, tgt_file: Path) -> bytes:
             with tempfile.NamedTemporaryFile(suffix=".jdf", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
             try:
-                cmd = [binary] + flags + [str(src_file), str(tgt_file), str(tmp_path)]
+                cmd = [binary] + flags + extra + [str(src_file), str(tgt_file), str(tmp_path)]
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     raise RuntimeError(

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QRadioButton, QButtonGroup, QProgressBar, QPlainTextEdit,
     QFileDialog, QSplitter, QSizePolicy, QFrame, QStatusBar,
+    QCheckBox, QListWidget, QListWidgetItem, QScrollArea, QInputDialog,
 )
 
 from .theme import QSS, ACCENT, SUCCESS, ERROR, WARN, TEXT_DIM
@@ -112,8 +113,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PatchForge")
-        self.setMinimumSize(920, 640)
-        self.resize(1060, 700)
+        self.setMinimumSize(960, 680)
+        self.resize(1100, 780)
         self.setStyleSheet(QSS)
 
         self._worker: Optional[BuildWorker] = None
@@ -142,7 +143,7 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(self._build_settings_panel())
         splitter.addWidget(self._build_output_panel())
-        splitter.setSizes([560, 460])
+        splitter.setSizes([580, 480])
 
         # ── Bottom button bar ──
         root.addWidget(HSep())
@@ -154,12 +155,18 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage("Ready")
 
     def _build_settings_panel(self) -> QWidget:
-        w = QWidget()
-        layout = QVBoxLayout(w)
+        # Wrap everything in a scroll area so the panel doesn't get clipped
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
         layout.setContentsMargins(0, 0, 4, 0)
         layout.setSpacing(8)
 
-        # Directories
+        # ── Directories ──────────────────────────────────────────────────
         files_grp = QGroupBox("Directories")
         fg = QVBoxLayout(files_grp)
         fg.setSpacing(5)
@@ -171,7 +178,7 @@ class MainWindow(QMainWindow):
         fg.addWidget(self.out_picker)
         layout.addWidget(files_grp)
 
-        # Patch metadata
+        # ── Patch metadata ───────────────────────────────────────────────
         meta_grp = QGroupBox("Patch Info")
         mg = QGridLayout(meta_grp)
         mg.setSpacing(6)
@@ -215,7 +222,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(meta_grp)
 
-        # Engine + compression + verify
+        # ── Engine + compression + verify ────────────────────────────────
         eng_grp = QGroupBox("Engine & Compression")
         eg = QGridLayout(eng_grp)
         eg.setSpacing(6)
@@ -266,16 +273,22 @@ class MainWindow(QMainWindow):
         arch_layout.addStretch()
         eg.addWidget(arch_widget, 2, 3)
 
+        eg.addWidget(QLabel("Extra diff args:"), 3, 0)
+        self.extra_diff_args_edit = QLineEdit()
+        self.extra_diff_args_edit.setPlaceholderText(
+            "Optional — extra flags passed to the engine CLI")
+        eg.addWidget(self.extra_diff_args_edit, 3, 1, 1, 3)
+
         # Stub warning label
         self.stub_warn_lbl = QLabel()
         self.stub_warn_lbl.setObjectName("dim")
         self.stub_warn_lbl.setWordWrap(True)
         self.stub_warn_lbl.hide()
-        eg.addWidget(self.stub_warn_lbl, 3, 0, 1, 4)
+        eg.addWidget(self.stub_warn_lbl, 4, 0, 1, 4)
 
         layout.addWidget(eng_grp)
 
-        # Target file discovery
+        # ── Target file discovery ────────────────────────────────────────
         find_grp = QGroupBox("Target File Detection")
         find_outer = QVBoxLayout(find_grp)
         find_outer.setSpacing(5)
@@ -301,8 +314,7 @@ class MainWindow(QMainWindow):
         rg.setColumnStretch(1, 1)
         rg.addWidget(QLabel("Key:"),   0, 0)
         self.reg_key_edit = QLineEdit()
-        self.reg_key_edit.setPlaceholderText(
-            r"SOFTWARE\MyCompany\MyApp")
+        self.reg_key_edit.setPlaceholderText(r"SOFTWARE\MyCompany\MyApp")
         rg.addWidget(self.reg_key_edit, 0, 1)
         rg.addWidget(QLabel("Value:"), 1, 0)
         self.reg_val_edit = QLineEdit()
@@ -331,8 +343,111 @@ class MainWindow(QMainWindow):
         find_outer.addWidget(self.ini_panel)
 
         layout.addWidget(find_grp)
+
+        # ── Advanced Patching ────────────────────────────────────────────
+        adv_grp = QGroupBox("Advanced Patching")
+        ag = QGridLayout(adv_grp)
+        ag.setSpacing(6)
+        ag.setColumnStretch(1, 1)
+
+        # delete_extra_files checkbox
+        self.delete_extra_chk = QCheckBox("Delete extra files from game folder")
+        self.delete_extra_chk.setChecked(True)
+        self.delete_extra_chk.setToolTip(
+            "If enabled, files present in the game folder but absent from the\n"
+            "target version will be deleted during patching."
+        )
+        ag.addWidget(self.delete_extra_chk, 0, 0, 1, 3)
+
+        # Extra files list
+        ag.addWidget(QLabel("Extra files:"), 1, 0, Qt.AlignTop)
+        self.extra_files_list = QListWidget()
+        self.extra_files_list.setFixedHeight(72)
+        self.extra_files_list.setToolTip(
+            "Files to copy into the game folder after patching.\n"
+            "Format: dest_path ← src_path"
+        )
+        ag.addWidget(self.extra_files_list, 1, 1)
+        ef_btn_col = QVBoxLayout()
+        ef_btn_col.setSpacing(4)
+        self.ef_add_btn = QPushButton("Add…")
+        self.ef_add_btn.setFixedWidth(60)
+        self.ef_add_btn.clicked.connect(self._on_ef_add)
+        self.ef_remove_btn = QPushButton("Remove")
+        self.ef_remove_btn.setFixedWidth(60)
+        self.ef_remove_btn.clicked.connect(self._on_ef_remove)
+        ef_btn_col.addWidget(self.ef_add_btn)
+        ef_btn_col.addWidget(self.ef_remove_btn)
+        ef_btn_col.addStretch()
+        ef_btn_w = QWidget()
+        ef_btn_w.setLayout(ef_btn_col)
+        ag.addWidget(ef_btn_w, 1, 2)
+
+        # run_before / run_after
+        ag.addWidget(QLabel("Run before:"), 2, 0)
+        self.run_before_edit = QLineEdit()
+        self.run_before_edit.setPlaceholderText("Command to run before patching (optional)")
+        ag.addWidget(self.run_before_edit, 2, 1, 1, 2)
+
+        ag.addWidget(QLabel("Run after:"), 3, 0)
+        self.run_after_edit = QLineEdit()
+        self.run_after_edit.setPlaceholderText("Command to run after patching (optional)")
+        ag.addWidget(self.run_after_edit, 3, 1, 1, 2)
+
+        # Backup
+        ag.addWidget(QLabel("Backup:"), 4, 0)
+        self.backup_combo = QComboBox()
+        self.backup_combo.addItem("Same folder (sibling directory)", userData="same_folder")
+        self.backup_combo.addItem("Custom location",                userData="custom")
+        self.backup_combo.addItem("Disabled",                       userData="disabled")
+        ag.addWidget(self.backup_combo, 4, 1, 1, 2)
+
+        self.backup_path_lbl = QLabel("Backup path:")
+        ag.addWidget(self.backup_path_lbl, 5, 0)
+        self.backup_path_edit = QLineEdit()
+        self.backup_path_edit.setPlaceholderText("Backup directory path")
+        bp_row = QHBoxLayout()
+        bp_row.setSpacing(4)
+        bp_row.addWidget(self.backup_path_edit)
+        self.backup_path_browse = QPushButton("…")
+        self.backup_path_browse.setFixedWidth(26)
+        self.backup_path_browse.clicked.connect(self._on_backup_path_browse)
+        bp_row.addWidget(self.backup_path_browse)
+        bp_w = QWidget()
+        bp_w.setLayout(bp_row)
+        ag.addWidget(bp_w, 5, 1, 1, 2)
+        # hide backup path row initially (same_folder is default)
+        self.backup_path_lbl.hide()
+        bp_w.hide()
+        self._backup_path_widget = bp_w
+
+        # Backdrop image
+        ag.addWidget(QLabel("Backdrop:"), 6, 0)
+        bd_row = QHBoxLayout()
+        bd_row.setSpacing(4)
+        self.backdrop_edit = QLineEdit()
+        self.backdrop_edit.setPlaceholderText(
+            "Optional background image (PNG/JPEG/BMP)")
+        self.backdrop_edit.setReadOnly(True)
+        bd_row.addWidget(self.backdrop_edit)
+        self.backdrop_browse_btn = QPushButton("Browse…")
+        self.backdrop_browse_btn.setFixedWidth(70)
+        self.backdrop_browse_btn.clicked.connect(self._on_backdrop_browse)
+        bd_row.addWidget(self.backdrop_browse_btn)
+        self.backdrop_clear_btn = QPushButton("✕")
+        self.backdrop_clear_btn.setFixedWidth(24)
+        self.backdrop_clear_btn.setToolTip("Clear backdrop")
+        self.backdrop_clear_btn.clicked.connect(lambda: self.backdrop_edit.setText(""))
+        bd_row.addWidget(self.backdrop_clear_btn)
+        bd_w = QWidget()
+        bd_w.setLayout(bd_row)
+        ag.addWidget(bd_w, 6, 1, 1, 2)
+
+        layout.addWidget(adv_grp)
         layout.addStretch()
-        return w
+
+        scroll.setWidget(inner)
+        return scroll
 
     def _build_output_panel(self) -> QWidget:
         w = QWidget()
@@ -393,6 +508,8 @@ class MainWindow(QMainWindow):
         self.find_registry.toggled.connect(self._on_find_method_changed)
         self.find_ini.toggled.connect(self._on_find_method_changed)
 
+        self.backup_combo.currentIndexChanged.connect(self._on_backup_changed)
+
         self.build_btn.clicked.connect(self._on_build)
         self.new_btn.clicked.connect(self._on_new_project)
         self.load_btn.clicked.connect(self._on_load_project)
@@ -447,14 +564,12 @@ class MainWindow(QMainWindow):
         preset_key = self._compression_key()
         qualities = HDiffPatchEngine.qualities_for_preset(preset_key)
 
-        # Remember the current selection so we can restore it if still valid.
         current_quality = self.quality_combo.currentData()
 
         self.quality_combo.blockSignals(True)
         self.quality_combo.clear()
         for key, (lbl, _flag) in qualities.items():
             self.quality_combo.addItem(lbl, userData=key)
-        # Restore previous selection, fall back to default.
         restore = current_quality if current_quality in qualities else DEFAULT_QUALITY
         for i in range(self.quality_combo.count()):
             if self.quality_combo.itemData(i) == restore:
@@ -472,6 +587,49 @@ class MainWindow(QMainWindow):
     def _on_find_method_changed(self):
         self.reg_panel.setVisible(self.find_registry.isChecked())
         self.ini_panel.setVisible(self.find_ini.isChecked())
+
+    def _on_backup_changed(self):
+        is_custom = (self.backup_combo.currentData() == "custom")
+        self.backup_path_lbl.setVisible(is_custom)
+        self._backup_path_widget.setVisible(is_custom)
+
+    def _on_backup_path_browse(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Select Backup Folder",
+            self.backup_path_edit.text() or str(Path.home())
+        )
+        if path:
+            self.backup_path_edit.setText(path)
+
+    def _on_backdrop_browse(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Backdrop Image", "",
+            "Image files (*.png *.jpg *.jpeg *.bmp);;All files (*)"
+        )
+        if path:
+            self.backdrop_edit.setText(path)
+
+    def _on_ef_add(self):
+        src_path, _ = QFileDialog.getOpenFileName(
+            self, "Select file to bundle", str(Path.home()), "All files (*)"
+        )
+        if not src_path:
+            return
+        dest, ok = QInputDialog.getText(
+            self, "Destination path",
+            "Destination path inside game folder\n(e.g. DLC\\pack1.pak):",
+            text=Path(src_path).name,
+        )
+        if not ok or not dest.strip():
+            return
+        dest = dest.strip()
+        item = QListWidgetItem(f"{dest}  ←  {src_path}")
+        item.setData(Qt.UserRole, {"src": src_path, "dest": dest})
+        self.extra_files_list.addItem(item)
+
+    def _on_ef_remove(self):
+        for item in self.extra_files_list.selectedItems():
+            self.extra_files_list.takeItem(self.extra_files_list.row(item))
 
     def _on_build(self):
         if self._thread and self._thread.isRunning():
@@ -577,6 +735,14 @@ class MainWindow(QMainWindow):
             return "ini"
         return "manual"
 
+    def _collect_extra_files(self) -> list:
+        result = []
+        for i in range(self.extra_files_list.count()):
+            data = self.extra_files_list.item(i).data(Qt.UserRole)
+            if data:
+                result.append(data)
+        return result
+
     def _collect_settings(self, validate: bool = True) -> Optional[ProjectSettings]:
         s = ProjectSettings(
             app_name      = self.app_name_edit.text().strip(),
@@ -598,6 +764,15 @@ class MainWindow(QMainWindow):
             threads            = self.threads_combo.currentData(),
             compressor_quality = self.quality_combo.currentData() or DEFAULT_QUALITY,
             icon_path          = self.icon_edit.text().strip(),
+            # New fields
+            extra_diff_args    = self.extra_diff_args_edit.text().strip(),
+            delete_extra_files = self.delete_extra_chk.isChecked(),
+            run_before         = self.run_before_edit.text().strip(),
+            run_after          = self.run_after_edit.text().strip(),
+            backup_at          = self.backup_combo.currentData() or "same_folder",
+            backup_path        = self.backup_path_edit.text().strip(),
+            backdrop_path      = self.backdrop_edit.text().strip(),
+            extra_files        = self._collect_extra_files(),
         )
         if validate:
             errors = []
@@ -658,6 +833,28 @@ class MainWindow(QMainWindow):
             if self.quality_combo.itemData(i) == s.compressor_quality:
                 self.quality_combo.setCurrentIndex(i)
                 break
+
+        # New fields
+        self.extra_diff_args_edit.setText(s.extra_diff_args)
+        self.delete_extra_chk.setChecked(s.delete_extra_files)
+        self.run_before_edit.setText(s.run_before)
+        self.run_after_edit.setText(s.run_after)
+
+        backup_map = {"same_folder": 0, "custom": 1, "disabled": 2}
+        self.backup_combo.setCurrentIndex(backup_map.get(s.backup_at, 0))
+        self._on_backup_changed()
+        self.backup_path_edit.setText(s.backup_path)
+
+        self.backdrop_edit.setText(s.backdrop_path)
+
+        self.extra_files_list.clear()
+        for ef in (s.extra_files or []):
+            src  = ef.get("src", "")
+            dest = ef.get("dest", "")
+            if src or dest:
+                item = QListWidgetItem(f"{dest}  ←  {src}")
+                item.setData(Qt.UserRole, ef)
+                self.extra_files_list.addItem(item)
 
     def _clear_fields(self):
         self._apply_settings(ProjectSettings())

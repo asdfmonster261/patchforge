@@ -11,6 +11,7 @@ Presets mirror ISXPM's three xdelta3 modes (GENERATING_SPEED=0/1/2):
   lzma_mem  — -9 -S lzma -B 536870912  (LZMA secondary + 512 MB source window)
 """
 
+import shlex
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -59,16 +60,20 @@ class XDelta3Engine(PatchEngine):
         compression: str = _DEFAULT_PRESET,
         threads: int = 1,
         compressor_quality: str = "max",
+        extra_diff_args: str = "",
     ) -> EngineResult:
         if source.is_dir():
-            return self._generate_dir(source, target, output, compression, threads)
-        return self._generate_file(source, target, output, compression)
+            return self._generate_dir(source, target, output, compression, threads,
+                                      extra_diff_args)
+        return self._generate_file(source, target, output, compression, extra_diff_args)
 
     # ------------------------------------------------------------------ #
 
-    def _generate_file(self, source, target, output, compression) -> EngineResult:
+    def _generate_file(self, source, target, output, compression,
+                        extra_diff_args: str = "") -> EngineResult:
         _label, args = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])
-        cmd = [str(self._binary()), "-e", "-f"] + args + [
+        extra = shlex.split(extra_diff_args) if extra_diff_args else []
+        cmd = [str(self._binary()), "-e", "-f"] + args + extra + [
             "-s", str(source), str(target), str(output)
         ]
         try:
@@ -83,15 +88,17 @@ class XDelta3Engine(PatchEngine):
         except Exception as exc:
             return EngineResult(success=False, patch_path=None, patch_size=0, error=str(exc))
 
-    def _generate_dir(self, source, target, output, compression, threads=1) -> EngineResult:
+    def _generate_dir(self, source, target, output, compression, threads=1,
+                       extra_diff_args: str = "") -> EngineResult:
         _label, args = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])
+        extra = shlex.split(extra_diff_args) if extra_diff_args else []
         binary = str(self._binary())
 
         def make_patch(src_file: Path, tgt_file: Path) -> bytes:
             with tempfile.NamedTemporaryFile(suffix=".xd3", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
             try:
-                cmd = [binary, "-e", "-f"] + args + [
+                cmd = [binary, "-e", "-f"] + args + extra + [
                     "-s", str(src_file), str(tgt_file), str(tmp_path)
                 ]
                 result = subprocess.run(cmd, capture_output=True, text=True)
