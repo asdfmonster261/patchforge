@@ -279,6 +279,26 @@ class MainWindow(QMainWindow):
         icon_container.setLayout(icon_row)
         mg.addWidget(icon_container, 6, 1, 1, 3)
 
+        mg.addWidget(QLabel("Backdrop:"), 7, 0)
+        bd_row = QHBoxLayout()
+        bd_row.setSpacing(4)
+        self.backdrop_edit = QLineEdit()
+        self.backdrop_edit.setPlaceholderText("Optional background image (PNG/JPEG/BMP)")
+        self.backdrop_edit.setReadOnly(True)
+        bd_row.addWidget(self.backdrop_edit)
+        self.backdrop_browse_btn = QPushButton("Browse…")
+        self.backdrop_browse_btn.setFixedWidth(70)
+        self.backdrop_browse_btn.clicked.connect(self._on_backdrop_browse)
+        bd_row.addWidget(self.backdrop_browse_btn)
+        self.backdrop_clear_btn = QPushButton("✕")
+        self.backdrop_clear_btn.setFixedWidth(24)
+        self.backdrop_clear_btn.setToolTip("Clear backdrop")
+        self.backdrop_clear_btn.clicked.connect(lambda: self.backdrop_edit.setText(""))
+        bd_row.addWidget(self.backdrop_clear_btn)
+        bd_w = QWidget()
+        bd_w.setLayout(bd_row)
+        mg.addWidget(bd_w, 7, 1, 1, 3)
+
         layout.addWidget(meta_grp)
 
         # ── Engine + compression + verify ────────────────────────────────
@@ -479,28 +499,6 @@ class MainWindow(QMainWindow):
         self.backup_path_lbl.hide()
         bp_w.hide()
         self._backup_path_widget = bp_w
-
-        # Backdrop image
-        ag.addWidget(QLabel("Backdrop:"), 6, 0)
-        bd_row = QHBoxLayout()
-        bd_row.setSpacing(4)
-        self.backdrop_edit = QLineEdit()
-        self.backdrop_edit.setPlaceholderText(
-            "Optional background image (PNG/JPEG/BMP)")
-        self.backdrop_edit.setReadOnly(True)
-        bd_row.addWidget(self.backdrop_edit)
-        self.backdrop_browse_btn = QPushButton("Browse…")
-        self.backdrop_browse_btn.setFixedWidth(70)
-        self.backdrop_browse_btn.clicked.connect(self._on_backdrop_browse)
-        bd_row.addWidget(self.backdrop_browse_btn)
-        self.backdrop_clear_btn = QPushButton("✕")
-        self.backdrop_clear_btn.setFixedWidth(24)
-        self.backdrop_clear_btn.setToolTip("Clear backdrop")
-        self.backdrop_clear_btn.clicked.connect(lambda: self.backdrop_edit.setText(""))
-        bd_row.addWidget(self.backdrop_clear_btn)
-        bd_w = QWidget()
-        bd_w.setLayout(bd_row)
-        ag.addWidget(bd_w, 6, 1, 1, 2)
 
         layout.addWidget(adv_grp)
         layout.addStretch()
