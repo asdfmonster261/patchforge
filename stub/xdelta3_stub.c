@@ -469,6 +469,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetBkColor(dc, COL_LOG_BG);
             return (LRESULT)g_brush_log;
         }
+        if (g_backdrop_bmp) {
+            SetBkMode(dc, TRANSPARENT);
+            return (LRESULT)GetStockObject(NULL_BRUSH);
+        }
         SetBkColor(dc, COL_BG);
         return (LRESULT)g_brush_bg;
     }
