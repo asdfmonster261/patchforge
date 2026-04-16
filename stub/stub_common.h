@@ -98,6 +98,11 @@ typedef struct {
     char backup_at[32];         /* "disabled"|"same_folder"|"custom" */
     char backup_path[512];      /* used when backup_at == "custom" */
 
+    /* Change summary (set at build time) */
+    int files_modified;
+    int files_added;
+    int files_removed;
+
     /* New: backdrop image */
     int64_t backdrop_offset;
     int64_t backdrop_size;
@@ -324,6 +329,9 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     json_get_str(json, "ini_key",        meta->ini_key,       sizeof(meta->ini_key));
     meta->checksums         = json_get_str_alloc(json, "checksums");
     meta->source_checksums  = json_get_str_alloc(json, "source_checksums");
+    meta->files_modified    = (int)json_get_int(json, "files_modified");
+    meta->files_added       = (int)json_get_int(json, "files_added");
+    meta->files_removed     = (int)json_get_int(json, "files_removed");
     meta->patch_data_offset = data_start;
     meta->patch_data_size   = data_size;
 

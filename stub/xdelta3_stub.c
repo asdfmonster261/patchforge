@@ -354,34 +354,52 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SendMessageA(vlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         }
 
+        /* Change summary */
+        {
+            int m = g_meta.files_modified, a = g_meta.files_added, r = g_meta.files_removed;
+            if (m + a + r > 0) {
+                char cbuf[128] = {0};
+                int pos = 0;
+                if (m) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos, "%d modified", m);
+                if (a) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos, "%s%d added",
+                                       pos ? "  \xB7  " : "", a);
+                if (r) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos, "%s%d removed",
+                                       pos ? "  \xB7  " : "", r);
+                HWND clbl = CreateWindowExA(0, "STATIC", cbuf,
+                    WS_CHILD | WS_VISIBLE | SS_LEFT,
+                    20, 70, 560, 16, hwnd, NULL, NULL, NULL);
+                SendMessageA(clbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            }
+        }
+
         /* Description */
         if (g_meta.description[0]) {
             HWND desc = CreateWindowExA(0, "STATIC", g_meta.description,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 70, 560, 16, hwnd, NULL, NULL, NULL);
+                20, 88, 560, 16, hwnd, NULL, NULL, NULL);
             SendMessageA(desc, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         }
 
         /* Game folder row */
         HWND flbl = CreateWindowExA(0, "STATIC", "Game folder:",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 100, 90, 18, hwnd, NULL, NULL, NULL);
+            20, 118, 90, 18, hwnd, NULL, NULL, NULL);
         SendMessageA(flbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         g_hwnd_filepath = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            115, 98, 370, 22, hwnd, (HMENU)IDC_FILEPATH, NULL, NULL);
+            115, 116, 370, 22, hwnd, (HMENU)IDC_FILEPATH, NULL, NULL);
         SendMessageA(g_hwnd_filepath, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         CreateWindowExA(0, "BUTTON", "Browse...",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            492, 98, 80, 22, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
+            492, 116, 80, 22, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
 
         /* Backup checkbox */
         g_hwnd_chk_backup = CreateWindowExA(0, "BUTTON",
             "Create backup before patching",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            20, 130, 260, 20, hwnd, (HMENU)IDC_CHK_BACKUP, NULL, NULL);
+            20, 148, 260, 20, hwnd, (HMENU)IDC_CHK_BACKUP, NULL, NULL);
         SendMessageA(g_hwnd_chk_backup, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         SendMessageA(g_hwnd_chk_backup, BM_SETCHECK, BST_CHECKED, 0);
 
@@ -389,7 +407,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON",
             "Verify after patching",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            20, 152, 260, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
+            20, 170, 260, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
         SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
 
@@ -397,28 +415,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            20, 184, 552, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            20, 202, 552, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 306, 552, 12, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+            20, 324, 552, 12, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
 
         /* Status */
         g_hwnd_status = CreateWindowExA(0, "STATIC",
             "Select the game folder and click Patch.",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 324, 440, 18, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+            20, 342, 440, 18, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
         SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Patch / Cancel buttons */
         g_hwnd_btn_patch = CreateWindowExA(0, "BUTTON", "Patch",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            412, 352, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
+            412, 370, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
         CreateWindowExA(0, "BUTTON", "Cancel",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            500, 352, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+            500, 370, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
         /* Auto-detect game folder; preset path (from UAC relaunch) takes priority */
         char auto_path[MAX_PATH] = {0};
@@ -629,7 +647,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
 
     const char *title = g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher";
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT wr = {0, 0, 600, 400};
+    RECT wr = {0, 0, 600, 418};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
         0, "PatchForgeStub", title, wstyle,

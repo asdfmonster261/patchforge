@@ -130,31 +130,39 @@ def build(
         "backup_path":         settings.backup_path,
     }
 
+    # Always compute file trees so change counts are available for the UI
+    src_files = {
+        f.relative_to(source).as_posix(): f
+        for f in source.rglob("*") if f.is_file()
+    }
+    tgt_files = {
+        f.relative_to(target).as_posix(): f
+        for f in target.rglob("*") if f.is_file()
+    }
+    entries = []
+    for rel, tgt_f in sorted(tgt_files.items()):
+        if rel not in src_files:
+            entries.append((rel, tgt_f, None))
+        else:
+            src_f = src_files[rel]
+            if src_f.stat().st_size != tgt_f.stat().st_size or \
+               src_f.read_bytes() != tgt_f.read_bytes():
+                entries.append((rel, tgt_f, src_f))
+
+    files_modified = sum(1 for _, _, src_f in entries if src_f is not None)
+    files_added    = sum(1 for _, _, src_f in entries if src_f is None)
+    files_removed  = sum(1 for rel in src_files if rel not in tgt_files)
+    metadata["files_modified"] = files_modified
+    metadata["files_added"]    = files_added
+    metadata["files_removed"]  = files_removed
+
     if settings.verify_method:
         from . import verification as _ver
-        src_files = {
-            f.relative_to(source).as_posix(): f
-            for f in source.rglob("*") if f.is_file()
-        }
-        tgt_files = {
-            f.relative_to(target).as_posix(): f
-            for f in target.rglob("*") if f.is_file()
-        }
-        entries = []
-        for rel, tgt_f in sorted(tgt_files.items()):
-            if rel not in src_files:
-                entries.append((rel, tgt_f, None))
-            else:
-                src_f = src_files[rel]
-                if src_f.stat().st_size != tgt_f.stat().st_size or \
-                   src_f.read_bytes() != tgt_f.read_bytes():
-                    entries.append((rel, tgt_f, src_f))
         if entries:
             metadata["checksums"] = ";".join(
                 f"{rel}|{_ver.compute(tgt_f, settings.verify_method)}"
                 for rel, tgt_f, _ in entries
             )
-            # Source checksums for pre-patch version verification
             src_entries = [(rel, src_f) for rel, _, src_f in entries if src_f is not None]
             if src_entries:
                 metadata["source_checksums"] = ";".join(
