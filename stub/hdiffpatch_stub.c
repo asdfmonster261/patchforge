@@ -463,8 +463,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     }
 
-    case WM_CTLCOLORSTATIC:
-    case WM_CTLCOLOREDIT: {
+    case WM_CTLCOLORSTATIC: {
         HDC  dc  = (HDC)wp;
         HWND ctl = (HWND)lp;
         SetTextColor(dc, COL_TEXT);
@@ -472,6 +471,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetBkColor(dc, COL_LOG_BG);
             return (LRESULT)g_brush_log;
         }
+        /* Labels and checkboxes: match window bg so no lighter rectangle */
+        SetBkColor(dc, COL_BG);
+        return (LRESULT)g_brush_bg;
+    }
+    case WM_CTLCOLOREDIT: {
+        HDC  dc  = (HDC)wp;
+        SetTextColor(dc, COL_TEXT);
         SetBkColor(dc, COL_BG_LIGHT);
         return (LRESULT)g_brush_light;
     }
