@@ -68,6 +68,18 @@ def build(
         return BuildResult(success=False, error="App name is required")
     if settings.engine not in _ENGINE_MAP:
         return BuildResult(success=False, error=f"Unknown engine: {settings.engine!r}")
+    if settings.arch not in ("x64", "x86"):
+        return BuildResult(success=False, error=f"Invalid architecture: {settings.arch!r} (must be x64 or x86)")
+
+    engine_cls = _ENGINE_MAP[settings.engine]
+    engine_inst: PatchEngine = engine_cls(ENGINE_DIR)
+    supported = engine_inst.supported_compressions()
+    if settings.compression not in supported:
+        return BuildResult(
+            success=False,
+            error=f"Compression {settings.compression!r} is not supported by engine "
+                  f"{settings.engine!r}. Supported: {', '.join(supported)}",
+        )
 
     # Validate extra files
     extra_file_blobs = []  # [{dest: str, data: bytes}]
@@ -76,6 +88,11 @@ def build(
         dest = ef.get("dest", "")
         if not dest:
             return BuildResult(success=False, error=f"Extra file entry missing 'dest': {ef}")
+        dest_norm = dest.replace("\\", "/")
+        if (dest_norm.startswith("/") or
+                any(part == ".." for part in dest_norm.split("/"))):
+            return BuildResult(success=False,
+                               error=f"Extra file dest must be a relative path with no '..' components: {dest!r}")
         if not src_path or not src_path.exists():
             return BuildResult(success=False,
                                error=f"Extra file source not found: {src_path}")
@@ -88,8 +105,7 @@ def build(
     # ------------------------------------------------------------------ #
     _progress(15, f"Generating directory patch with {settings.engine}...")
 
-    engine_cls = _ENGINE_MAP[settings.engine]
-    engine: PatchEngine = engine_cls(ENGINE_DIR)
+    engine: PatchEngine = engine_inst
 
     with tempfile.TemporaryDirectory(prefix="patchforge_") as tmpdir:
         raw_patch = Path(tmpdir) / "patch.bin"
