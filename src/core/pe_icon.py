@@ -25,6 +25,74 @@ def _align(n: int, align: int) -> int:
     return (n + align - 1) & ~(align - 1)
 
 
+def _fix_and_mask_alpha(img: dict) -> dict:
+    """
+    Some icon tools produce 32bpp BMP icons where transparency is stored in
+    the AND mask but alpha bytes are left at zero (or near-zero).  Windows
+    Vista+ detects any non-zero alpha and uses the alpha channel instead of
+    the AND mask, making most of the icon transparent and showing whatever
+    background is behind it (typically white).
+
+    Fix: if a 32bpp BMP image has near-zero average alpha, read the AND mask
+    and use it to write proper alpha=0 (transparent) / alpha=255 (opaque)
+    values.  The biHeight and data layout are left intact so Windows will
+    detect the now-correct non-zero alpha and render via alpha channel.
+    """
+    data = img["data"]
+    if len(data) < 40:
+        return img
+
+    # Skip PNG images — they carry their own alpha channel
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return img
+
+    biSize, biWidth, biHeight, _planes, biBitCount, biCompression = \
+        struct.unpack_from("<IiiHHI", data, 0)
+
+    # Only process: 32bpp BI_RGB with positive height (has AND mask appended)
+    if biBitCount != 32 or biCompression != 0 or biHeight <= 0:
+        return img
+
+    h = biHeight // 2   # actual pixel rows; biHeight includes AND mask rows
+    w = biWidth
+    if h <= 0 or w <= 0:
+        return img
+
+    pixel_start = biSize
+    pixel_size  = h * w * 4
+    if len(data) < pixel_start + pixel_size:
+        return img
+
+    pixels = bytearray(data[pixel_start:pixel_start + pixel_size])
+
+    # If average alpha is already meaningful (>8 per pixel) leave it alone
+    if sum(pixels[3::4]) > h * w * 8:
+        return img
+
+    # Locate AND mask (1bpp, DWORD-aligned rows, same bottom-up order)
+    and_row_bytes = ((w + 31) // 32) * 4
+    and_start     = pixel_start + pixel_size
+    and_size      = h * and_row_bytes
+    if len(data) < and_start + and_size:
+        return img
+
+    and_mask = data[and_start:and_start + and_size]
+
+    # Rewrite alpha: AND bit 1 = transparent (0), AND bit 0 = opaque (255)
+    for row in range(h):
+        row_base = row * and_row_bytes
+        for byte_idx in range((w + 7) // 8):
+            m = and_mask[row_base + byte_idx]
+            for bit in range(8):
+                col = byte_idx * 8 + bit
+                if col >= w:
+                    break
+                pixels[(row * w + col) * 4 + 3] = 0 if (m >> (7 - bit)) & 1 else 255
+
+    new_data = data[:pixel_start] + bytes(pixels) + data[pixel_start + pixel_size:]
+    return {**img, "data": new_data, "planes": 1, "bit_count": 32}
+
+
 def _parse_ico(data: bytes) -> list[dict]:
     """Parse an .ico file and return list of image dicts."""
     if len(data) < 6:
@@ -38,7 +106,7 @@ def _parse_ico(data: bytes) -> list[dict]:
         w, h, color_count, res, planes, bit_count, byte_count, img_off = \
             struct.unpack_from("<BBBBHHiI", data, off)
         # width/height of 0 means 256
-        images.append({
+        img = {
             "width":       w,
             "height":      h,
             "color_count": color_count,
@@ -46,7 +114,8 @@ def _parse_ico(data: bytes) -> list[dict]:
             "planes":      planes,
             "bit_count":   bit_count,
             "data":        data[img_off:img_off + byte_count],
-        })
+        }
+        images.append(_fix_and_mask_alpha(img))
     if not images:
         raise ValueError("Icon file contains no images")
     return images
