@@ -66,6 +66,13 @@ def package(
     stub_path = _stub_path(stub_engine, arch, compression)
     stub_bytes = stub_path.read_bytes()
 
+    # Minimal PE sanity check — catches a corrupted or wrong-arch stub early
+    if len(stub_bytes) < 0x40:
+        raise ValueError(f"Stub file is too small to be a valid PE: {stub_path}")
+    e_lfanew = struct.unpack_from("<I", stub_bytes, 0x3C)[0]
+    if e_lfanew + 4 > len(stub_bytes) or stub_bytes[e_lfanew:e_lfanew + 4] != b"PE\x00\x00":
+        raise ValueError(f"Stub file does not have a valid PE signature: {stub_path}")
+
     if icon_path is not None:
         from . import pe_icon
         stub_bytes = pe_icon.inject(stub_bytes, Path(icon_path))
