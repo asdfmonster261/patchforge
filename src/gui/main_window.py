@@ -779,10 +779,17 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            save_project(self._collect_settings(validate=False), Path(path))
+            s = self._collect_settings(validate=False)
+            save_project(s, Path(path))
             self._current_project_path = Path(path)
             self.setWindowTitle(f"PatchForge — {Path(path).name}")
             self.status_bar.showMessage(f"Saved: {path}")
+            missing = [f for f, v in [("app name", s.app_name),
+                                       ("source dir", s.source_dir),
+                                       ("target dir", s.target_dir)] if not v]
+            if missing:
+                self._log(f"⚠  Project saved with missing required fields: {', '.join(missing)}",
+                          color=WARN)
         except Exception as exc:
             self._log(f"Failed to save project: {exc}", color=ERROR)
 
@@ -871,6 +878,8 @@ class MainWindow(QMainWindow):
                     errors.append("INI section is required when find method is INI")
                 if not s.ini_key:
                     errors.append("INI key is required when find method is INI")
+            if s.backup_at == "custom" and not s.backup_path:
+                errors.append("Backup path is required when backup method is Custom")
             if errors:
                 for e in errors:
                     self._log(f"✗  {e}", color=ERROR)

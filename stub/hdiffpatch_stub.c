@@ -113,7 +113,12 @@ static int apply_dir_hdiff(const char *game_dir,
                 (LPARAM)_strdup("ERROR: failed to create temp patch file"));
             return 0;
         }
-        fwrite(patch_data, 1, patch_size, fp);
+        if (fwrite(patch_data, 1, patch_size, fp) != patch_size) {
+            fclose(fp); DeleteFileA(tmp_patch);
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0,
+                (LPARAM)_strdup("ERROR: failed to write temp patch file (disk full?)"));
+            return 0;
+        }
         fclose(fp);
     }
 
