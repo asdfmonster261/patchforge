@@ -98,7 +98,9 @@ def _build_rsrc(images: list[dict], section_rva: int) -> bytes:
 
     def w_dir(off, named=0, id_count=0):
         """Write IMAGE_RESOURCE_DIRECTORY (16 bytes)."""
-        struct.pack_into("<IIHH", buf, off, 0, 0, named, id_count)
+        # Characteristics(4) + TimeDateStamp(4) + MajorVersion(2) + MinorVersion(2)
+        # + NumberOfNamedEntries(2) + NumberOfIdEntries(2)
+        struct.pack_into("<IIHHHH", buf, off, 0, 0, 0, 0, named, id_count)
 
     def w_entry(off, id_val, target_off, is_dir=False):
         """Write IMAGE_RESOURCE_DIRECTORY_ENTRY (8 bytes)."""
