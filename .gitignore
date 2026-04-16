@@ -7,8 +7,7 @@ build/
 .venv/
 *.egg
 
-# Stub build artifacts (full variants require build_deps.sh and are not tracked)
-stub/prebuilt/*_full_*.exe
+# Stub build artifacts
 stub/third_party/_build/
 stub/third_party/zlib/*/bin/
 stub/third_party/zlib/*/lib/pkgconfig/

@@ -77,10 +77,13 @@ def _add_build(sub):
     # Engine + compression
     p.add_argument("--engine", choices=["hdiffpatch", "xdelta3", "jojodiff"],
                    help="Patch engine (default: hdiffpatch)")
-    p.add_argument("--compression",
-                   choices=["none", "zip/1", "zip/9", "bzip/5", "bzip/9",
-                             "lzma/fast", "lzma/normal", "lzma/ultra", "lzma/ultra64"],
-                   help="Compression level (default: lzma/ultra)")
+    p.add_argument("--compression", metavar="PRESET",
+                   help="Compression preset key for the chosen engine "
+                        "(hdiffpatch: set1_lzma2…set6_bzip2; "
+                        "xdelta3: none/paul44/lzma_mem; "
+                        "jojodiff: minimal/good/optimal)")
+    p.add_argument("--threads", metavar="N", type=int,
+                   help="Worker threads for patch generation (default: 1)")
 
     # Verification
     p.add_argument("--verify", choices=["crc32c", "md5", "filesize"],
@@ -101,6 +104,10 @@ def _add_build(sub):
     # Architecture
     p.add_argument("--arch", choices=["x64", "x86"], help="Output exe architecture (default: x64)")
 
+    # Icon
+    p.add_argument("--icon-path", metavar="FILE", dest="icon_path",
+                   help="Optional .ico file to embed as the patcher's application icon")
+
     # Save project after build
     p.add_argument("--save-project", metavar="FILE",
                    help="Save resolved settings to a .xpm project file after building")
@@ -111,7 +118,6 @@ def _add_build(sub):
 def _cmd_build(args):
     from src.core.project import ProjectSettings, load, save
     from src.core.patch_builder import build
-    from src.core.compression import requires_full_stub
 
     # Start with defaults or loaded project
     if args.project:
@@ -123,28 +129,24 @@ def _cmd_build(args):
         settings = ProjectSettings()
 
     # Apply flag overrides
-    if args.source_dir:    settings.source_dir   = args.source_dir
-    if args.target_dir:    settings.target_dir   = args.target_dir
-    if args.output_dir:    settings.output_dir   = args.output_dir
-    if args.app_name:      settings.app_name     = args.app_name
-    if args.version:       settings.version      = args.version
-    if args.description:   settings.description  = args.description
-    if args.engine:        settings.engine       = args.engine
-    if args.compression:   settings.compression  = args.compression
-    if args.verify_method: settings.verify_method = args.verify_method
-    if args.find_method:   settings.find_method  = args.find_method
-    if args.registry_key:  settings.registry_key = args.registry_key
+    if args.source_dir:     settings.source_dir    = args.source_dir
+    if args.target_dir:     settings.target_dir    = args.target_dir
+    if args.output_dir:     settings.output_dir    = args.output_dir
+    if args.app_name:       settings.app_name      = args.app_name
+    if args.version:        settings.version       = args.version
+    if args.description:    settings.description   = args.description
+    if args.engine:         settings.engine        = args.engine
+    if args.compression:    settings.compression   = args.compression
+    if args.threads:        settings.threads       = args.threads
+    if args.verify_method:  settings.verify_method = args.verify_method
+    if args.find_method:    settings.find_method   = args.find_method
+    if args.registry_key:   settings.registry_key  = args.registry_key
     if args.registry_value: settings.registry_value = args.registry_value
-    if args.ini_path:      settings.ini_path     = args.ini_path
-    if args.ini_section:   settings.ini_section  = args.ini_section
-    if args.ini_key:       settings.ini_key      = args.ini_key
-    if args.arch:          settings.arch         = args.arch
-
-    # Warn about stub limitations
-    if settings.engine == "hdiffpatch" and requires_full_stub(settings.compression):
-        _warn(f"Compression '{settings.compression}' requires the full HDiffPatch stub "
-              f"(hdiffpatch_full_{settings.arch}.exe). "
-              f"Run 'make full' in stub/ if you haven't already.")
+    if args.ini_path:       settings.ini_path      = args.ini_path
+    if args.ini_section:    settings.ini_section   = args.ini_section
+    if args.ini_key:        settings.ini_key       = args.ini_key
+    if args.arch:           settings.arch          = args.arch
+    if args.icon_path:      settings.icon_path     = args.icon_path
 
     # Save project if requested
     if args.save_project:
@@ -186,12 +188,12 @@ def _add_new_project(sub):
     p.add_argument("--version",     metavar="VER")
     p.add_argument("--description", metavar="TEXT")
     p.add_argument("--engine",      choices=["hdiffpatch", "xdelta3", "jojodiff"])
-    p.add_argument("--compression",
-                   choices=["none", "zip/1", "zip/9", "bzip/5", "bzip/9",
-                             "lzma/fast", "lzma/normal", "lzma/ultra", "lzma/ultra64"])
+    p.add_argument("--compression", metavar="PRESET")
+    p.add_argument("--threads",     metavar="N", type=int)
     p.add_argument("--verify",      choices=["crc32c", "md5", "filesize"],
                    dest="verify_method")
     p.add_argument("--arch",        choices=["x64", "x86"])
+    p.add_argument("--icon-path",   metavar="FILE", dest="icon_path")
     p.set_defaults(func=_cmd_new_project)
 
 
@@ -199,13 +201,15 @@ def _cmd_new_project(args):
     from src.core.project import ProjectSettings, save
 
     s = ProjectSettings()
-    if args.app_name:      s.app_name     = args.app_name
-    if args.version:       s.version      = args.version
-    if args.description:   s.description  = args.description
-    if args.engine:        s.engine       = args.engine
-    if args.compression:   s.compression  = args.compression
+    if args.app_name:      s.app_name      = args.app_name
+    if args.version:       s.version       = args.version
+    if args.description:   s.description   = args.description
+    if args.engine:        s.engine        = args.engine
+    if args.compression:   s.compression   = args.compression
+    if args.threads:       s.threads       = args.threads
     if args.verify_method: s.verify_method = args.verify_method
-    if args.arch:          s.arch         = args.arch
+    if args.arch:          s.arch          = args.arch
+    if args.icon_path:     s.icon_path     = args.icon_path
 
     out = Path(args.output)
     save(s, out)
