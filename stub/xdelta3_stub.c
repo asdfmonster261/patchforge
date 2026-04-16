@@ -354,16 +354,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             20, 18, 560, 28, hwnd, NULL, NULL, NULL);
         SendMessageA(lbl, WM_SETFONT, (WPARAM)g_font_title, TRUE);
 
-        /* Version */
-        if (g_meta.version[0]) {
-            char vbuf[128];
-            snprintf(vbuf, sizeof(vbuf), "Version %s", g_meta.version);
-            HWND vlbl = CreateWindowExA(0, "STATIC", vbuf,
-                WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 50, 300, 16, hwnd, NULL, NULL, NULL);
-            SendMessageA(vlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        }
-
         /* Change summary */
         {
             int m = g_meta.files_modified, a = g_meta.files_added, r = g_meta.files_removed;
@@ -682,7 +672,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     const char *title = g_meta.window_title[0] ? g_meta.window_title :
                         (g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher");
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT wr = {0, 0, 600, 418};
+    RECT wr = {0, 0, 600, 428};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
         0, "PatchForgeStub", title, wstyle,
