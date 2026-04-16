@@ -337,6 +337,21 @@ static DWORD WINAPI patch_thread(LPVOID arg)
 {
     struct PatchArgs *a = (struct PatchArgs *)arg;
 
+    PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Checking game version..."));
+    PostMessageA(g_hwnd, WM_PATCH_PROG, 3, 0);
+    {
+        char err[512] = {0};
+        if (!verify_source_files(a->game_dir, &g_meta, err, sizeof(err))) {
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(err));
+            MessageBoxA(g_hwnd, err, "Wrong Version", MB_OK | MB_ICONERROR);
+            g_patch_result = 0;
+            PostMessageA(g_hwnd, WM_PATCH_PROG, 100, 0);
+            PostMessageA(g_hwnd, WM_PATCH_DONE, 0, 0);
+            free(a);
+            return 0;
+        }
+    }
+
     PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Reading patch data..."));
     PostMessageA(g_hwnd, WM_PATCH_PROG, 5, 0);
 
@@ -712,6 +727,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     }
 
     free(g_meta.checksums);
+    free(g_meta.source_checksums);
     free(g_patch_data);
     if (g_backdrop_bmp) DeleteObject(g_backdrop_bmp);
     DeleteObject(g_brush_bg);

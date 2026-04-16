@@ -86,7 +86,8 @@ typedef struct {
     char ini_path[512];
     char ini_section[128];
     char ini_key[128];
-    char *checksums;        /* malloc'd or NULL */
+    char *checksums;        /* malloc'd or NULL — target file checksums (post-patch) */
+    char *source_checksums; /* malloc'd or NULL — source file checksums (pre-patch) */
     int64_t patch_data_offset;
     int64_t patch_data_size;
 
@@ -322,6 +323,7 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     json_get_str(json, "ini_section",    meta->ini_section,   sizeof(meta->ini_section));
     json_get_str(json, "ini_key",        meta->ini_key,       sizeof(meta->ini_key));
     meta->checksums         = json_get_str_alloc(json, "checksums");
+    meta->source_checksums  = json_get_str_alloc(json, "source_checksums");
     meta->patch_data_offset = data_start;
     meta->patch_data_size   = data_size;
 
@@ -567,6 +569,71 @@ static int verify_all_checksums(const char *game_dir, const PatchMeta *meta)
         PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)summary);
     }
     return all_pass;
+}
+
+/* Pre-patch: verify source files match expected checksums.
+   Returns 1 if all match (or no source_checksums in meta), 0 if any fail.
+   On failure, fills err_msg (size err_size) with a human-readable reason. */
+static int verify_source_files(const char *game_dir, const PatchMeta *meta,
+                                char *err_msg, int err_size)
+{
+    if (!meta->source_checksums || !meta->source_checksums[0]) return 1;
+    if (!meta->verify_method[0]) return 1;
+
+    char *buf = _strdup(meta->source_checksums);
+    if (!buf) return 1;  /* can't verify, allow through */
+
+    int failed = 0;
+    char first_bad[MAX_PATH] = {0};
+    char *entry = buf;
+
+    while (entry && *entry) {
+        char *next = strchr(entry, ';');
+        if (next) *next = '\0';
+
+        char *pipe = strchr(entry, '|');
+        if (pipe) {
+            *pipe = '\0';
+            const char *rel_path = entry;
+            const char *expected = pipe + 1;
+
+            char full_path[MAX_PATH];
+            snprintf(full_path, MAX_PATH, "%s\\%s", game_dir, rel_path);
+            for (char *p = full_path; *p; p++)
+                if (*p == '/') *p = '\\';
+
+            /* Missing file counts as wrong version */
+            DWORD attr = GetFileAttributesA(full_path);
+            int exists = (attr != INVALID_FILE_ATTRIBUTES &&
+                          !(attr & FILE_ATTRIBUTE_DIRECTORY));
+            int ok = exists && verify_file(full_path, meta->verify_method, expected);
+
+            if (!ok) {
+                failed++;
+                if (!first_bad[0])
+                    strncpy(first_bad, rel_path, MAX_PATH - 1);
+            }
+        }
+        entry = next ? next + 1 : NULL;
+    }
+    free(buf);
+
+    if (failed == 0) return 1;
+
+    if (err_msg && err_size > 0) {
+        if (meta->version[0])
+            snprintf(err_msg, err_size,
+                "Wrong game version.\n\n"
+                "This patch requires version %s.\n\n"
+                "%d file(s) did not match, e.g.:\n  %s",
+                meta->version, failed, first_bad);
+        else
+            snprintf(err_msg, err_size,
+                "Wrong game version.\n\n"
+                "%d file(s) did not match the expected source, e.g.:\n  %s",
+                failed, first_bad);
+    }
+    return 0;
 }
 
 /* ---- Recursive directory copy (used for backup) ---- */
