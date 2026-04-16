@@ -89,10 +89,16 @@ def build(
         if not dest:
             return BuildResult(success=False, error=f"Extra file entry missing 'dest': {ef}")
         dest_norm = dest.replace("\\", "/")
-        if (dest_norm.startswith("/") or
-                any(part == ".." for part in dest_norm.split("/"))):
+        # Block Unix absolute paths, Windows absolute paths (drive letter or UNC),
+        # and any path component that is a traversal sequence.
+        has_drive  = len(dest_norm) >= 2 and dest_norm[1] == ":"
+        has_unc    = dest_norm.startswith("//")
+        has_abs    = dest_norm.startswith("/")
+        has_dotdot = any(part == ".." for part in dest_norm.split("/"))
+        if has_drive or has_unc or has_abs or has_dotdot:
             return BuildResult(success=False,
-                               error=f"Extra file dest must be a relative path with no '..' components: {dest!r}")
+                               error=f"Extra file dest must be a relative path with no absolute "
+                                     f"components or '..' entries: {dest!r}")
         if not src_path or not src_path.exists():
             return BuildResult(success=False,
                                error=f"Extra file source not found: {src_path}")

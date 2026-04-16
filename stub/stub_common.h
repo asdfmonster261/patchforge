@@ -798,14 +798,22 @@ static void pfg_write_extra_files(const char *game_dir, const PatchMeta *meta)
 
         int64_t rem = ef->size;
         char buf[65536];
+        int write_ok = 1;
         while (rem > 0) {
             DWORD chunk = (DWORD)(rem > (int64_t)sizeof(buf) ? sizeof(buf) : rem);
             DWORD rd, wr;
-            ReadFile(exe, buf, chunk, &rd, NULL);
-            WriteFile(out, buf, rd, &wr, NULL);
+            if (!ReadFile(exe, buf, chunk, &rd, NULL) || rd == 0) { write_ok = 0; break; }
+            if (!WriteFile(out, buf, rd, &wr, NULL) || wr != rd) { write_ok = 0; break; }
             rem -= rd;
         }
         CloseHandle(out);
+        if (!write_ok) {
+            DeleteFileA(full);
+            char msg[MAX_PATH + 64];
+            snprintf(msg, sizeof(msg), "WARNING: failed to write extra file: %s", ef->dest);
+            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+            continue;
+        }
 
         char msg[MAX_PATH + 32];
         snprintf(msg, sizeof(msg), "  Installed: %s", ef->dest);

@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 
 /* ---- Globals ---- */
 HWND g_hwnd           = NULL;
@@ -128,7 +129,9 @@ static int apply_jojodiff(const char *old_path, const unsigned char *patch_data,
 
     FILE *fptmp = fopen(tmp_patch, "wb");
     if (!fptmp) return 0;
-    fwrite(patch_data, 1, patch_len, fptmp);
+    if (fwrite(patch_data, 1, patch_len, fptmp) != patch_len) {
+        fclose(fptmp); DeleteFileA(tmp_patch); return 0;
+    }
     fclose(fptmp);
 
     FILE *fold   = fopen(old_path,  "rb");
@@ -165,7 +168,8 @@ static int apply_jojodiff(const char *old_path, const unsigned char *patch_data,
                 break;
             case JJ_DEL: {
                 long lzOff = jdiff_read_len(fpatch);
-                if (lzOff < 0 || fseek(fold, lzOff + lzMod, SEEK_CUR) != 0)
+                if (lzOff < 0 || lzMod > LONG_MAX - lzOff ||
+                    fseek(fold, lzOff + lzMod, SEEK_CUR) != 0)
                     { ok = 0; goto done; }
                 lzMod = 0;
                 lbChg = 1;
@@ -184,7 +188,8 @@ static int apply_jojodiff(const char *old_path, const unsigned char *patch_data,
                     long chunk = rem < 4096 ? rem : 4096;
                     if ((long)fread(eql_buf, 1, (size_t)chunk, fold) != chunk)
                         { ok = 0; goto done; }
-                    fwrite(eql_buf, 1, (size_t)chunk, fnew);
+                    if ((long)fwrite(eql_buf, 1, (size_t)chunk, fnew) != chunk)
+                        { ok = 0; goto done; }
                     rem -= chunk;
                 }
                 lbChg = 1;
@@ -262,7 +267,13 @@ static int jojo_apply_entry(int op, const char *rel_path,
             ctx->had_error = 1;
             return 0;
         }
-        fwrite(data, 1, data_len, f);
+        if (fwrite(data, 1, data_len, f) != data_len) {
+            fclose(f);
+            snprintf(ctx->err_msg, sizeof(ctx->err_msg),
+                "ERROR: write failed for new file: %s", rel_path);
+            ctx->had_error = 1;
+            return 0;
+        }
         fclose(f);
         return 1;
     }

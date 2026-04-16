@@ -125,7 +125,8 @@ static int xd3_decode_file(const char *old_path, const unsigned char *patch_data
             }
             break;
         case XD3_OUTPUT:
-            fwrite(stream.next_out, 1, stream.avail_out, fnew);
+            if (fwrite(stream.next_out, 1, stream.avail_out, fnew) != stream.avail_out)
+                { ret = -1; done = 1; break; }
             xd3_consume_output(&stream);
             goto process;
         case XD3_GETSRCBLK:
@@ -181,7 +182,13 @@ static int xd3_apply_entry(int op, const char *rel_path,
             ctx->had_error = 1;
             return 0;
         }
-        fwrite(data, 1, data_len, f);
+        if (fwrite(data, 1, data_len, f) != data_len) {
+            fclose(f);
+            snprintf(ctx->err_msg, sizeof(ctx->err_msg),
+                "ERROR: write failed for new file: %s", rel_path);
+            ctx->had_error = 1;
+            return 0;
+        }
         fclose(f);
         return 1;
     }
