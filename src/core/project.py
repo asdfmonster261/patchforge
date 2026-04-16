@@ -39,6 +39,10 @@ class ProjectSettings:
     # Thread count for patch generation (HDiffPatch: -p-N; xdelta3/jojodiff dir mode)
     threads: int = 1
 
+    # Compressor quality for HDiffPatch (lzma2: fast/normal/max/ultra64;
+    # bzip2: fast/normal/max).  Ignored by xdelta3 and JojoDiff.
+    compressor_quality: str = "max"
+
     # Optional icon (.ico) to embed in the output exe
     icon_path: str = ""
 

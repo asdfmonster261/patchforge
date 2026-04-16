@@ -58,6 +58,7 @@ class XDelta3Engine(PatchEngine):
         output: Path,
         compression: str = _DEFAULT_PRESET,
         threads: int = 1,
+        compressor_quality: str = "max",
     ) -> EngineResult:
         if source.is_dir():
             return self._generate_dir(source, target, output, compression, threads)

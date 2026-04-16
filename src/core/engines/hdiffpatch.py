@@ -2,7 +2,9 @@
 
 Presets: Set1–Set6 × {LZMA2, PBZIP2} = 12 entries.
 Thread count is a separate parameter (1, 2, 4, 8, 16, 32) passed via -p-N.
-Setting threads=1 gives single-threaded behaviour (replaces old "default" entries).
+Compressor quality is a separate parameter controlling the -c-lzma2-N /
+-c-bzip2-N flag, allowing compression strength to vary independently of the
+stream block-size preset.
 
 All sets use stream mode; block size decreases for finer matching:
   Set1 64k → Set2 16k → Set3 4k → Set4 1k → Set5 640b → Set6 64b
@@ -25,24 +27,43 @@ _SET_CONFIGS = [
 
 THREAD_OPTIONS = [1, 2, 4, 8, 16, 32]
 
+# Quality options per compressor family.
+# Each entry: key → (display label, hdiffz -c flag)
+LZMA2_QUALITIES: dict[str, tuple[str, str]] = {
+    "fast":    ("Fast (lzma2-1)",            "-c-lzma2-1"),
+    "normal":  ("Normal (lzma2-6)",          "-c-lzma2-6"),
+    "max":     ("Max (lzma2-9)",             "-c-lzma2-9"),
+    "ultra64": ("Ultra64 (lzma2-9, 64M dict)", "-c-lzma2-9-64m"),
+}
+BZIP2_QUALITIES: dict[str, tuple[str, str]] = {
+    "fast":   ("Fast (bzip2-1)",   "-c-bzip2-1"),
+    "normal": ("Normal (bzip2-5)", "-c-bzip2-5"),
+    "max":    ("Max (bzip2-9)",    "-c-bzip2-9"),
+}
+
+DEFAULT_QUALITY        = "max"
+_LZMA2_QUALITY_KEYS    = set(LZMA2_QUALITIES)
+_BZIP2_QUALITY_KEYS    = set(BZIP2_QUALITIES)
+
 
 def _build_presets() -> dict[str, tuple[str, list[str]]]:
+    """Presets store only the stream flag; the -c quality flag is injected at
+    generate() time so quality can be changed without altering the preset."""
     presets: dict[str, tuple[str, list[str]]] = {}
     for n, stream, size in _SET_CONFIGS:
-        presets[f"set{n}_lzma2"] = (
-            f"Set{n}|{size}+LZMA2",
-            [stream, "-c-lzma2-9"],
-        )
-        presets[f"set{n}_bzip2"] = (
-            f"Set{n}|{size}+PBZIP2",
-            [stream, "-c-bzip2-9"],
-        )
+        presets[f"set{n}_lzma2"] = (f"Set{n}|{size}+LZMA2", [stream])
+        presets[f"set{n}_bzip2"] = (f"Set{n}|{size}+PBZIP2", [stream])
     return presets
 
 
 _PRESETS = _build_presets()
 _DEFAULT_PRESET  = "set5_lzma2"
 _DEFAULT_THREADS = 1
+
+
+def preset_compressor(preset_key: str) -> str:
+    """Return 'lzma2' or 'bzip2' for a given preset key."""
+    return "bzip2" if preset_key.endswith("_bzip2") else "lzma2"
 
 
 class HDiffPatchEngine(PatchEngine):
@@ -65,6 +86,11 @@ class HDiffPatchEngine(PatchEngine):
     def default_threads() -> int:
         return _DEFAULT_THREADS
 
+    @staticmethod
+    def qualities_for_preset(preset_key: str) -> dict[str, tuple[str, str]]:
+        """Return the quality dict appropriate for the given preset."""
+        return BZIP2_QUALITIES if preset_key.endswith("_bzip2") else LZMA2_QUALITIES
+
     def supported_compressions(self) -> list[str]:
         return list(_PRESETS.keys())
 
@@ -75,13 +101,23 @@ class HDiffPatchEngine(PatchEngine):
         output: Path,
         compression: str = _DEFAULT_PRESET,
         threads: int = _DEFAULT_THREADS,
+        compressor_quality: str = DEFAULT_QUALITY,
     ) -> EngineResult:
-        _label, flags = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])
+        _label, stream_flags = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])
+
+        # Resolve quality flag for the active compressor family.
+        qualities = self.qualities_for_preset(compression)
+        # ultra64 doesn't exist in bzip2; fall back to max.
+        _qlabel, quality_flag = qualities.get(
+            compressor_quality, qualities[DEFAULT_QUALITY]
+        )
+
         src_arg = str(source).rstrip("/") + "/"
         tgt_arg = str(target).rstrip("/") + "/"
         thread_flag = [f"-p-{threads}"] if threads > 1 else []
         cmd = ([str(self._binary()), "-f"]
-               + flags
+               + stream_flags
+               + [quality_flag]
                + thread_flag
                + [src_arg, tgt_arg, str(output)])
 

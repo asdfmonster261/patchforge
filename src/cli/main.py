@@ -84,6 +84,10 @@ def _add_build(sub):
                         "jojodiff: minimal/good/optimal)")
     p.add_argument("--threads", metavar="N", type=int,
                    help="Worker threads for patch generation (default: 1)")
+    p.add_argument("--quality", metavar="LEVEL", dest="compressor_quality",
+                   choices=["fast", "normal", "max", "ultra64"],
+                   help="HDiffPatch compressor quality: fast/normal/max/ultra64 "
+                        "for lzma2 presets; fast/normal/max for bzip2 (default: max)")
 
     # Verification
     p.add_argument("--verify", choices=["crc32c", "md5", "filesize"],
@@ -137,7 +141,8 @@ def _cmd_build(args):
     if args.description:    settings.description   = args.description
     if args.engine:         settings.engine        = args.engine
     if args.compression:    settings.compression   = args.compression
-    if args.threads:        settings.threads       = args.threads
+    if args.threads:              settings.threads            = args.threads
+    if args.compressor_quality:   settings.compressor_quality = args.compressor_quality
     if args.verify_method:  settings.verify_method = args.verify_method
     if args.find_method:    settings.find_method   = args.find_method
     if args.registry_key:   settings.registry_key  = args.registry_key
@@ -190,6 +195,8 @@ def _add_new_project(sub):
     p.add_argument("--engine",      choices=["hdiffpatch", "xdelta3", "jojodiff"])
     p.add_argument("--compression", metavar="PRESET")
     p.add_argument("--threads",     metavar="N", type=int)
+    p.add_argument("--quality",     metavar="LEVEL", dest="compressor_quality",
+                   choices=["fast", "normal", "max", "ultra64"])
     p.add_argument("--verify",      choices=["crc32c", "md5", "filesize"],
                    dest="verify_method")
     p.add_argument("--arch",        choices=["x64", "x86"])
@@ -206,7 +213,8 @@ def _cmd_new_project(args):
     if args.description:   s.description   = args.description
     if args.engine:        s.engine        = args.engine
     if args.compression:   s.compression   = args.compression
-    if args.threads:       s.threads       = args.threads
+    if args.threads:              s.threads            = args.threads
+    if args.compressor_quality:   s.compressor_quality = args.compressor_quality
     if args.verify_method: s.verify_method = args.verify_method
     if args.arch:          s.arch          = args.arch
     if args.icon_path:     s.icon_path     = args.icon_path
