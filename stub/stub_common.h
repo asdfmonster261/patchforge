@@ -158,7 +158,7 @@ static const char *json_get_str(const char *json, const char *key,
     const char *p = strstr(json, search);
     if (!p) return NULL;
     p += strlen(search);
-    while (*p == ' ' || *p == ':' || *p == ' ') p++;
+    while (*p == ' ' || *p == ':') p++;
     if (*p != '"') return NULL;
     p++;
     int i = 0;
@@ -177,7 +177,7 @@ static int64_t json_get_int(const char *json, const char *key)
     const char *p = strstr(json, search);
     if (!p) return 0;
     p += strlen(search);
-    while (*p == ' ' || *p == ':' || *p == ' ') p++;
+    while (*p == ' ' || *p == ':') p++;
     return (int64_t)_atoi64(p);
 }
 
@@ -189,7 +189,7 @@ static char *json_get_str_alloc(const char *json, const char *key)
     const char *p = strstr(json, search);
     if (!p) return NULL;
     p += strlen(search);
-    while (*p == ' ' || *p == ':' || *p == ' ') p++;
+    while (*p == ' ' || *p == ':') p++;
     if (*p != '"') return NULL;
     p++;
     const char *start = p;
@@ -308,6 +308,7 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     int64_t data_start = json_get_int(json, "patch_data_offset");
     int64_t data_size  = json_get_int(json, "patch_data_size");
     if (data_size <= 0 || data_start < 0) { free(json); CloseHandle(f); return 0; }
+    if (data_start + data_size > file_size) { free(json); CloseHandle(f); return 0; }
 
     char *data = (char *)malloc((size_t)data_size);
     if (!data) { free(json); CloseHandle(f); return 0; }
@@ -322,6 +323,8 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
         dst += rd; remaining -= rd;
     }
     CloseHandle(f);
+
+    if (remaining > 0) { free(data); free(json); return 0; }
 
     /* Parse JSON into meta struct */
     memset(meta, 0, sizeof(*meta));

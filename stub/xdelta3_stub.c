@@ -78,12 +78,15 @@ static int xd3_decode_file(const char *old_path, const unsigned char *patch_data
     /* Load source (old) file into memory */
     fseek(fold, 0, SEEK_END);
     long src_size = ftell(fold);
+    if (src_size < 0) { fclose(fold); fclose(fnew); return 0; }
     fseek(fold, 0, SEEK_SET);
     uint8_t *src_buf = NULL;
     if (src_size > 0) {
         src_buf = (uint8_t *)malloc(src_size);
         if (!src_buf) { fclose(fold); fclose(fnew); return 0; }
-        fread(src_buf, 1, src_size, fold);
+        if ((long)fread(src_buf, 1, src_size, fold) != src_size) {
+            free(src_buf); fclose(fold); fclose(fnew); return 0;
+        }
     }
     fclose(fold);
 

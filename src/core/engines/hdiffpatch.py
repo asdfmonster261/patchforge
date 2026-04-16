@@ -134,5 +134,5 @@ class HDiffPatchEngine(PatchEngine):
                 )
             sz = output.stat().st_size if output.exists() else 0
             return EngineResult(success=True, patch_path=output, patch_size=sz)
-        except Exception as exc:
+        except OSError as exc:
             return EngineResult(success=False, patch_path=None, patch_size=0, error=str(exc))
