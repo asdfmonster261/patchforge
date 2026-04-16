@@ -29,7 +29,7 @@ class ProjectSettings:
 
     # Engine + compression
     engine: str = "hdiffpatch"       # "hdiffpatch" | "xdelta3" | "jojodiff"
-    compression: str = "lzma/ultra"  # see compression.py LEVELS
+    compression: str = "set6_lzma2"  # engine-specific preset key; hdiffpatch default
 
     # Verification
     verify_method: str = "crc32c"    # "crc32c" | "md5" | "filesize"

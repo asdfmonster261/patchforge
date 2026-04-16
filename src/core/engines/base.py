@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from ..compression import STUB_FULL_REQUIRED
+
 
 @dataclass
 class EngineResult:
@@ -29,7 +31,7 @@ class PatchEngine(ABC):
         source: Path,
         target: Path,
         output: Path,
-        compression: str = "lzma/ultra",
+        compression: str = "",
         threads: int = 1,
         compressor_quality: str = "max",
         extra_diff_args: str = "",
@@ -42,11 +44,6 @@ class PatchEngine(ABC):
         """Return list of compression level strings this engine supports."""
         ...
 
-    # Compression / preset keys whose decompressor is NOT compiled into the
-    # Windows stubs (zlib and bzip2 require extra third-party sources).
-    # HDiffPatch preset keys ("set1"…"set6") are all lzma2-based and are
-    # supported by default; only xdelta3/jojodiff zip and bzip modes hit this.
-    WIN_STUB_UNSUPPORTED: set[str] = {"zip/1", "zip/9", "bzip/5", "bzip/9"}
-
     def stub_supports_compression(self, compression: str) -> bool:
-        return compression not in self.WIN_STUB_UNSUPPORTED
+        """Return False for presets that require the full stub (zlib/bzip2 deps)."""
+        return compression not in STUB_FULL_REQUIRED

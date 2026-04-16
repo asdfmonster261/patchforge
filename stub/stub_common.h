@@ -280,7 +280,9 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     pos.QuadPart = file_size - PATCH_MAGIC_LEN;
     SetFilePointerEx(f, pos, NULL, FILE_BEGIN);
     DWORD rd;
-    ReadFile(f, magic, PATCH_MAGIC_LEN, &rd, NULL);
+    if (!ReadFile(f, magic, PATCH_MAGIC_LEN, &rd, NULL) || rd != PATCH_MAGIC_LEN) {
+        CloseHandle(f); return 0;
+    }
     if (memcmp(magic, PATCH_MAGIC, PATCH_MAGIC_LEN) != 0) {
         CloseHandle(f); return 0;
     }
@@ -289,24 +291,26 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     uint32_t meta_len;
     pos.QuadPart = file_size - PATCH_MAGIC_LEN - 4;
     SetFilePointerEx(f, pos, NULL, FILE_BEGIN);
-    ReadFile(f, &meta_len, 4, &rd, NULL);
+    if (!ReadFile(f, &meta_len, 4, &rd, NULL) || rd != 4) { CloseHandle(f); return 0; }
     if (meta_len == 0 || meta_len > (1 << 20)) { CloseHandle(f); return 0; }
 
     /* Read JSON metadata */
     char *json = (char *)malloc(meta_len + 1);
+    if (!json) { CloseHandle(f); return 0; }
     pos.QuadPart = file_size - PATCH_MAGIC_LEN - 4 - meta_len;
     SetFilePointerEx(f, pos, NULL, FILE_BEGIN);
-    ReadFile(f, json, meta_len, &rd, NULL);
+    if (!ReadFile(f, json, meta_len, &rd, NULL) || rd != meta_len) {
+        free(json); CloseHandle(f); return 0;
+    }
     json[meta_len] = '\0';
 
     /* Read patch data */
-    int64_t data_end   = file_size - PATCH_MAGIC_LEN - 4 - meta_len;
     int64_t data_start = json_get_int(json, "patch_data_offset");
     int64_t data_size  = json_get_int(json, "patch_data_size");
     if (data_size <= 0 || data_start < 0) { free(json); CloseHandle(f); return 0; }
-    (void)data_end;
 
     char *data = (char *)malloc((size_t)data_size);
+    if (!data) { free(json); CloseHandle(f); return 0; }
     pos.QuadPart = data_start;
     SetFilePointerEx(f, pos, NULL, FILE_BEGIN);
 
@@ -314,7 +318,7 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     char *dst = data;
     while (remaining > 0) {
         DWORD chunk = (DWORD)(remaining > 65536 ? 65536 : remaining);
-        ReadFile(f, dst, chunk, &rd, NULL);
+        if (!ReadFile(f, dst, chunk, &rd, NULL) || rd == 0) break;
         dst += rd; remaining -= rd;
     }
     CloseHandle(f);
@@ -358,7 +362,7 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     json_get_str(json, "run_before",  meta->run_before,  sizeof(meta->run_before));
     json_get_str(json, "run_after",   meta->run_after,   sizeof(meta->run_after));
     json_get_str(json, "backup_at",   meta->backup_at,   sizeof(meta->backup_at));
-    if (!meta->backup_at[0]) strcpy(meta->backup_at, "same_folder");
+    if (!meta->backup_at[0]) { strncpy(meta->backup_at, "same_folder", sizeof(meta->backup_at) - 1); meta->backup_at[sizeof(meta->backup_at) - 1] = '\0'; }
     json_get_str(json, "backup_path", meta->backup_path, sizeof(meta->backup_path));
 
     /* Backdrop */
