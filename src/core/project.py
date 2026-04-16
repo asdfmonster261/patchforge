@@ -46,6 +46,25 @@ class ProjectSettings:
     # Optional icon (.ico) to embed in the output exe
     icon_path: str = ""
 
+    # Feature: custom diff parameters (passed verbatim to the engine CLI)
+    extra_diff_args: str = ""
+
+    # Feature: patching behaviour
+    delete_extra_files: bool = True   # delete game files absent from target version
+    run_before: str = ""              # shell command run before patching starts
+    run_after:  str = ""              # shell command run after patching succeeds
+
+    # Feature: backup
+    backup_at: str = "same_folder"   # "disabled" | "same_folder" | "custom"
+    backup_path: str = ""            # used when backup_at == "custom"
+
+    # Feature: backdrop image shown in patcher window (PNG/JPEG/BMP)
+    backdrop_path: str = ""
+
+    # Feature: extra files to write into the game folder after patching
+    # Each entry: {"src": absolute_path_on_build_machine, "dest": relative_path_in_game_folder}
+    extra_files: list = field(default_factory=list)
+
 
 def save(settings: ProjectSettings, path: Path) -> None:
     path = Path(path)

@@ -163,7 +163,8 @@ static int xd3_apply_entry(int op, const char *rel_path,
     snprintf(full_path, MAX_PATH, "%s\\%s", ctx->game_dir, rel_path);
 
     if (op == PFMD_OP_DELETE) {
-        DeleteFileA(full_path);
+        if (g_meta.delete_extra_files)
+            DeleteFileA(full_path);
         return 1;
     }
 
@@ -254,18 +255,14 @@ static DWORD WINAPI patch_thread(LPVOID arg)
     PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Reading patch data..."));
     PostMessageA(g_hwnd, WM_PATCH_PROG, 5, 0);
 
+    if (g_meta.run_before[0]) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Running pre-patch command..."));
+        pfg_run_and_wait(g_meta.run_before);
+    }
+
     if (a->do_backup) {
         PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Creating backup..."));
-        char backup[MAX_PATH];
-        snprintf(backup, MAX_PATH, "%s_pfg_backup", a->game_dir);
-        if (!pfmd_copy_dir(a->game_dir, backup)) {
-            PostMessageA(g_hwnd, WM_LOG_MSG, 0,
-                (LPARAM)_strdup("WARNING: backup incomplete, continuing anyway."));
-        } else {
-            char msg[MAX_PATH + 32];
-            snprintf(msg, sizeof(msg), "Backup saved: %s", backup);
-            PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
-        }
+        pfg_do_backup(a->game_dir, &g_meta);
     }
 
     PostMessageA(g_hwnd, WM_PATCH_PROG, 15, 0);
@@ -280,6 +277,16 @@ static DWORD WINAPI patch_thread(LPVOID arg)
             PostMessageA(g_hwnd, WM_LOG_MSG, 0,
                 (LPARAM)_strdup("WARNING: One or more files failed verification."));
         }
+    }
+
+    if (ok && g_meta.num_extra_files > 0) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Installing extra files..."));
+        pfg_write_extra_files(a->game_dir, &g_meta);
+    }
+
+    if (ok && g_meta.run_after[0]) {
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Running post-patch command..."));
+        pfg_run_and_wait(g_meta.run_after);
     }
 
     g_patch_result = ok;
@@ -397,14 +404,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             500, 352, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
-        /* Auto-detect game folder */
+        /* Auto-detect game folder; preset path (from UAC relaunch) takes priority */
         char auto_path[MAX_PATH] = {0};
         if (strcmp(g_meta.find_method, "registry") == 0)
             find_via_registry(&g_meta, auto_path, MAX_PATH);
         else if (strcmp(g_meta.find_method, "ini") == 0)
             find_via_ini(&g_meta, auto_path, MAX_PATH);
-        if (auto_path[0])
-            SetWindowTextA(g_hwnd_filepath, auto_path);
+        {
+            const char *init = g_preset_path[0] ? g_preset_path : auto_path;
+            if (init[0]) SetWindowTextA(g_hwnd_filepath, init);
+        }
 
         log_append("Engine: xdelta3 (directory patch)");
         if (g_meta.version[0]) {
@@ -466,6 +475,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 set_status("Folder not found. Please select a valid directory.", COL_ERROR);
                 return 0;
             }
+            if (!pfg_check_elevate(path)) return 0;
             EnableWindow(g_hwnd_btn_patch, FALSE);
             set_status("Patching...", COL_TEXT);
             struct PatchArgs *args = (struct PatchArgs *)malloc(sizeof(*args));
@@ -514,9 +524,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(hwnd, &ps);
-        RECT r;
-        GetClientRect(hwnd, &r);
-        FillRect(dc, &r, g_brush_bg);
+        pfg_paint_background(hwnd, dc);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -560,7 +568,16 @@ int do_patch(const char *t, const char *d, size_t s) { (void)t;(void)d;(void)s; 
 /* ---- WinMain ---- */
 int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
 {
-    (void)hp; (void)cmd;
+    (void)hp;
+
+    if (cmd && cmd[0]) {
+        char *src = cmd, *dst = g_preset_path, *end = g_preset_path + MAX_PATH - 1;
+        if (*src == '"') src++;
+        while (*src && *src != '"' && dst < end) *dst++ = *src++;
+        *dst = '\0';
+    }
+
+    CoInitialize(NULL);
 
     if (!read_patch_meta_impl(&g_meta, NULL, &g_patch_data, &g_patch_size)) {
         MessageBoxA(NULL,
@@ -569,6 +586,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
             "PatchForge", MB_OK | MB_ICONERROR);
         return 1;
     }
+
+    pfg_load_backdrop();
 
     g_brush_bg    = CreateSolidBrush(COL_BG);
     g_brush_light = CreateSolidBrush(COL_BG_LIGHT);
@@ -611,9 +630,11 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
 
     free(g_meta.checksums);
     free(g_patch_data);
+    if (g_backdrop_bmp) DeleteObject(g_backdrop_bmp);
     DeleteObject(g_brush_bg);
     DeleteObject(g_brush_light);
     DeleteObject(g_font_normal);
     DeleteObject(g_font_title);
+    CoUninitialize();
     return (int)msg.wParam;
 }

@@ -81,7 +81,7 @@ CFLAGS_XD3_32 = $(CFLAGS_XD3_BASE) \
 
 CFLAGS_JOJO = $(CFLAGS_COMMON)
 
-LIBS     = -lcomdlg32 -lshell32 -ldwmapi -ladvapi32 -lole32
+LIBS     = -lcomdlg32 -lshell32 -ldwmapi -ladvapi32 -lole32 -luuid -lwindowscodecs
 LIBS_FULL64 = -L$(ZLIB64)/lib -L$(BZ2_64)/lib -lz -lbz2 $(LIBS)
 LIBS_FULL32 = -L$(ZLIB32)/lib -L$(BZ2_32)/lib -lz -lbz2 $(LIBS)
 

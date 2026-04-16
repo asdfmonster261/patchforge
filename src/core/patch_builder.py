@@ -4,7 +4,7 @@ patch_builder.py — Orchestrates the full patch build process.
 Steps:
   1. Validate inputs (source/target must be directories)
   2. Run the selected engine to generate the raw patch
-  3. Package stub + patch data + metadata into output .exe
+  3. Package stub + patch data + extra files + backdrop + metadata into output .exe
   4. Clean up temp files
 """
 
@@ -69,6 +69,17 @@ def build(
     if settings.engine not in _ENGINE_MAP:
         return BuildResult(success=False, error=f"Unknown engine: {settings.engine!r}")
 
+    # Validate extra files
+    extra_file_blobs = []  # [{dest: str, data: bytes}]
+    for ef in (settings.extra_files or []):
+        src_path = Path(ef.get("src", ""))
+        dest = ef.get("dest", "")
+        if not dest:
+            return BuildResult(success=False, error=f"Extra file entry missing 'dest': {ef}")
+        if not src_path or not src_path.exists():
+            return BuildResult(success=False,
+                               error=f"Extra file source not found: {src_path}")
+        extra_file_blobs.append({"dest": dest, "data": src_path.read_bytes()})
 
     _progress(5, "Validating directories...")
 
@@ -85,7 +96,8 @@ def build(
 
         result = engine.generate(source, target, raw_patch, settings.compression,
                                  threads=settings.threads,
-                                 compressor_quality=settings.compressor_quality)
+                                 compressor_quality=settings.compressor_quality,
+                                 extra_diff_args=settings.extra_diff_args)
         if not result.success:
             return BuildResult(success=False, error=f"Patch generation failed: {result.error}")
 
@@ -95,26 +107,30 @@ def build(
     # ------------------------------------------------------------------ #
     # 3. Build metadata                                                    #
     # ------------------------------------------------------------------ #
-    _progress(80, "Packaging output exe...")
+    _progress(78, "Computing verification checksums...")
 
     metadata = {
-        "app_name":       settings.app_name,
-        "version":        settings.version,
-        "description":    settings.description,
-        "engine":         settings.engine,
-        "compression":    settings.compression,
-        "verify_method":  settings.verify_method,
-        "find_method":    settings.find_method,
-        "registry_key":   settings.registry_key,
-        "registry_value": settings.registry_value,
-        "ini_path":       settings.ini_path,
-        "ini_section":    settings.ini_section,
-        "ini_key":        settings.ini_key,
+        "app_name":            settings.app_name,
+        "version":             settings.version,
+        "description":         settings.description,
+        "engine":              settings.engine,
+        "compression":         settings.compression,
+        "verify_method":       settings.verify_method,
+        "find_method":         settings.find_method,
+        "registry_key":        settings.registry_key,
+        "registry_value":      settings.registry_value,
+        "ini_path":            settings.ini_path,
+        "ini_section":         settings.ini_section,
+        "ini_key":             settings.ini_key,
+        # Patching-behaviour fields
+        "delete_extra_files":  1 if settings.delete_extra_files else 0,
+        "run_before":          settings.run_before,
+        "run_after":           settings.run_after,
+        "backup_at":           settings.backup_at,
+        "backup_path":         settings.backup_path,
     }
 
     if settings.verify_method:
-        # Compute checksums for every file the patch writes (new or modified vs source).
-        _progress(78, "Computing verification checksums...")
         from . import verification as _ver
         src_files = {
             f.relative_to(source).as_posix(): f
@@ -127,10 +143,8 @@ def build(
         entries = []
         for rel, tgt_f in sorted(tgt_files.items()):
             if rel not in src_files:
-                # New file — always include
                 entries.append((rel, tgt_f))
             else:
-                # Modified file — include only if content differs
                 src_f = src_files[rel]
                 if src_f.stat().st_size != tgt_f.stat().st_size or \
                    src_f.read_bytes() != tgt_f.read_bytes():
@@ -143,8 +157,21 @@ def build(
             metadata["checksums"] = checksums
 
     # ------------------------------------------------------------------ #
-    # 4. Package                                                           #
+    # 4. Load backdrop                                                     #
     # ------------------------------------------------------------------ #
+    backdrop_data: Optional[bytes] = None
+    if settings.backdrop_path:
+        bp = Path(settings.backdrop_path)
+        if not bp.exists():
+            return BuildResult(success=False,
+                               error=f"Backdrop image not found: {bp}")
+        backdrop_data = bp.read_bytes()
+
+    # ------------------------------------------------------------------ #
+    # 5. Package                                                           #
+    # ------------------------------------------------------------------ #
+    _progress(80, "Packaging output exe...")
+
     output_dir = Path(settings.output_dir) if settings.output_dir else Path.cwd()
     safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in settings.app_name)
     version_tag = f"_{settings.version}" if settings.version else ""
@@ -160,6 +187,8 @@ def build(
             metadata=metadata,
             output_path=output_path,
             icon_path=icon,
+            extra_files=extra_file_blobs if extra_file_blobs else None,
+            backdrop_data=backdrop_data,
         )
     except Exception as exc:
         return BuildResult(success=False, error=str(exc))

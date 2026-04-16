@@ -10,6 +10,7 @@ All sets use stream mode; block size decreases for finer matching:
   Set1 64k → Set2 16k → Set3 4k → Set4 1k → Set5 640b → Set6 64b
 """
 
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -102,6 +103,7 @@ class HDiffPatchEngine(PatchEngine):
         compression: str = _DEFAULT_PRESET,
         threads: int = _DEFAULT_THREADS,
         compressor_quality: str = DEFAULT_QUALITY,
+        extra_diff_args: str = "",
     ) -> EngineResult:
         _label, stream_flags = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])
 
@@ -115,10 +117,12 @@ class HDiffPatchEngine(PatchEngine):
         src_arg = str(source).rstrip("/") + "/"
         tgt_arg = str(target).rstrip("/") + "/"
         thread_flag = [f"-p-{threads}"] if threads > 1 else []
+        extra = shlex.split(extra_diff_args) if extra_diff_args else []
         cmd = ([str(self._binary()), "-f"]
                + stream_flags
                + [quality_flag]
                + thread_flag
+               + extra
                + [src_arg, tgt_arg, str(output)])
 
         try:

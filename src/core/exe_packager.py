@@ -2,10 +2,22 @@
 exe_packager.py — Append patch data + JSON metadata to a prebuilt Win32 stub.
 
 Output format (appended to stub exe):
-  [patch data bytes         ]
-  [JSON metadata, UTF-8     ]
-  [metadata length, 4 bytes LE]
-  ["XPATCH01", 8 bytes      ]
+  [patch data bytes                  ]
+  [extra_file_0 bytes                ] \
+  [extra_file_1 bytes                ]  > zero or more extra files
+  ...                                  /
+  [backdrop image bytes              ]  (zero bytes if no backdrop)
+  [JSON metadata, UTF-8              ]
+  [metadata length, 4 bytes LE       ]
+  ["XPATCH01", 8 bytes               ]
+
+The JSON metadata contains:
+  patch_data_offset  — byte offset of patch data in this exe
+  patch_data_size    — byte length of patch data
+  backdrop_offset    — byte offset of backdrop blob (0 if none)
+  backdrop_size      — byte length of backdrop blob (0 if none)
+  extra_files        — [{dest, offset, size}, ...] (absent if empty)
+  ...plus all the patching-behaviour fields
 """
 
 import json
@@ -44,16 +56,12 @@ def package(
     metadata: dict,
     output_path: Path,
     icon_path: Path | None = None,
+    extra_files: list | None = None,   # [{dest: str, data: bytes}, ...]
+    backdrop_data: bytes | None = None,
 ) -> Path:
     """
-    Build the output .exe by appending patch_data and metadata to the stub.
-
-    metadata must include all fields expected by stub_common.h (app_name,
-    version, engine, compression, verify_method, orig_checksum, new_checksum,
-    orig_size, new_size, find_method, registry_key, registry_value,
-    ini_path, ini_section, ini_key).
-
-    patch_data_offset and patch_data_size are computed here and injected.
+    Build the output .exe by appending patch_data, optional extra files,
+    optional backdrop image, and metadata JSON to the stub.
     """
     stub_path = _stub_path(stub_engine, arch, compression)
     stub_bytes = stub_path.read_bytes()
@@ -63,14 +71,36 @@ def package(
         stub_bytes = pe_icon.inject(stub_bytes, Path(icon_path))
 
     patch_data_offset = len(stub_bytes)
-    patch_data_size = len(patch_data)
+    patch_data_size   = len(patch_data)
 
+    # Lay out extra files immediately after patch data
+    ef_base = patch_data_offset + patch_data_size
+    ef_meta = []
+    ef_cursor = ef_base
+    if extra_files:
+        for ef in extra_files:
+            ef_meta.append({
+                "dest":   ef["dest"],
+                "offset": ef_cursor,
+                "size":   len(ef["data"]),
+            })
+            ef_cursor += len(ef["data"])
+
+    # Backdrop follows extra files
+    bd_offset = ef_cursor
+    bd_size   = len(backdrop_data) if backdrop_data else 0
+
+    # Build metadata dict
     meta = dict(metadata)
     meta["patch_data_offset"] = patch_data_offset
-    meta["patch_data_size"] = patch_data_size
+    meta["patch_data_size"]   = patch_data_size
+    meta["backdrop_offset"]   = bd_offset
+    meta["backdrop_size"]     = bd_size
+    if ef_meta:
+        meta["extra_files"] = ef_meta
 
     meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
-    meta_len = struct.pack("<I", len(meta_json))
+    meta_len  = struct.pack("<I", len(meta_json))
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,6 +108,11 @@ def package(
     with open(output_path, "wb") as f:
         f.write(stub_bytes)
         f.write(patch_data)
+        if extra_files:
+            for ef in extra_files:
+                f.write(ef["data"])
+        if backdrop_data:
+            f.write(backdrop_data)
         f.write(meta_json)
         f.write(meta_len)
         f.write(MAGIC)
