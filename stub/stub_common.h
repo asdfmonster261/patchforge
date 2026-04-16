@@ -75,8 +75,14 @@ typedef struct {
 /* ---- Patch metadata (populated from JSON at startup) ---- */
 typedef struct {
     char app_name[256];
+    char app_note[256];         /* short subtitle */
     char version[64];
     char description[512];
+    char copyright[256];
+    char contact[256];
+    char company_info[256];
+    char window_title[256];     /* title bar text; falls back to app_name */
+    char patch_exe_version[64]; /* informational version of the patch exe */
     char engine[32];        /* "xdelta3", "jojodiff", "hdiffpatch" */
     char compression[32];
     char verify_method[32]; /* "crc32c", "md5", "filesize" */
@@ -315,9 +321,15 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
 
     /* Parse JSON into meta struct */
     memset(meta, 0, sizeof(*meta));
-    json_get_str(json, "app_name",       meta->app_name,      sizeof(meta->app_name));
-    json_get_str(json, "version",        meta->version,       sizeof(meta->version));
-    json_get_str(json, "description",    meta->description,   sizeof(meta->description));
+    json_get_str(json, "app_name",          meta->app_name,          sizeof(meta->app_name));
+    json_get_str(json, "app_note",          meta->app_note,          sizeof(meta->app_note));
+    json_get_str(json, "version",           meta->version,           sizeof(meta->version));
+    json_get_str(json, "description",       meta->description,       sizeof(meta->description));
+    json_get_str(json, "copyright",         meta->copyright,         sizeof(meta->copyright));
+    json_get_str(json, "contact",           meta->contact,           sizeof(meta->contact));
+    json_get_str(json, "company_info",      meta->company_info,      sizeof(meta->company_info));
+    json_get_str(json, "window_title",      meta->window_title,      sizeof(meta->window_title));
+    json_get_str(json, "patch_exe_version", meta->patch_exe_version, sizeof(meta->patch_exe_version));
     json_get_str(json, "engine",         meta->engine,        sizeof(meta->engine));
     json_get_str(json, "compression",    meta->compression,   sizeof(meta->compression));
     json_get_str(json, "verify_method",  meta->verify_method, sizeof(meta->verify_method));

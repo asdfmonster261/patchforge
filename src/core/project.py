@@ -10,8 +10,17 @@ from typing import Optional
 class ProjectSettings:
     # Basic info
     app_name: str = ""
+    app_note: str = ""        # short subtitle shown next to app name
     version: str = ""
     description: str = ""
+    copyright: str = ""
+    contact: str = ""
+    company_info: str = ""
+
+    # Output exe customisation
+    window_title: str = ""    # title bar text (falls back to app_name)
+    patch_exe_name: str = ""  # output exe stem (auto-derived from app_name if blank)
+    patch_exe_version: str = ""  # informational version string for the patch exe
 
     # Directories
     source_dir: str = ""   # original (old) game folder

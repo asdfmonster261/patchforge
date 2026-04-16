@@ -213,17 +213,53 @@ class MainWindow(QMainWindow):
         self.app_name_edit.setPlaceholderText("My Application")
         mg.addWidget(self.app_name_edit, 0, 1)
 
-        mg.addWidget(QLabel("Version:"),     0, 2)
+        mg.addWidget(QLabel("App note:"),    0, 2)
+        self.app_note_edit = QLineEdit()
+        self.app_note_edit.setPlaceholderText("Short subtitle (optional)")
+        mg.addWidget(self.app_note_edit, 0, 3)
+
+        mg.addWidget(QLabel("Version:"),     1, 0)
         self.version_edit = QLineEdit()
         self.version_edit.setPlaceholderText("1.0.0")
-        mg.addWidget(self.version_edit, 0, 3)
+        mg.addWidget(self.version_edit, 1, 1)
 
-        mg.addWidget(QLabel("Description:"), 1, 0)
+        mg.addWidget(QLabel("Exe version:"), 1, 2)
+        self.patch_exe_version_edit = QLineEdit()
+        self.patch_exe_version_edit.setPlaceholderText("1.0.0.0  (informational)")
+        mg.addWidget(self.patch_exe_version_edit, 1, 3)
+
+        mg.addWidget(QLabel("Description:"), 2, 0)
         self.desc_edit = QLineEdit()
         self.desc_edit.setPlaceholderText("Optional description shown in patcher")
-        mg.addWidget(self.desc_edit, 1, 1, 1, 3)
+        mg.addWidget(self.desc_edit, 2, 1, 1, 3)
 
-        mg.addWidget(QLabel("Icon (.ico):"), 2, 0)
+        mg.addWidget(QLabel("Copyright:"),   3, 0)
+        self.copyright_edit = QLineEdit()
+        self.copyright_edit.setPlaceholderText("© 2025 My Company")
+        mg.addWidget(self.copyright_edit, 3, 1)
+
+        mg.addWidget(QLabel("Company:"),     3, 2)
+        self.company_info_edit = QLineEdit()
+        self.company_info_edit.setPlaceholderText("Publisher / company name")
+        mg.addWidget(self.company_info_edit, 3, 3)
+
+        mg.addWidget(QLabel("Contact:"),     4, 0)
+        self.contact_edit = QLineEdit()
+        self.contact_edit.setPlaceholderText("support@example.com or URL")
+        mg.addWidget(self.contact_edit, 4, 1)
+
+        mg.addWidget(QLabel("Window title:"), 4, 2)
+        self.window_title_edit = QLineEdit()
+        self.window_title_edit.setPlaceholderText("Patcher title bar (defaults to app name)")
+        mg.addWidget(self.window_title_edit, 4, 3)
+
+        mg.addWidget(QLabel("Exe name:"),    5, 0)
+        self.patch_exe_name_edit = QLineEdit()
+        self.patch_exe_name_edit.setPlaceholderText(
+            "Output exe filename stem — blank = auto (AppName_version_patch_x64.exe)")
+        mg.addWidget(self.patch_exe_name_edit, 5, 1, 1, 3)
+
+        mg.addWidget(QLabel("Icon (.ico):"), 6, 0)
         icon_row = QHBoxLayout()
         icon_row.setSpacing(4)
         self.icon_edit = QLineEdit()
@@ -241,7 +277,7 @@ class MainWindow(QMainWindow):
         icon_row.addWidget(self.icon_clear_btn)
         icon_container = QWidget()
         icon_container.setLayout(icon_row)
-        mg.addWidget(icon_container, 2, 1, 1, 3)
+        mg.addWidget(icon_container, 6, 1, 1, 3)
 
         layout.addWidget(meta_grp)
 
@@ -783,8 +819,15 @@ class MainWindow(QMainWindow):
     def _collect_settings(self, validate: bool = True) -> Optional[ProjectSettings]:
         s = ProjectSettings(
             app_name      = self.app_name_edit.text().strip(),
+            app_note      = self.app_note_edit.text().strip(),
             version       = self.version_edit.text().strip(),
             description   = self.desc_edit.text().strip(),
+            copyright     = self.copyright_edit.text().strip(),
+            contact       = self.contact_edit.text().strip(),
+            company_info  = self.company_info_edit.text().strip(),
+            window_title  = self.window_title_edit.text().strip(),
+            patch_exe_name    = self.patch_exe_name_edit.text().strip(),
+            patch_exe_version = self.patch_exe_version_edit.text().strip(),
             source_dir    = self.src_picker.path,
             target_dir    = self.tgt_picker.path,
             output_dir    = self.out_picker.path,
@@ -827,8 +870,15 @@ class MainWindow(QMainWindow):
 
     def _apply_settings(self, s: ProjectSettings):
         self.app_name_edit.setText(s.app_name)
+        self.app_note_edit.setText(s.app_note)
         self.version_edit.setText(s.version)
+        self.patch_exe_version_edit.setText(s.patch_exe_version)
         self.desc_edit.setText(s.description)
+        self.copyright_edit.setText(s.copyright)
+        self.contact_edit.setText(s.contact)
+        self.company_info_edit.setText(s.company_info)
+        self.window_title_edit.setText(s.window_title)
+        self.patch_exe_name_edit.setText(s.patch_exe_name)
         self.src_picker.path = s.source_dir
         self.tgt_picker.path = s.target_dir
         self.out_picker.path = s.output_dir

@@ -111,8 +111,14 @@ def build(
 
     metadata = {
         "app_name":            settings.app_name,
+        "app_note":            settings.app_note,
         "version":             settings.version,
         "description":         settings.description,
+        "copyright":           settings.copyright,
+        "contact":             settings.contact,
+        "company_info":        settings.company_info,
+        "window_title":        settings.window_title,
+        "patch_exe_version":   settings.patch_exe_version,
         "engine":              settings.engine,
         "compression":         settings.compression,
         "verify_method":       settings.verify_method,
@@ -187,9 +193,14 @@ def build(
     _progress(80, "Packaging output exe...")
 
     output_dir = Path(settings.output_dir) if settings.output_dir else Path.cwd()
-    safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in settings.app_name)
-    version_tag = f"_{settings.version}" if settings.version else ""
-    output_path = output_dir / f"{safe_name}{version_tag}_patch_{settings.arch}.exe"
+    if settings.patch_exe_name.strip():
+        safe_name = "".join(c if c.isalnum() or c in "-_." else "_"
+                            for c in settings.patch_exe_name.strip())
+        output_path = output_dir / f"{safe_name}_{settings.arch}.exe"
+    else:
+        safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in settings.app_name)
+        version_tag = f"_{settings.version}" if settings.version else ""
+        output_path = output_dir / f"{safe_name}{version_tag}_patch_{settings.arch}.exe"
 
     try:
         icon = Path(settings.icon_path) if settings.icon_path else None
