@@ -43,6 +43,15 @@ cd patchforge
 pip install -e .
 ```
 
+The Linux engine binaries (`engines/linux-x64/`) are not stored in the repository. Build them from source after cloning:
+
+```bash
+cd engines
+./build.sh
+```
+
+**Requirements for `build.sh`:** `gcc`, `g++`, `make`, `libbz2-dev`, `liblzma-dev` (with static `.a` variants). The resulting binaries link only `libc` and run on any x86-64 Linux.
+
 ---
 
 ## Usage
