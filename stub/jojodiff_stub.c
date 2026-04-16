@@ -671,10 +671,13 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     RegisterClassExA(&wc);
 
     const char *title = g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher";
+    DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    RECT wr = {0, 0, 600, 400};
+    AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
-        0, "PatchForgeStub", title,
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 600, 402,
+        0, "PatchForgeStub", title, wstyle,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        wr.right - wr.left, wr.bottom - wr.top,
         NULL, NULL, hi, NULL);
 
     ShowWindow(hwnd, show);
