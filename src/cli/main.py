@@ -70,9 +70,21 @@ def _add_build(sub):
                    help="Directory to write the output .exe (default: current directory)")
 
     # Metadata
-    p.add_argument("--app-name", metavar="NAME", help="Application name shown in patcher")
-    p.add_argument("--version",  metavar="VER",  help="Version string (e.g. 1.2.3)")
+    p.add_argument("--app-name",    metavar="NAME", help="Application name shown in patcher")
+    p.add_argument("--app-note",    metavar="TEXT", dest="app_note",
+                   help="Short subtitle shown next to the app name")
+    p.add_argument("--version",     metavar="VER",  help="Version string (e.g. 1.2.3)")
     p.add_argument("--description", metavar="TEXT", help="Description shown in patcher")
+    p.add_argument("--copyright",   metavar="TEXT", help="Copyright notice")
+    p.add_argument("--contact",     metavar="TEXT", help="Contact email or URL")
+    p.add_argument("--company-info", metavar="TEXT", dest="company_info",
+                   help="Publisher / company name")
+    p.add_argument("--window-title", metavar="TEXT", dest="window_title",
+                   help="Patcher title bar text (defaults to app name)")
+    p.add_argument("--patch-exe-name", metavar="STEM", dest="patch_exe_name",
+                   help="Output exe filename stem (default: auto from app name + version)")
+    p.add_argument("--patch-exe-version", metavar="VER", dest="patch_exe_version",
+                   help="Informational version string for the patch exe (e.g. 1.0.0.0)")
 
     # Engine + compression
     p.add_argument("--engine", choices=["hdiffpatch", "xdelta3", "jojodiff"],
@@ -164,8 +176,15 @@ def _cmd_build(args):
     if args.target_dir:     settings.target_dir    = args.target_dir
     if args.output_dir:     settings.output_dir    = args.output_dir
     if args.app_name:       settings.app_name      = args.app_name
+    if args.app_note:       settings.app_note      = args.app_note
     if args.version:        settings.version       = args.version
     if args.description:    settings.description   = args.description
+    if args.copyright:      settings.copyright     = args.copyright
+    if args.contact:        settings.contact       = args.contact
+    if args.company_info:   settings.company_info  = args.company_info
+    if args.window_title:   settings.window_title  = args.window_title
+    if args.patch_exe_name:    settings.patch_exe_name    = args.patch_exe_name
+    if args.patch_exe_version: settings.patch_exe_version = args.patch_exe_version
     if args.engine:         settings.engine        = args.engine
     if args.compression:    settings.compression   = args.compression
     if args.threads:              settings.threads            = args.threads
@@ -225,8 +244,15 @@ def _add_new_project(sub):
     p.add_argument("--output", metavar="FILE", required=True,
                    help="Path to write the .xpm project file")
     p.add_argument("--app-name",    metavar="NAME")
+    p.add_argument("--app-note",    metavar="TEXT", dest="app_note")
     p.add_argument("--version",     metavar="VER")
     p.add_argument("--description", metavar="TEXT")
+    p.add_argument("--copyright",   metavar="TEXT")
+    p.add_argument("--contact",     metavar="TEXT")
+    p.add_argument("--company-info", metavar="TEXT", dest="company_info")
+    p.add_argument("--window-title", metavar="TEXT", dest="window_title")
+    p.add_argument("--patch-exe-name",    metavar="STEM", dest="patch_exe_name")
+    p.add_argument("--patch-exe-version", metavar="VER",  dest="patch_exe_version")
     p.add_argument("--engine",      choices=["hdiffpatch", "xdelta3", "jojodiff"])
     p.add_argument("--compression", metavar="PRESET")
     p.add_argument("--threads",     metavar="N", type=int)
@@ -251,8 +277,15 @@ def _cmd_new_project(args):
 
     s = ProjectSettings()
     if args.app_name:      s.app_name      = args.app_name
+    if args.app_note:      s.app_note      = args.app_note
     if args.version:       s.version       = args.version
     if args.description:   s.description   = args.description
+    if args.copyright:     s.copyright     = args.copyright
+    if args.contact:       s.contact       = args.contact
+    if args.company_info:  s.company_info  = args.company_info
+    if args.window_title:  s.window_title  = args.window_title
+    if args.patch_exe_name:    s.patch_exe_name    = args.patch_exe_name
+    if args.patch_exe_version: s.patch_exe_version = args.patch_exe_version
     if args.engine:        s.engine        = args.engine
     if args.compression:   s.compression   = args.compression
     if args.threads:              s.threads            = args.threads
