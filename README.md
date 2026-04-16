@@ -43,12 +43,7 @@ cd patchforge
 pip install -e .
 ```
 
-The Linux engine binaries (`engines/linux-x64/`) are included in the repository. They are statically linked against everything except `libc` and run on any x86-64 Linux. To rebuild them from source (e.g. after an engine version update), run:
-
-```bash
-cd engines
-./build.sh   # requires gcc, g++, make, libbz2-dev, liblzma-dev
-```
+The Linux engine binaries (`engines/linux-x64/`) are included in the repository. They are statically linked against everything except `libc` and run on any x86-64 Linux.
 
 ---
 
