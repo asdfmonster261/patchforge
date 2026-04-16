@@ -438,17 +438,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             500, 370, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
-        /* Bottom-left info: copyright · contact, then version on the line below */
+        /* Bottom-left info: company · copyright · contact, then version on the line below */
         {
             char info[512] = {0};
-            if (g_meta.copyright[0])
-                snprintf(info, sizeof(info), "%s", g_meta.copyright);
-            if (g_meta.contact[0]) {
-                if (info[0]) {
-                    size_t len = strlen(info);
-                    snprintf(info + len, sizeof(info) - len, "  \xB7  %s", g_meta.contact);
-                } else {
-                    snprintf(info, sizeof(info), "%s", g_meta.contact);
+            const char * const info_parts[3] = {
+                g_meta.company_info, g_meta.copyright, g_meta.contact
+            };
+            for (int i = 0; i < 3; i++) {
+                if (info_parts[i][0]) {
+                    if (info[0]) {
+                        size_t l = strlen(info);
+                        snprintf(info + l, sizeof(info) - l, "  \xB7  %s", info_parts[i]);
+                    } else {
+                        snprintf(info, sizeof(info), "%s", info_parts[i]);
+                    }
                 }
             }
             if (info[0]) {
