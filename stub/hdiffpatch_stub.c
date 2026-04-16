@@ -504,7 +504,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetBkColor(dc, COL_LOG_BG);
             return (LRESULT)g_brush_log;
         }
-        /* Labels and checkboxes: match window bg so no lighter rectangle */
+        if (g_backdrop_bmp) {
+            /* Transparent text over backdrop — no opaque rectangle behind labels */
+            SetBkMode(dc, TRANSPARENT);
+            return (LRESULT)GetStockObject(NULL_BRUSH);
+        }
+        /* No backdrop: solid bg so no lighter rectangle behind labels/checkboxes */
         SetBkColor(dc, COL_BG);
         return (LRESULT)g_brush_bg;
     }
