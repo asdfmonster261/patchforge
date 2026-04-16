@@ -39,6 +39,7 @@ HWND g_hwnd_chk_backup  = NULL;
 HWND g_hwnd_chk_verify  = NULL;
 HBRUSH g_brush_bg    = NULL;
 HBRUSH g_brush_light = NULL;
+HBRUSH g_brush_log   = NULL;
 HFONT g_font_normal  = NULL;
 HFONT g_font_title   = NULL;
 char g_exe_path[MAX_PATH] = {0};
@@ -429,8 +430,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT: {
-        HDC dc = (HDC)wp;
+        HDC  dc  = (HDC)wp;
+        HWND ctl = (HWND)lp;
         SetTextColor(dc, COL_TEXT);
+        if (ctl == g_hwnd_log) {
+            SetBkColor(dc, COL_LOG_BG);
+            return (LRESULT)g_brush_log;
+        }
         SetBkColor(dc, COL_BG_LIGHT);
         return (LRESULT)g_brush_light;
     }
@@ -438,17 +444,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT *)lp;
         if (dis->CtlID == IDC_PROGRESS) {
-            RECT r = dis->rcItem;
-            HBRUSH bg = CreateSolidBrush(COL_PROGRESS_BG);
-            FillRect(dis->hDC, &r, bg);
-            DeleteObject(bg);
-            if (g_progress_pct > 0) {
-                RECT f = r;
-                f.right = r.left + (int)((r.right - r.left) * g_progress_pct / 100);
-                HBRUSH ac = CreateSolidBrush(COL_ACCENT);
-                FillRect(dis->hDC, &f, ac);
-                DeleteObject(ac);
-            }
+            pfg_draw_progress(dis->hDC, dis->rcItem, g_progress_pct);
             return TRUE;
         }
         COLORREF bg = (dis->CtlID == IDC_BTN_PATCH) ? COL_ACCENT : COL_BG_LIGHT;
@@ -591,6 +587,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
 
     g_brush_bg    = CreateSolidBrush(COL_BG);
     g_brush_light = CreateSolidBrush(COL_BG_LIGHT);
+    g_brush_log   = CreateSolidBrush(COL_LOG_BG);
     g_font_normal = CreateFontA(14, 0, 0, 0, FW_NORMAL, 0, 0, 0,
                                 DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY,
                                 DEFAULT_PITCH, "Segoe UI");
@@ -633,6 +630,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     if (g_backdrop_bmp) DeleteObject(g_backdrop_bmp);
     DeleteObject(g_brush_bg);
     DeleteObject(g_brush_light);
+    DeleteObject(g_brush_log);
     DeleteObject(g_font_normal);
     DeleteObject(g_font_title);
     CoUninitialize();

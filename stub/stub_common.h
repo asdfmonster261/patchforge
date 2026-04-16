@@ -29,17 +29,20 @@
 #include <string.h>
 #include <stdint.h>
 
-/* ---- Colours (dark theme) ---- */
-#define COL_BG          RGB(0x1e, 0x1e, 0x1e)
-#define COL_BG_LIGHT    RGB(0x2d, 0x2d, 0x2d)
-#define COL_ACCENT      RGB(0x00, 0x7a, 0xcc)
-#define COL_ACCENT_HOV  RGB(0x1a, 0x8a, 0xdc)
-#define COL_TEXT        RGB(0xd4, 0xd4, 0xd4)
-#define COL_TEXT_DIM    RGB(0x88, 0x88, 0x88)
-#define COL_SUCCESS     RGB(0x4e, 0xc9, 0xb0)
-#define COL_ERROR       RGB(0xf4, 0x47, 0x47)
-#define COL_BORDER      RGB(0x3c, 0x3c, 0x3c)
-#define COL_PROGRESS_BG RGB(0x3c, 0x3c, 0x3c)
+/* ---- Colours (dark theme — palette from gui_colors.txt) ---- */
+#define COL_BG          RGB(0x12, 0x12, 0x18)  /* #121218  main bg          */
+#define COL_BG_LIGHT    RGB(0x20, 0x20, 0x2c)  /* #20202c  input/surface bg */
+#define COL_LOG_BG      RGB(0x18, 0x18, 0x20)  /* #181820  log area bg      */
+#define COL_HOVER       RGB(0x2c, 0x2c, 0x3c)  /* #2c2c3c  hover surface    */
+#define COL_PRESSED     RGB(0x3a, 0x3a, 0x55)  /* #3a3a55  pressed surface  */
+#define COL_ACCENT      RGB(0x42, 0x87, 0xf5)  /* #4287f5  accent blue      */
+#define COL_ACCENT_HOV  RGB(0x58, 0x97, 0xff)  /* #5897ff  accent hover     */
+#define COL_TEXT        RGB(0xd7, 0xd7, 0xe1)  /* #d7d7e1  body text        */
+#define COL_TEXT_DIM    RGB(0xa0, 0xa0, 0xb9)  /* #a0a0b9  muted text       */
+#define COL_SUCCESS     RGB(0x3c, 0xb9, 0x69)  /* #3cb969  green            */
+#define COL_ERROR       RGB(0xe6, 0x46, 0x46)  /* #e64646  red              */
+#define COL_BORDER      RGB(0x2a, 0x2a, 0x3a)  /* #2a2a3a  border           */
+#define COL_PROGRESS_BG RGB(0x1a, 0x1a, 0x24)  /* #1a1a24  disabled bg      */
 
 /* ---- Patch magic ---- */
 #define PATCH_MAGIC     "XPATCH01"
@@ -112,6 +115,7 @@ extern HWND g_hwnd_log;
 extern HWND g_hwnd_btn_patch;
 extern HBRUSH g_brush_bg;
 extern HBRUSH g_brush_light;
+extern HBRUSH g_brush_log;
 extern HFONT g_font_normal;
 extern HFONT g_font_title;
 extern PatchMeta g_meta;
@@ -387,27 +391,32 @@ static void enable_dark_titlebar(HWND hwnd)
     DwmSetWindowAttribute(hwnd, 19, &dark, sizeof(dark));
 }
 
-/* ---- Owner-draw button paint ---- */
+/* ---- Owner-draw button paint (rounded, modern) ---- */
 static void paint_button(DRAWITEMSTRUCT *dis, COLORREF bg, COLORREF text_col)
 {
-    HDC dc = dis->hDC;
-    RECT r = dis->rcItem;
-    BOOL hover   = (dis->itemState & ODS_HOTLIGHT) != 0;
-    BOOL pressed = (dis->itemState & ODS_SELECTED) != 0;
+    HDC    dc      = dis->hDC;
+    RECT   r       = dis->rcItem;
+    BOOL   hover   = (dis->itemState & ODS_HOTLIGHT) != 0;
+    BOOL   pressed = (dis->itemState & ODS_SELECTED) != 0;
+    BOOL   focused = (dis->itemState & ODS_FOCUS)    != 0;
 
-    COLORREF c = pressed ? COL_ACCENT :
-                 hover   ? COL_ACCENT_HOV : bg;
-    HBRUSH br = CreateSolidBrush(c);
-    FillRect(dc, &r, br);
-    DeleteObject(br);
+    COLORREF fill   = pressed ? COL_PRESSED : hover ? COL_HOVER : bg;
+    COLORREF border = (hover || focused) ? COL_ACCENT : COL_BORDER;
 
-    HPEN pen = CreatePen(PS_SOLID, 1, COL_BORDER);
-    HPEN old = (HPEN)SelectObject(dc, pen);
-    HBRUSH nb = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HBRUSH ob = (HBRUSH)SelectObject(dc, nb);
-    Rectangle(dc, r.left, r.top, r.right, r.bottom);
-    SelectObject(dc, old); SelectObject(dc, ob);
-    DeleteObject(pen);
+    /* Erase behind rounded corners with window background */
+    HBRUSH win_br = CreateSolidBrush(COL_BG);
+    FillRect(dc, &r, win_br);
+    DeleteObject(win_br);
+
+    HBRUSH btn_br  = CreateSolidBrush(fill);
+    HPEN   btn_pen = CreatePen(PS_SOLID, 1, border);
+    HPEN   old_p   = (HPEN)SelectObject(dc, btn_pen);
+    HBRUSH old_b   = (HBRUSH)SelectObject(dc, btn_br);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, 6, 6);
+    SelectObject(dc, old_p);
+    SelectObject(dc, old_b);
+    DeleteObject(btn_br);
+    DeleteObject(btn_pen);
 
     char buf[128] = {0};
     GetWindowTextA(dis->hwndItem, buf, sizeof(buf));
@@ -807,6 +816,43 @@ static void pfg_load_backdrop(void)
     factory->lpVtbl->Release(factory);
 }
 
+/* ---- Render progress bar (pill-shaped, rounded) ---- */
+static void pfg_draw_progress(HDC dc, RECT r, int pct)
+{
+    int rnd = r.bottom - r.top; /* full pill radius */
+
+    /* Background track */
+    HBRUSH bg_br  = CreateSolidBrush(COL_PROGRESS_BG);
+    HPEN   bg_pen = CreatePen(PS_SOLID, 1, COL_BORDER);
+    HPEN   old_p  = (HPEN)SelectObject(dc, bg_pen);
+    HBRUSH old_b  = (HBRUSH)SelectObject(dc, bg_br);
+    RoundRect(dc, r.left, r.top, r.right, r.bottom, rnd, rnd);
+    SelectObject(dc, old_p);
+    SelectObject(dc, old_b);
+    DeleteObject(bg_br);
+    DeleteObject(bg_pen);
+
+    if (pct <= 0) return;
+
+    /* Filled portion (inset by 1 px all sides) */
+    RECT f  = r;
+    f.left  += 1; f.top += 1; f.bottom -= 1;
+    f.right  = r.left + 1 + (int)((r.right - r.left - 2) * pct / 100);
+    if (f.right > r.right - 1) f.right = r.right - 1;
+    if (f.right <= f.left) return;
+
+    HBRUSH ac_br  = CreateSolidBrush(COL_ACCENT);
+    HPEN   ac_pen = CreatePen(PS_SOLID, 1, COL_ACCENT);
+    old_p = (HPEN)SelectObject(dc, ac_pen);
+    old_b = (HBRUSH)SelectObject(dc, ac_br);
+    int frnd = f.bottom - f.top;
+    RoundRect(dc, f.left, f.top, f.right, f.bottom, frnd, frnd);
+    SelectObject(dc, old_p);
+    SelectObject(dc, old_b);
+    DeleteObject(ac_br);
+    DeleteObject(ac_pen);
+}
+
 /* ---- Render backdrop (or solid fill) for WM_PAINT ---- */
 static void pfg_paint_background(HWND hwnd, HDC dc)
 {
@@ -824,6 +870,11 @@ static void pfg_paint_background(HWND hwnd, HDC dc)
     } else {
         FillRect(dc, &r, g_brush_bg);
     }
+    /* Accent top stripe — always drawn (anchors visual hierarchy) */
+    RECT stripe = {r.left, r.top, r.right, r.top + 3};
+    HBRUSH ac = CreateSolidBrush(COL_ACCENT);
+    FillRect(dc, &stripe, ac);
+    DeleteObject(ac);
 }
 
 /* ---- Smart UAC elevation ---- */
