@@ -383,7 +383,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         HWND lbl = CreateWindowExA(0, "STATIC",
             g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 16, 560, 30, hwnd, NULL, NULL, NULL);
+            20, 16, 680, 30, hwnd, NULL, NULL, NULL);
         SendMessageA(lbl, WM_SETFONT, (WPARAM)g_font_title, TRUE);
 
         /* Change summary */
@@ -399,7 +399,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                                        pos ? "  \xB7  " : "", r);
                 HWND clbl = CreateWindowExA(0, "STATIC", cbuf,
                     WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    20, 50, 560, 16, hwnd, NULL, NULL, NULL);
+                    20, 50, 680, 16, hwnd, NULL, NULL, NULL);
                 SendMessageA(clbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
         }
@@ -408,7 +408,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_meta.description[0]) {
             HWND desc = CreateWindowExA(0, "STATIC", g_meta.description,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 68, 560, 16, hwnd, NULL, NULL, NULL);
+                20, 68, 680, 16, hwnd, NULL, NULL, NULL);
             SendMessageA(desc, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         }
 
@@ -420,12 +420,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         g_hwnd_filepath = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            115, 100, 370, 22, hwnd, (HMENU)IDC_FILEPATH, NULL, NULL);
+            115, 100, 499, 22, hwnd, (HMENU)IDC_FILEPATH, NULL, NULL);
         SendMessageA(g_hwnd_filepath, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         CreateWindowExA(0, "BUTTON", "Browse...",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            492, 100, 80, 22, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
+            622, 100, 78, 22, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
 
         /* Backup checkbox */
         g_hwnd_chk_backup = CreateWindowExA(0, "BUTTON", "Create backup before patching",
@@ -445,28 +445,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            20, 192, 552, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            20, 192, 680, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 310, 552, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+            20, 310, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
 
         /* Status */
         g_hwnd_status = CreateWindowExA(0, "STATIC",
             "Select the game folder and click Patch.",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 326, 440, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+            20, 326, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
         SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Patch / Cancel buttons */
         g_hwnd_btn_patch = CreateWindowExA(0, "BUTTON", "Patch",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            412, 354, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
+            530, 354, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
         CreateWindowExA(0, "BUTTON", "Cancel",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            500, 354, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+            620, 354, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
         /* Bottom-left info: company · copyright · contact, then version on the line below */
         {
@@ -487,7 +487,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (info[0]) {
                 HWND infolbl = CreateWindowExA(0, "STATIC", info,
                     WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
-                    20, 360, 385, 16, hwnd, NULL, NULL, NULL);
+                    20, 360, 500, 16, hwnd, NULL, NULL, NULL);
                 SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
             if (g_meta.version[0]) {
@@ -495,7 +495,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 snprintf(verbuf, sizeof(verbuf), "Version: %s", g_meta.version);
                 HWND verlbl = CreateWindowExA(0, "STATIC", verbuf,
                     WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
-                    20, 384, 385, 16, hwnd, NULL, NULL, NULL);
+                    20, 384, 500, 16, hwnd, NULL, NULL, NULL);
                 SendMessageA(verlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
         }
@@ -724,7 +724,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     /* Compute outer window size from desired client area so the non-client
        frame (title bar + borders) never clips controls at the bottom. */
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT wr = {0, 0, 600, 412};
+    RECT wr = {0, 0, 720, 412};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
         0, "PatchForgeStub", title, wstyle,
