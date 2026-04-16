@@ -688,7 +688,8 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     wc.hCursor       = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = g_brush_bg;
     wc.lpszClassName = "PatchForgeStub";
-    wc.hIcon         = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIcon         = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(1));
+    if (!wc.hIcon) wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     RegisterClassExA(&wc);
 
     const char *title = g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher";
