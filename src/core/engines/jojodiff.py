@@ -84,7 +84,7 @@ class JojoDiffEngine(PatchEngine):
                     error="jdiff produced empty patch",
                 )
             return EngineResult(success=True, patch_path=output, patch_size=sz)
-        except Exception as exc:
+        except OSError as exc:
             return EngineResult(success=False, patch_path=None, patch_size=0, error=str(exc))
 
     def _generate_dir(self, source, target, output, flags: list[str] = [], threads=1,
@@ -111,7 +111,7 @@ class JojoDiffEngine(PatchEngine):
         try:
             workers = threads if threads > 1 else 1
             dir_format.build(source, target, output, make_patch, workers=workers)
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             return EngineResult(success=False, patch_path=None, patch_size=0, error=str(exc))
 
         sz = output.stat().st_size if output.exists() else 0
