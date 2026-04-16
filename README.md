@@ -92,9 +92,9 @@ patchforge build ... --patch-exe-name "MyGame_Update_Nov2025"
 | `--app-note TEXT` | — | Short subtitle shown next to the app name |
 | `--version VER` | — | Version string (e.g. `1.1`) |
 | `--description TEXT` | — | Optional description shown in the patcher |
-| `--copyright TEXT` | — | Copyright notice (logged at patcher startup) |
-| `--contact TEXT` | — | Contact email or URL |
-| `--company-info TEXT` | — | Publisher / company name (logged at patcher startup) |
+| `--copyright TEXT` | — | Copyright notice shown in the patcher window |
+| `--contact TEXT` | — | Contact email or URL shown in the patcher window |
+| `--company-info TEXT` | — | Publisher / company name shown in the patcher window |
 | `--window-title TEXT` | — | Title bar text of the patcher window (defaults to app name) |
 | `--patch-exe-name STEM` | — | Output exe filename stem (default: auto from app name + version) |
 | `--patch-exe-version VER` | — | Informational version string for the patch exe (e.g. `1.0.0.0`) |
