@@ -533,6 +533,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             500, 370, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
+        /* Bottom-left info line: copyright · contact (no engine/compression) */
+        {
+            char info[512] = {0};
+            if (g_meta.copyright[0])
+                snprintf(info, sizeof(info), "%s", g_meta.copyright);
+            if (g_meta.contact[0]) {
+                if (info[0]) {
+                    size_t len = strlen(info);
+                    snprintf(info + len, sizeof(info) - len, "  \xB7  %s", g_meta.contact);
+                } else {
+                    snprintf(info, sizeof(info), "%s", g_meta.contact);
+                }
+            }
+            if (info[0]) {
+                HWND infolbl = CreateWindowExA(0, "STATIC", info,
+                    WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+                    20, 374, 385, 20, hwnd, NULL, NULL, NULL);
+                SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            }
+        }
+
         /* Auto-detect game folder; preset path (from UAC relaunch) takes priority */
         char auto_path[MAX_PATH] = {0};
         if (strcmp(g_meta.find_method, "registry") == 0)
@@ -544,19 +565,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (init[0]) SetWindowTextA(g_hwnd_filepath, init);
         }
 
-        log_append("Engine: JojoDiff (directory patch)");
-        if (g_meta.version[0]) {
-            char b[128]; snprintf(b, sizeof(b), "Version: %s", g_meta.version);
-            log_append(b);
-        }
-        if (g_meta.company_info[0]) {
-            char b[256]; snprintf(b, sizeof(b), "Publisher: %s", g_meta.company_info);
-            log_append(b);
-        }
-        if (g_meta.copyright[0]) {
-            char b[256]; snprintf(b, sizeof(b), "%s", g_meta.copyright);
-            log_append(b);
-        }
         break;
     }
 
