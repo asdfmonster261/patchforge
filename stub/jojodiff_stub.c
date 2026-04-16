@@ -533,7 +533,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             500, 370, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
-        /* Bottom-left info line: copyright · contact (no engine/compression) */
+        /* Bottom-left info: copyright · contact, then version on the line below */
         {
             char info[512] = {0};
             if (g_meta.copyright[0])
@@ -551,6 +551,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
                     20, 374, 385, 20, hwnd, NULL, NULL, NULL);
                 SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            }
+            if (g_meta.version[0]) {
+                char verbuf[80] = {0};
+                snprintf(verbuf, sizeof(verbuf), "Version: %s", g_meta.version);
+                HWND verlbl = CreateWindowExA(0, "STATIC", verbuf,
+                    WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+                    20, 394, 385, 20, hwnd, NULL, NULL, NULL);
+                SendMessageA(verlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
         }
 
