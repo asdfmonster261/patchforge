@@ -143,18 +143,24 @@ def build(
         entries = []
         for rel, tgt_f in sorted(tgt_files.items()):
             if rel not in src_files:
-                entries.append((rel, tgt_f))
+                entries.append((rel, tgt_f, None))
             else:
                 src_f = src_files[rel]
                 if src_f.stat().st_size != tgt_f.stat().st_size or \
                    src_f.read_bytes() != tgt_f.read_bytes():
-                    entries.append((rel, tgt_f))
+                    entries.append((rel, tgt_f, src_f))
         if entries:
-            checksums = ";".join(
+            metadata["checksums"] = ";".join(
                 f"{rel}|{_ver.compute(tgt_f, settings.verify_method)}"
-                for rel, tgt_f in entries
+                for rel, tgt_f, _ in entries
             )
-            metadata["checksums"] = checksums
+            # Source checksums for pre-patch version verification
+            src_entries = [(rel, src_f) for rel, _, src_f in entries if src_f is not None]
+            if src_entries:
+                metadata["source_checksums"] = ";".join(
+                    f"{rel}|{_ver.compute(src_f, settings.verify_method)}"
+                    for rel, src_f in src_entries
+                )
 
     # ------------------------------------------------------------------ #
     # 4. Load backdrop                                                     #
