@@ -436,7 +436,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         HWND lbl = CreateWindowExA(0, "STATIC",
             g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 18, 560, 28, hwnd, NULL, NULL, NULL);
+            20, 18, 560, 32, hwnd, NULL, NULL, NULL);
         SendMessageA(lbl, WM_SETFONT, (WPARAM)g_font_title, TRUE);
 
         /* Change summary */
@@ -452,7 +452,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                                        pos ? "  \xB7  " : "", r);
                 HWND clbl = CreateWindowExA(0, "STATIC", cbuf,
                     WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    20, 70, 560, 16, hwnd, NULL, NULL, NULL);
+                    20, 56, 560, 16, hwnd, NULL, NULL, NULL);
                 SendMessageA(clbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
         }
@@ -461,7 +461,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (g_meta.description[0]) {
             HWND desc = CreateWindowExA(0, "STATIC", g_meta.description,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 88, 560, 16, hwnd, NULL, NULL, NULL);
+                20, 74, 560, 16, hwnd, NULL, NULL, NULL);
             SendMessageA(desc, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         }
 
@@ -741,7 +741,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     g_font_normal = CreateFontA(14, 0, 0, 0, FW_NORMAL, 0, 0, 0,
                                 DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY,
                                 DEFAULT_PITCH, "Segoe UI");
-    g_font_title  = CreateFontA(18, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0,
+    g_font_title  = CreateFontA(22, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0,
                                 DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY,
                                 DEFAULT_PITCH, "Segoe UI");
 
