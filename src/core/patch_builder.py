@@ -84,7 +84,8 @@ def build(
         raw_patch = Path(tmpdir) / "patch.bin"
 
         result = engine.generate(source, target, raw_patch, settings.compression,
-                                 threads=settings.threads)
+                                 threads=settings.threads,
+                                 compressor_quality=settings.compressor_quality)
         if not result.success:
             return BuildResult(success=False, error=f"Patch generation failed: {result.error}")
 

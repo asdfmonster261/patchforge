@@ -15,7 +15,10 @@ from PySide6.QtWidgets import (
 
 from .theme import QSS, ACCENT, SUCCESS, ERROR, WARN, TEXT_DIM
 
-from ..core.engines.hdiffpatch import HDiffPatchEngine, THREAD_OPTIONS
+from ..core.engines.hdiffpatch import (
+    HDiffPatchEngine, THREAD_OPTIONS,
+    LZMA2_QUALITIES, BZIP2_QUALITIES, DEFAULT_QUALITY, preset_compressor,
+)
 from ..core.engines.jojodiff import JojoDiffEngine
 from ..core.engines.xdelta3 import XDelta3Engine
 from ..core.project import ProjectSettings, save as save_project, load as load_project
@@ -238,6 +241,11 @@ class MainWindow(QMainWindow):
             self.threads_combo.addItem(str(t), userData=t)
         eg.addWidget(self.threads_combo, 1, 1)
 
+        self.quality_lbl = QLabel("Quality:")
+        eg.addWidget(self.quality_lbl, 1, 2)
+        self.quality_combo = QComboBox()
+        eg.addWidget(self.quality_combo, 1, 3)
+
         eg.addWidget(QLabel("Verify:"),      2, 0)
         self.verify_combo = QComboBox()
         self.verify_combo.addItems(["CRC32C SUM", "MD5 HASH", "FILESIZE"])
@@ -402,7 +410,6 @@ class MainWindow(QMainWindow):
         if engine == "hdiffpatch":
             for key, lbl in HDiffPatchEngine.presets().items():
                 self.comp_combo.addItem(lbl, userData=key)
-            # Default to set5
             for i in range(self.comp_combo.count()):
                 if self.comp_combo.itemData(i) == HDiffPatchEngine.default_preset():
                     self.comp_combo.setCurrentIndex(i)
@@ -425,11 +432,35 @@ class MainWindow(QMainWindow):
                     break
             self.comp_combo.setEnabled(True)
 
+        is_hdiff = (engine == "hdiffpatch")
+        self.quality_lbl.setVisible(is_hdiff)
+        self.quality_combo.setVisible(is_hdiff)
+
         self.comp_combo.blockSignals(False)
         self._on_compression_changed()
 
     def _on_compression_changed(self):
         self.stub_warn_lbl.hide()
+        if self._engine_key() != "hdiffpatch":
+            return
+
+        preset_key = self._compression_key()
+        qualities = HDiffPatchEngine.qualities_for_preset(preset_key)
+
+        # Remember the current selection so we can restore it if still valid.
+        current_quality = self.quality_combo.currentData()
+
+        self.quality_combo.blockSignals(True)
+        self.quality_combo.clear()
+        for key, (lbl, _flag) in qualities.items():
+            self.quality_combo.addItem(lbl, userData=key)
+        # Restore previous selection, fall back to default.
+        restore = current_quality if current_quality in qualities else DEFAULT_QUALITY
+        for i in range(self.quality_combo.count()):
+            if self.quality_combo.itemData(i) == restore:
+                self.quality_combo.setCurrentIndex(i)
+                break
+        self.quality_combo.blockSignals(False)
 
     def _on_icon_browse(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -563,9 +594,10 @@ class MainWindow(QMainWindow):
             ini_path      = self.ini_path_picker.path,
             ini_section   = self.ini_section_edit.text().strip(),
             ini_key       = self.ini_key_edit.text().strip(),
-            arch          = "x64" if self.arch_x64.isChecked() else "x86",
-            threads       = self.threads_combo.currentData(),
-            icon_path     = self.icon_edit.text().strip(),
+            arch               = "x64" if self.arch_x64.isChecked() else "x86",
+            threads            = self.threads_combo.currentData(),
+            compressor_quality = self.quality_combo.currentData() or DEFAULT_QUALITY,
+            icon_path          = self.icon_edit.text().strip(),
         )
         if validate:
             errors = []
@@ -620,6 +652,11 @@ class MainWindow(QMainWindow):
         for i in range(self.threads_combo.count()):
             if self.threads_combo.itemData(i) == s.threads:
                 self.threads_combo.setCurrentIndex(i)
+                break
+
+        for i in range(self.quality_combo.count()):
+            if self.quality_combo.itemData(i) == s.compressor_quality:
+                self.quality_combo.setCurrentIndex(i)
                 break
 
     def _clear_fields(self):

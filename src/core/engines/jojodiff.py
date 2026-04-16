@@ -55,6 +55,7 @@ class JojoDiffEngine(PatchEngine):
         output: Path,
         compression: str = _DEFAULT_PRESET,
         threads: int = 1,
+        compressor_quality: str = "max",
     ) -> EngineResult:
         _label, flags = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])
         if source.is_dir():
