@@ -58,7 +58,7 @@ def _build_presets() -> dict[str, tuple[str, list[str]]]:
 
 
 _PRESETS = _build_presets()
-_DEFAULT_PRESET  = "set5_lzma2"
+_DEFAULT_PRESET  = "set6_lzma2"
 _DEFAULT_THREADS = 1
 
 
