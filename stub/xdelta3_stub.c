@@ -35,6 +35,8 @@ HWND g_hwnd_progress  = NULL;
 HWND g_hwnd_filepath  = NULL;
 HWND g_hwnd_log       = NULL;
 HWND g_hwnd_btn_patch = NULL;
+static int g_close_countdown = 0;
+#define TIMER_CLOSE 1
 HWND g_hwnd_chk_backup  = NULL;
 HWND g_hwnd_chk_verify  = NULL;
 HBRUSH g_brush_bg    = NULL;
@@ -294,6 +296,10 @@ static DWORD WINAPI patch_thread(LPVOID arg)
     PostMessageA(g_hwnd, WM_PATCH_PROG, 15, 0);
     PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Applying patch (in-place)..."));
 
+    FileStamp *ts_snap = NULL; int ts_count = 0;
+    if (g_meta.preserve_timestamps)
+        ts_snap = pfg_snapshot_timestamps(a->game_dir, &ts_count);
+
     int ok = apply_dir_xdelta3(a->game_dir, g_patch_data, g_patch_size);
 
     if (ok && a->do_verify) {
@@ -308,6 +314,11 @@ static DWORD WINAPI patch_thread(LPVOID arg)
     if (ok && g_meta.num_extra_files > 0) {
         PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup("Installing extra files..."));
         pfg_write_extra_files(a->game_dir, &g_meta);
+    }
+
+    if (ts_snap) {
+        if (ok) pfg_restore_timestamps(ts_snap, ts_count);
+        free(ts_snap);
     }
 
     if (ok && g_meta.run_after[0]) {
@@ -536,6 +547,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 set_status("Folder not found. Please select a valid directory.", COL_ERROR);
                 return 0;
             }
+            if (!pfg_check_free_space(hwnd, path, g_meta.required_free_space_gb)) return 0;
             if (!pfg_check_elevate(path)) return 0;
             EnableWindow(g_hwnd_btn_patch, FALSE);
             set_status("Patching...", COL_TEXT);
@@ -555,11 +567,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_PATCH_DONE:
         if (wp) {
-            set_status("Patch applied successfully!", COL_SUCCESS);
             log_append("Done — game updated successfully.");
             MessageBoxA(hwnd, "Patch applied successfully!\nYour game has been updated.",
                         g_meta.app_name[0] ? g_meta.app_name : "PatchForge",
                         MB_OK | MB_ICONINFORMATION);
+            if (g_meta.close_delay > 0) {
+                g_close_countdown = g_meta.close_delay;
+                char buf[64];
+                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds…", g_close_countdown);
+                set_status(buf, COL_SUCCESS);
+                SetTimer(hwnd, TIMER_CLOSE, 1000, NULL);
+            } else {
+                set_status("Patch applied successfully!", COL_SUCCESS);
+            }
         } else {
             set_status("Patching failed. See log for details.", COL_ERROR);
             log_append("ERROR: Patch failed. Your game folder has not been modified.");
@@ -568,6 +588,20 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 "Error", MB_OK | MB_ICONERROR);
         }
         EnableWindow(g_hwnd_btn_patch, TRUE);
+        break;
+
+    case WM_TIMER:
+        if (wp == TIMER_CLOSE) {
+            g_close_countdown--;
+            if (g_close_countdown <= 0) {
+                KillTimer(hwnd, TIMER_CLOSE);
+                DestroyWindow(hwnd);
+            } else {
+                char buf[64];
+                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds…", g_close_countdown);
+                set_status(buf, COL_SUCCESS);
+            }
+        }
         break;
 
     case WM_PATCH_PROG:

@@ -70,6 +70,11 @@ class ProjectSettings:
     # Feature: backdrop image shown in patcher window (PNG/JPEG/BMP)
     backdrop_path: str = ""
 
+    # Feature: patcher UX options
+    close_delay: int = 0               # seconds to auto-close after success (0 = stay open)
+    required_free_space_gb: float = 0.0  # minimum free disk space in GB (0 = no check)
+    preserve_timestamps: bool = False  # restore original file mtimes after patching
+
     # Feature: extra files to write into the game folder after patching
     # Each entry: {"src": absolute_path_on_build_machine, "dest": relative_path_in_game_folder}
     extra_files: list = field(default_factory=list)
