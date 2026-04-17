@@ -156,6 +156,10 @@ def build(
         "run_after":           settings.run_after,
         "backup_at":           settings.backup_at,
         "backup_path":         settings.backup_path,
+        # Patcher UX
+        "close_delay":             settings.close_delay,
+        "required_free_space_gb":  settings.required_free_space_gb,
+        "preserve_timestamps":     1 if settings.preserve_timestamps else 0,
     }
 
     # Always compute file trees so change counts are available for the UI

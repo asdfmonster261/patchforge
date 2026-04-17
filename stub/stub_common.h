@@ -104,6 +104,11 @@ typedef struct {
     char backup_at[32];         /* "disabled"|"same_folder"|"custom" */
     char backup_path[512];      /* used when backup_at == "custom" */
 
+    /* Patcher UX options */
+    int    close_delay;             /* seconds to auto-close after success; 0 = stay open */
+    double required_free_space_gb;  /* minimum free GB before patching; 0 = no check */
+    int    preserve_timestamps;     /* 1 = restore original file mtimes after patching */
+
     /* Change summary (set at build time) */
     int files_modified;
     int files_added;
@@ -179,6 +184,17 @@ static int64_t json_get_int(const char *json, const char *key)
     p += strlen(search);
     while (*p == ' ' || *p == ':') p++;
     return (int64_t)_atoi64(p);
+}
+
+static double json_get_double(const char *json, const char *key)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return 0.0;
+    p += strlen(search);
+    while (*p == ' ' || *p == ':') p++;
+    return strtod(p, NULL);
 }
 
 /* Like json_get_str but malloc's the result — caller must free(). */
@@ -367,6 +383,11 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     json_get_str(json, "backup_at",   meta->backup_at,   sizeof(meta->backup_at));
     if (!meta->backup_at[0]) { strncpy(meta->backup_at, "same_folder", sizeof(meta->backup_at) - 1); meta->backup_at[sizeof(meta->backup_at) - 1] = '\0'; }
     json_get_str(json, "backup_path", meta->backup_path, sizeof(meta->backup_path));
+
+    /* Patcher UX options */
+    meta->close_delay            = (int)json_get_int(json, "close_delay");
+    meta->required_free_space_gb = json_get_double(json, "required_free_space_gb");
+    meta->preserve_timestamps    = (int)json_get_int(json, "preserve_timestamps");
 
     /* Backdrop */
     meta->backdrop_offset = json_get_int(json, "backdrop_offset");
@@ -1028,6 +1049,87 @@ static void log_append(const char *msg)
     SendMessageA(g_hwnd_log, EM_REPLACESEL, FALSE, (LPARAM)msg);
     SendMessageA(g_hwnd_log, EM_REPLACESEL, FALSE, (LPARAM)"\r\n");
     SendMessageA(g_hwnd_log, WM_VSCROLL, SB_BOTTOM, 0);
+}
+
+/* ---- Disk space check ---- */
+/* Returns 1 if ok to proceed, 0 if user cancelled. */
+static int pfg_check_free_space(HWND hwnd, const char *game_path, double required_gb)
+{
+    if (required_gb <= 0.0) return 1;
+    /* Use the drive root of the game path */
+    char root[4] = {0};
+    if (game_path[0] && game_path[1] == ':') {
+        root[0] = game_path[0]; root[1] = ':'; root[2] = '\\';
+    } else {
+        return 1; /* Can't determine drive — skip check */
+    }
+    ULARGE_INTEGER free_bytes;
+    if (!GetDiskFreeSpaceExA(root, &free_bytes, NULL, NULL)) return 1;
+    double free_gb = (double)free_bytes.QuadPart / (1024.0 * 1024.0 * 1024.0);
+    if (free_gb >= required_gb) return 1;
+    char msg[320];
+    snprintf(msg, sizeof(msg),
+        "Low disk space warning\n\n"
+        "Required:  %.1f GB\n"
+        "Available: %.1f GB\n\n"
+        "Continue patching anyway?",
+        required_gb, free_gb);
+    return (MessageBoxA(hwnd, msg, "Disk Space Warning",
+                        MB_YESNO | MB_ICONWARNING) == IDYES) ? 1 : 0;
+}
+
+/* ---- Timestamp preservation ---- */
+typedef struct { char path[MAX_PATH]; FILETIME mtime; } FileStamp;
+
+static void pfg_snapshot_dir(const char *dir, FileStamp **arr, int *cnt, int *cap)
+{
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof(pattern), "%s\\*", dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+        char full[MAX_PATH];
+        snprintf(full, sizeof(full), "%s\\%s", dir, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            pfg_snapshot_dir(full, arr, cnt, cap);
+        } else {
+            if (*cnt >= *cap) {
+                *cap = (*cap == 0) ? 64 : (*cap * 2);
+                *arr = (FileStamp *)realloc(*arr, (size_t)(*cap) * sizeof(FileStamp));
+                if (!*arr) { *cnt = 0; *cap = 0; FindClose(h); return; }
+            }
+            strncpy((*arr)[*cnt].path, full, MAX_PATH - 1);
+            (*arr)[*cnt].path[MAX_PATH - 1] = '\0';
+            (*arr)[*cnt].mtime = fd.ftLastWriteTime;
+            (*cnt)++;
+        }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+}
+
+/* Snapshot all file mtimes under dir. Returns malloc'd array; caller frees. */
+static FileStamp *pfg_snapshot_timestamps(const char *dir, int *out_count)
+{
+    FileStamp *arr = NULL; int cnt = 0, cap = 0;
+    pfg_snapshot_dir(dir, &arr, &cnt, &cap);
+    *out_count = cnt;
+    return arr;
+}
+
+/* Restore mtimes from a snapshot. */
+static void pfg_restore_timestamps(FileStamp *snap, int count)
+{
+    for (int i = 0; i < count; i++) {
+        HANDLE h = CreateFileA(snap[i].path, FILE_WRITE_ATTRIBUTES,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                               OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+        if (h != INVALID_HANDLE_VALUE) {
+            SetFileTime(h, NULL, NULL, &snap[i].mtime);
+            CloseHandle(h);
+        }
+    }
 }
 
 #endif /* STUB_COMMON_H */

@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QProgressBar, QPlainTextEdit,
     QFileDialog, QSplitter, QSizePolicy, QFrame, QStatusBar,
     QCheckBox, QListWidget, QListWidgetItem, QScrollArea, QInputDialog,
+    QSpinBox, QDoubleSpinBox,
 )
 
 from .theme import QSS, ACCENT, SUCCESS, ERROR, WARN, TEXT_DIM
@@ -500,6 +501,50 @@ class MainWindow(QMainWindow):
         bp_w.hide()
         self._backup_path_widget = bp_w
 
+        # Preserve timestamps
+        self.preserve_timestamps_chk = QCheckBox("Preserve original file timestamps after patching")
+        self.preserve_timestamps_chk.setToolTip(
+            "Before patching, snapshot the modification time of every file in the game\n"
+            "folder. After patching succeeds, restore those timestamps. Useful for\n"
+            "games that check file dates for integrity or DRM purposes."
+        )
+        ag.addWidget(self.preserve_timestamps_chk, 6, 0, 1, 3)
+
+        # Required free space
+        ag.addWidget(QLabel("Min. free space:"), 7, 0)
+        free_space_row = QHBoxLayout()
+        free_space_row.setSpacing(6)
+        self.free_space_spin = QDoubleSpinBox()
+        self.free_space_spin.setRange(0.0, 999.0)
+        self.free_space_spin.setSingleStep(0.5)
+        self.free_space_spin.setDecimals(1)
+        self.free_space_spin.setValue(0.0)
+        self.free_space_spin.setFixedWidth(80)
+        self.free_space_spin.setToolTip("Warn if available disk space is below this threshold (0 = disabled)")
+        free_space_row.addWidget(self.free_space_spin)
+        free_space_row.addWidget(QLabel("GB  (0 = no check)"))
+        free_space_row.addStretch()
+        fs_w = QWidget()
+        fs_w.setLayout(free_space_row)
+        ag.addWidget(fs_w, 7, 1, 1, 2)
+
+        # Close delay
+        ag.addWidget(QLabel("Auto-close delay:"), 8, 0)
+        close_delay_row = QHBoxLayout()
+        close_delay_row.setSpacing(6)
+        self.close_delay_spin = QSpinBox()
+        self.close_delay_spin.setRange(0, 3600)
+        self.close_delay_spin.setSingleStep(1)
+        self.close_delay_spin.setValue(0)
+        self.close_delay_spin.setFixedWidth(70)
+        self.close_delay_spin.setToolTip("Seconds before auto-closing after a successful patch (0 = stay open)")
+        close_delay_row.addWidget(self.close_delay_spin)
+        close_delay_row.addWidget(QLabel("seconds  (0 = stay open)"))
+        close_delay_row.addStretch()
+        cd_w = QWidget()
+        cd_w.setLayout(close_delay_row)
+        ag.addWidget(cd_w, 8, 1, 1, 2)
+
         layout.addWidget(adv_grp)
         layout.addStretch()
 
@@ -857,6 +902,9 @@ class MainWindow(QMainWindow):
             backup_at          = self.backup_combo.currentData() or "same_folder",
             backup_path        = self.backup_path_edit.text().strip(),
             backdrop_path      = self.backdrop_edit.text().strip(),
+            close_delay            = self.close_delay_spin.value(),
+            required_free_space_gb = self.free_space_spin.value(),
+            preserve_timestamps    = self.preserve_timestamps_chk.isChecked(),
             extra_files        = self._collect_extra_files(),
         )
         if validate:
@@ -949,6 +997,9 @@ class MainWindow(QMainWindow):
         self.backup_path_edit.setText(s.backup_path)
 
         self.backdrop_edit.setText(s.backdrop_path)
+        self.preserve_timestamps_chk.setChecked(s.preserve_timestamps)
+        self.free_space_spin.setValue(s.required_free_space_gb)
+        self.close_delay_spin.setValue(s.close_delay)
 
         self.extra_files_list.clear()
         for ef in (s.extra_files or []):
