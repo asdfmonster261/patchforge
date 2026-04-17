@@ -152,8 +152,11 @@ def build(
         "ini_key":             settings.ini_key,
         # Patching-behaviour fields
         "delete_extra_files":  1 if settings.delete_extra_files else 0,
+        "run_on_startup":      settings.run_on_startup,
         "run_before":          settings.run_before,
         "run_after":           settings.run_after,
+        "run_on_finish":       settings.run_on_finish,
+        "detect_running_exe":  settings.detect_running_exe,
         "backup_at":           settings.backup_at,
         "backup_path":         settings.backup_path,
         # Patcher UX

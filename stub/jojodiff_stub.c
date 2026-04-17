@@ -566,6 +566,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         }
 
+        /* Run on-startup command asynchronously */
+        pfg_run_async(g_meta.run_on_startup);
+
         /* Auto-detect game folder; preset path (from UAC relaunch) takes priority */
         char auto_path[MAX_PATH] = {0};
         if (strcmp(g_meta.find_method, "registry") == 0)
@@ -632,6 +635,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 set_status("Folder not found. Please select a valid directory.", COL_ERROR);
                 return 0;
             }
+            if (g_meta.detect_running_exe[0] && !pfg_check_running_exe(hwnd, g_meta.detect_running_exe)) return 0;
             if (!pfg_check_free_space(hwnd, path, g_meta.required_free_space_gb)) return 0;
             if (!pfg_check_elevate(path)) return 0;
             EnableWindow(g_hwnd_btn_patch, FALSE);
@@ -656,6 +660,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             MessageBoxA(hwnd, "Patch applied successfully!\nYour game has been updated.",
                         g_meta.app_name[0] ? g_meta.app_name : "PatchForge",
                         MB_OK | MB_ICONINFORMATION);
+            pfg_run_async(g_meta.run_on_finish);
             if (g_meta.close_delay > 0) {
                 g_close_countdown = g_meta.close_delay;
                 char buf[64];

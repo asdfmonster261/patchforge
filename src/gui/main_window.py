@@ -545,6 +545,28 @@ class MainWindow(QMainWindow):
         cd_w.setLayout(close_delay_row)
         ag.addWidget(cd_w, 8, 1, 1, 2)
 
+        # Detect running exe
+        ag.addWidget(QLabel("Detect running:"), 9, 0)
+        self.detect_running_edit = QLineEdit()
+        self.detect_running_edit.setPlaceholderText("e.g. GameApp.exe — warn if running before patching")
+        self.detect_running_edit.setToolTip(
+            "If the specified process is running when the user clicks Patch,\n"
+            "a warning dialog will appear asking whether to continue."
+        )
+        ag.addWidget(self.detect_running_edit, 9, 1, 1, 2)
+
+        # Run on startup
+        ag.addWidget(QLabel("Run on startup:"), 10, 0)
+        self.run_on_startup_edit = QLineEdit()
+        self.run_on_startup_edit.setPlaceholderText("Command to run when the patcher window opens (optional)")
+        ag.addWidget(self.run_on_startup_edit, 10, 1, 1, 2)
+
+        # Run on finish
+        ag.addWidget(QLabel("Run on finish:"), 11, 0)
+        self.run_on_finish_edit = QLineEdit()
+        self.run_on_finish_edit.setPlaceholderText("Command to run after successful patch + dialog (optional)")
+        ag.addWidget(self.run_on_finish_edit, 11, 1, 1, 2)
+
         layout.addWidget(adv_grp)
         layout.addStretch()
 
@@ -905,6 +927,9 @@ class MainWindow(QMainWindow):
             close_delay            = self.close_delay_spin.value(),
             required_free_space_gb = self.free_space_spin.value(),
             preserve_timestamps    = self.preserve_timestamps_chk.isChecked(),
+            detect_running_exe     = self.detect_running_edit.text().strip(),
+            run_on_startup         = self.run_on_startup_edit.text().strip(),
+            run_on_finish          = self.run_on_finish_edit.text().strip(),
             extra_files        = self._collect_extra_files(),
         )
         if validate:
@@ -1000,6 +1025,9 @@ class MainWindow(QMainWindow):
         self.preserve_timestamps_chk.setChecked(s.preserve_timestamps)
         self.free_space_spin.setValue(s.required_free_space_gb)
         self.close_delay_spin.setValue(s.close_delay)
+        self.detect_running_edit.setText(s.detect_running_exe)
+        self.run_on_startup_edit.setText(s.run_on_startup)
+        self.run_on_finish_edit.setText(s.run_on_finish)
 
         self.extra_files_list.clear()
         for ef in (s.extra_files or []):
