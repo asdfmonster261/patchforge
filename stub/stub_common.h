@@ -24,6 +24,7 @@
 #include <shlobj.h>
 #include <wincrypt.h>
 #include <wincodec.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,8 +100,11 @@ typedef struct {
 
     /* New: patching behaviour */
     int  delete_extra_files;    /* 1 = delete files absent from target (default) */
+    char run_on_startup[512];   /* command run when patcher window opens (async) */
     char run_before[512];       /* command to run before patching */
     char run_after[512];        /* command to run after patching */
+    char run_on_finish[512];    /* command run after successful patch + dialog */
+    char detect_running_exe[256]; /* warn if this process name is running */
     char backup_at[32];         /* "disabled"|"same_folder"|"custom" */
     char backup_path[512];      /* used when backup_at == "custom" */
 
@@ -378,9 +382,12 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
         if (!json_get_str(json, "delete_extra_files", tmp, sizeof(tmp)) || !tmp[0])
             meta->delete_extra_files = 1;
     }
-    json_get_str(json, "run_before",  meta->run_before,  sizeof(meta->run_before));
-    json_get_str(json, "run_after",   meta->run_after,   sizeof(meta->run_after));
-    json_get_str(json, "backup_at",   meta->backup_at,   sizeof(meta->backup_at));
+    json_get_str(json, "run_on_startup",    meta->run_on_startup,    sizeof(meta->run_on_startup));
+    json_get_str(json, "run_before",        meta->run_before,        sizeof(meta->run_before));
+    json_get_str(json, "run_after",         meta->run_after,         sizeof(meta->run_after));
+    json_get_str(json, "run_on_finish",     meta->run_on_finish,     sizeof(meta->run_on_finish));
+    json_get_str(json, "detect_running_exe",meta->detect_running_exe,sizeof(meta->detect_running_exe));
+    json_get_str(json, "backup_at",         meta->backup_at,         sizeof(meta->backup_at));
     if (!meta->backup_at[0]) { strncpy(meta->backup_at, "same_folder", sizeof(meta->backup_at) - 1); meta->backup_at[sizeof(meta->backup_at) - 1] = '\0'; }
     json_get_str(json, "backup_path", meta->backup_path, sizeof(meta->backup_path));
 
@@ -1049,6 +1056,48 @@ static void log_append(const char *msg)
     SendMessageA(g_hwnd_log, EM_REPLACESEL, FALSE, (LPARAM)msg);
     SendMessageA(g_hwnd_log, EM_REPLACESEL, FALSE, (LPARAM)"\r\n");
     SendMessageA(g_hwnd_log, WM_VSCROLL, SB_BOTTOM, 0);
+}
+
+/* ---- Detect running game process ---- */
+/* Returns 1 if ok to proceed, 0 if user cancelled. */
+static int pfg_check_running_exe(HWND hwnd, const char *exe_name)
+{
+    if (!exe_name || !exe_name[0]) return 1;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 1;
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(pe);
+    int found = 0;
+    if (Process32First(snap, &pe)) {
+        do {
+            if (_stricmp(pe.szExeFile, exe_name) == 0) { found = 1; break; }
+        } while (Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
+    if (!found) return 1;
+    char msg[512];
+    snprintf(msg, sizeof(msg),
+        "The game appears to be running.\n\n"
+        "Process detected: %s\n\n"
+        "Please close the game before applying this patch.\n\n"
+        "Continue anyway?",
+        exe_name);
+    return (MessageBoxA(hwnd, msg, "Game Is Running",
+                        MB_YESNO | MB_ICONWARNING) == IDYES) ? 1 : 0;
+}
+
+/* ---- Run startup command asynchronously (fire-and-forget thread) ---- */
+static DWORD WINAPI pfg_run_async_thread(LPVOID arg)
+{
+    pfg_run_and_wait((const char *)arg);
+    free(arg);
+    return 0;
+}
+static void pfg_run_async(const char *cmd)
+{
+    if (!cmd || !cmd[0]) return;
+    char *copy = _strdup(cmd);
+    if (copy) CloseHandle(CreateThread(NULL, 0, pfg_run_async_thread, copy, 0, NULL));
 }
 
 /* ---- Disk space check ---- */

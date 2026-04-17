@@ -60,8 +60,11 @@ class ProjectSettings:
 
     # Feature: patching behaviour
     delete_extra_files: bool = True   # delete game files absent from target version
+    run_on_startup: str = ""          # shell command run when patcher window opens
     run_before: str = ""              # shell command run before patching starts
     run_after:  str = ""              # shell command run after patching succeeds
+    run_on_finish: str = ""           # shell command run after successful patch + dialog
+    detect_running_exe: str = ""      # warn if this process is running before patching
 
     # Feature: backup
     backup_at: str = "same_folder"   # "disabled" | "same_folder" | "custom"
