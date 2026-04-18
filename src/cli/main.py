@@ -1,6 +1,7 @@
 """PatchForge CLI — mirrors all GUI options."""
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -32,6 +33,9 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_build(sub)
     _add_new_project(sub)
     _add_show_project(sub)
+    _add_repack(sub)
+    _add_new_repack_project(sub)
+    _add_show_repack_project(sub)
 
     return parser
 
@@ -45,8 +49,21 @@ Examples:
   patchforge new-project --output patch.xpm
   patchforge build --project patch.xpm --source-dir game_v1/ --target-dir game_v2/
 
-  # Show a saved project
+  # Show a saved patch project
   patchforge show-project patch.xpm
+
+  # Build a repack installer from a game directory
+  patchforge repack --game-dir game/ --output-dir dist/ --app-name "My Game" --threads 8
+
+  # Repack with optional components
+  patchforge repack --game-dir game/ --app-name "My Game" \\
+    --component '{"label":"High-res textures","folder":"hires/","default_checked":false,"group":""}' \\
+    --component '{"label":"English voices","folder":"voices_en/","default_checked":true,"group":"voices"}' \\
+    --component '{"label":"Japanese voices","folder":"voices_jp/","default_checked":false,"group":"voices"}'
+
+  # Create/show a repack project file
+  patchforge new-repack-project --output installer.xpr --app-name "My Game"
+  patchforge show-repack-project installer.xpr
 """
 
 
@@ -332,6 +349,263 @@ def _cmd_show_project(args):
     for key, val in asdict(s).items():
         if val is not None and val != "" and val != []:
             print(f"  {key:<20} {val}")
+
+
+# ---------------------------------------------------------------------------
+# repack
+# ---------------------------------------------------------------------------
+
+def _add_repack(sub):
+    p = sub.add_parser("repack", help="Build a self-contained installer exe from a game directory")
+
+    p.add_argument("--project", metavar="FILE",
+                   help="Load settings from a .xpr repack project file (flags override)")
+
+    # Paths
+    p.add_argument("--game-dir",   metavar="DIR", dest="game_dir",
+                   help="Game directory to compress and install")
+    p.add_argument("--output-dir", metavar="DIR", dest="output_dir",
+                   help="Directory to write the output .exe (default: current directory)")
+
+    # Metadata
+    p.add_argument("--app-name",    metavar="NAME", dest="app_name",
+                   help="Application name shown in the installer")
+    p.add_argument("--app-note",    metavar="TEXT", dest="app_note",
+                   help="Short subtitle shown next to the app name")
+    p.add_argument("--version",     metavar="VER",
+                   help="Version string (e.g. 1.0)")
+    p.add_argument("--description", metavar="TEXT",
+                   help="Description shown in the installer")
+    p.add_argument("--copyright",   metavar="TEXT",
+                   help="Copyright notice")
+    p.add_argument("--contact",     metavar="TEXT",
+                   help="Contact email or URL")
+    p.add_argument("--company-info", metavar="TEXT", dest="company_info",
+                   help="Publisher / company name")
+    p.add_argument("--window-title", metavar="TEXT", dest="window_title",
+                   help="Installer title bar text (defaults to app name)")
+    p.add_argument("--installer-exe-name", metavar="STEM", dest="installer_exe_name",
+                   help="Output exe filename stem (default: auto from app name + version)")
+    p.add_argument("--installer-exe-version", metavar="VER", dest="installer_exe_version",
+                   help="Informational version string for the exe (e.g. 1.0.0.0)")
+
+    # Compression
+    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra64"],
+                   help="Compression quality (default: max)")
+    p.add_argument("--threads", metavar="N", type=int,
+                   help="Compression threads: 1 = stdlib lzma; >1 = xz CLI MT (default: 1)")
+    p.add_argument("--arch", choices=["x64", "x86"],
+                   help="Output exe architecture (default: x64)")
+
+    # Visual
+    p.add_argument("--icon-path", metavar="FILE", dest="icon_path",
+                   help="Optional .ico file to embed as the installer's icon")
+    p.add_argument("--backdrop",  metavar="FILE", dest="backdrop_path",
+                   help="Background image for the installer window (PNG/JPEG/BMP)")
+
+    # Post-install behaviour
+    p.add_argument("--install-registry-key", metavar="KEY", dest="install_registry_key",
+                   help=r"Registry key written to HKCU after install (e.g. SOFTWARE\Company\Game)")
+    p.add_argument("--run-after", metavar="CMD", dest="run_after_install",
+                   help="Shell command to run after successful install")
+    p.add_argument("--detect-running", metavar="EXE", dest="detect_running_exe",
+                   help="Warn if this process is running before install (e.g. MyGame.exe)")
+    p.add_argument("--close-delay", metavar="N", type=int, dest="close_delay",
+                   help="Seconds before auto-closing after success (default: 0 = stay open)")
+    p.add_argument("--required-free-space", metavar="GB", type=float,
+                   dest="required_free_space_gb",
+                   help="Warn if available disk space is below this threshold in GB (default: 0 = disabled)")
+
+    # Optional components
+    p.add_argument("--component", metavar="JSON", action="append", dest="components_json",
+                   help=(
+                       "Add an optional component as a JSON object. Repeatable. "
+                       'Example: \'{"label":"DLC","folder":"dlc/","default_checked":true,"group":""}\''
+                   ))
+
+    # Save project after build
+    p.add_argument("--save-project", metavar="FILE",
+                   help="Save resolved settings to a .xpr project file after building")
+
+    p.set_defaults(func=_cmd_repack)
+
+
+def _cmd_repack(args):
+    from src.core.repack_project import RepackSettings, load as load_repack, save as save_repack
+    from src.core.repack_builder import build as build_repack
+
+    # Start from defaults or a loaded project
+    if args.project:
+        try:
+            settings = load_repack(Path(args.project))
+        except Exception as exc:
+            _die(f"Failed to load project '{args.project}': {exc}")
+    else:
+        settings = RepackSettings()
+
+    # Apply flag overrides
+    if args.game_dir:              settings.game_dir              = args.game_dir
+    if args.output_dir:            settings.output_dir            = args.output_dir
+    if args.app_name:              settings.app_name              = args.app_name
+    if args.app_note:              settings.app_note              = args.app_note
+    if args.version:               settings.version               = args.version
+    if args.description:           settings.description           = args.description
+    if args.copyright:             settings.copyright             = args.copyright
+    if args.contact:               settings.contact               = args.contact
+    if args.company_info:          settings.company_info          = args.company_info
+    if args.window_title:          settings.window_title          = args.window_title
+    if args.installer_exe_name:    settings.installer_exe_name    = args.installer_exe_name
+    if args.installer_exe_version: settings.installer_exe_version = args.installer_exe_version
+    if args.compression:           settings.compression           = args.compression
+    if args.threads:               settings.threads               = args.threads
+    if args.arch:                  settings.arch                  = args.arch
+    if args.icon_path:             settings.icon_path             = args.icon_path
+    if args.backdrop_path:         settings.backdrop_path         = args.backdrop_path
+    if args.install_registry_key:  settings.install_registry_key  = args.install_registry_key
+    if args.run_after_install:     settings.run_after_install     = args.run_after_install
+    if args.detect_running_exe:    settings.detect_running_exe    = args.detect_running_exe
+    if args.close_delay is not None:           settings.close_delay           = args.close_delay
+    if args.required_free_space_gb is not None: settings.required_free_space_gb = args.required_free_space_gb
+
+    # Parse --component flags
+    if args.components_json:
+        parsed = []
+        for raw in args.components_json:
+            try:
+                c = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                _die(f"Invalid --component JSON: {exc}\n  value: {raw}")
+            if "label" not in c or "folder" not in c:
+                _die(f"--component JSON must have 'label' and 'folder' keys: {raw}")
+            parsed.append({
+                "label":           str(c["label"]),
+                "folder":          str(c["folder"]),
+                "default_checked": bool(c.get("default_checked", True)),
+                "group":           str(c.get("group", "")),
+            })
+        settings.components = parsed
+
+    # Save project if requested
+    if args.save_project:
+        try:
+            save_repack(settings, Path(args.save_project))
+            print(f"Project saved: {args.save_project}")
+        except Exception as exc:
+            _warn(f"Could not save project: {exc}")
+
+    # Build
+    def progress(pct: int, msg: str):
+        bar_len = 30
+        filled = int(bar_len * pct / 100)
+        bar = "#" * filled + "-" * (bar_len - filled)
+        print(f"\r[{bar}] {pct:3d}%  {msg:<55}", end="", flush=True)
+
+    print(f"Building repack installer for '{settings.app_name}'...")
+    result = build_repack(settings, progress=progress)
+    print()  # newline after progress bar
+
+    if not result.success:
+        _die(f"Repack failed: {result.error}")
+
+    print(f"\nOutput:       {result.output_path}")
+    print(f"Files packed: {result.total_files}")
+    print(f"Game size:    {_fmt_size(result.uncompressed_size)}")
+    print(f"Installer:    {_fmt_size(result.output_size)}")
+    ratio = result.output_size / result.uncompressed_size * 100 if result.uncompressed_size else 0
+    print(f"Compression:  {ratio:.1f}% of original")
+
+
+# ---------------------------------------------------------------------------
+# new-repack-project
+# ---------------------------------------------------------------------------
+
+def _add_new_repack_project(sub):
+    p = sub.add_parser("new-repack-project",
+                       help="Create a new repack project file with default settings")
+    p.add_argument("--output", metavar="FILE", required=True,
+                   help="Path to write the .xpr project file")
+    p.add_argument("--app-name",    metavar="NAME", dest="app_name")
+    p.add_argument("--app-note",    metavar="TEXT", dest="app_note")
+    p.add_argument("--version",     metavar="VER")
+    p.add_argument("--description", metavar="TEXT")
+    p.add_argument("--copyright",   metavar="TEXT")
+    p.add_argument("--contact",     metavar="TEXT")
+    p.add_argument("--company-info", metavar="TEXT", dest="company_info")
+    p.add_argument("--window-title", metavar="TEXT", dest="window_title")
+    p.add_argument("--installer-exe-name",    metavar="STEM", dest="installer_exe_name")
+    p.add_argument("--installer-exe-version", metavar="VER",  dest="installer_exe_version")
+    p.add_argument("--game-dir",    metavar="DIR",  dest="game_dir")
+    p.add_argument("--output-dir",  metavar="DIR",  dest="output_dir")
+    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra64"])
+    p.add_argument("--threads",     metavar="N",    type=int)
+    p.add_argument("--arch",        choices=["x64", "x86"])
+    p.add_argument("--icon-path",   metavar="FILE", dest="icon_path")
+    p.add_argument("--backdrop",    metavar="FILE", dest="backdrop_path")
+    p.set_defaults(func=_cmd_new_repack_project)
+
+
+def _cmd_new_repack_project(args):
+    from src.core.repack_project import RepackSettings, save as save_repack
+
+    s = RepackSettings()
+    if args.app_name:             s.app_name             = args.app_name
+    if args.app_note:             s.app_note             = args.app_note
+    if args.version:              s.version              = args.version
+    if args.description:          s.description          = args.description
+    if args.copyright:            s.copyright            = args.copyright
+    if args.contact:              s.contact              = args.contact
+    if args.company_info:         s.company_info         = args.company_info
+    if args.window_title:         s.window_title         = args.window_title
+    if args.installer_exe_name:   s.installer_exe_name   = args.installer_exe_name
+    if args.installer_exe_version: s.installer_exe_version = args.installer_exe_version
+    if args.game_dir:             s.game_dir             = args.game_dir
+    if args.output_dir:           s.output_dir           = args.output_dir
+    if args.compression:          s.compression          = args.compression
+    if args.threads:              s.threads              = args.threads
+    if args.arch:                 s.arch                 = args.arch
+    if args.icon_path:            s.icon_path            = args.icon_path
+    if args.backdrop_path:        s.backdrop_path        = args.backdrop_path
+
+    out = Path(args.output)
+    save_repack(s, out)
+    print(f"Repack project created: {out}")
+    print(f"  compression: {s.compression}")
+    print(f"  threads:     {s.threads}")
+    print(f"  arch:        {s.arch}")
+
+
+# ---------------------------------------------------------------------------
+# show-repack-project
+# ---------------------------------------------------------------------------
+
+def _add_show_repack_project(sub):
+    p = sub.add_parser("show-repack-project",
+                       help="Display settings from a .xpr repack project file")
+    p.add_argument("project", metavar="FILE", help="Path to .xpr project file")
+    p.set_defaults(func=_cmd_show_repack_project)
+
+
+def _cmd_show_repack_project(args):
+    from src.core.repack_project import load as load_repack
+    from dataclasses import asdict
+
+    try:
+        s = load_repack(Path(args.project))
+    except Exception as exc:
+        _die(f"Failed to load project: {exc}")
+
+    print(f"Repack project: {args.project}")
+    d = asdict(s)
+    components = d.pop("components", [])
+    for key, val in d.items():
+        if val is not None and val != "" and val != []:
+            print(f"  {key:<28} {val}")
+    if components:
+        print(f"  {'components':<28} ({len(components)})")
+        for i, c in enumerate(components):
+            grp = f"  [group: {c['group']}]" if c.get("group") else ""
+            chk = "checked" if c.get("default_checked", True) else "unchecked"
+            print(f"    [{i + 1}] {c['label']}  ({c['folder']})  {chk}{grp}")
 
 
 # ---------------------------------------------------------------------------

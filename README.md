@@ -96,7 +96,73 @@ patchforge build ... --patch-exe-name "MyGame_Update_Nov2025"
 # → dist/MyGame_Update_Nov2025_x64.exe
 ```
 
-Repack mode does not currently have a CLI; use the GUI.
+### CLI (Repack mode)
+
+```bash
+patchforge repack \
+  --game-dir game/ \
+  --output-dir dist/ \
+  --app-name "My Game" \
+  --compression max \
+  --threads 8 \
+  --arch x64
+```
+
+Output: `dist/MyGame_1.0_installer_x64.exe`
+
+With optional components:
+
+```bash
+patchforge repack --game-dir game/ --app-name "My Game" \
+  --component '{"label":"High-res textures","folder":"hires/","default_checked":false,"group":""}' \
+  --component '{"label":"English voices","folder":"voices_en/","default_checked":true,"group":"voices"}' \
+  --component '{"label":"Japanese voices","folder":"voices_jp/","default_checked":false,"group":"voices"}'
+```
+
+Each `--component` is a JSON object with `label`, `folder`, `default_checked` (bool), and `group` (string; empty = checkbox, shared name = mutually exclusive radio buttons). The flag is repeatable.
+
+Load a `.xpr` project file and override individual fields:
+
+```bash
+patchforge repack --project installer.xpr --threads 16 --output-dir dist/
+```
+
+#### All `repack` flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--project FILE` | — | Load settings from a `.xpr` project file (flags override) |
+| `--game-dir DIR` | — | Game directory to compress |
+| `--output-dir DIR` | `.` | Directory for the output `.exe` |
+| `--app-name NAME` | — | Application name shown in the installer |
+| `--app-note TEXT` | — | Short subtitle shown next to the app name |
+| `--version VER` | — | Version string (e.g. `1.0`) |
+| `--description TEXT` | — | Description shown in the installer |
+| `--copyright TEXT` | — | Copyright notice |
+| `--contact TEXT` | — | Contact email or URL |
+| `--company-info TEXT` | — | Publisher / company name |
+| `--window-title TEXT` | — | Installer title bar text (defaults to app name) |
+| `--installer-exe-name STEM` | — | Output exe filename stem (default: auto) |
+| `--installer-exe-version VER` | — | Informational version string for the exe |
+| `--compression QUALITY` | `max` | `fast` \| `normal` \| `max` \| `ultra64` |
+| `--threads N` | `1` | Compression threads (1 = stdlib lzma; >1 = xz CLI MT) |
+| `--arch ARCH` | `x64` | `x64` \| `x86` |
+| `--icon-path FILE` | — | `.ico` file to embed as the installer's icon |
+| `--backdrop FILE` | — | Background image for the installer window (PNG/JPEG/BMP) |
+| `--install-registry-key KEY` | — | Registry key written to HKCU after install |
+| `--run-after CMD` | — | Shell command to run after successful install |
+| `--detect-running EXE` | — | Warn if this process is running before install |
+| `--close-delay N` | `0` | Seconds before auto-closing after success (0 = stay open) |
+| `--required-free-space GB` | `0` | Warn if disk space is below this threshold in GB (0 = disabled) |
+| `--component JSON` | — | Add an optional component (repeatable; see above) |
+| `--save-project FILE` | — | Save resolved settings to a `.xpr` after building |
+
+#### Repack project commands
+
+```bash
+patchforge new-repack-project --output installer.xpr --app-name "My Game" --compression max
+patchforge show-repack-project installer.xpr
+```
 
 #### All `build` flags
 
