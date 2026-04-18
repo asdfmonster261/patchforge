@@ -49,6 +49,10 @@
 #define IDC_LOG          1007
 #define IDC_CHK_LOWLOAD  1010
 #define IDC_SPACE_LBL    1011
+#define IDC_COMP_BASE    1020   /* component checkboxes/radios: 1020, 1021, ... */
+
+/* ---- Component limits ---- */
+#define MAX_COMPONENTS   16
 
 /* ---- Thread messages ---- */
 #define WM_INSTALL_DONE  (WM_USER + 1)
@@ -114,6 +118,18 @@ static HBITMAP    g_backdrop_bmp      = NULL;
 static int        g_btn_hover_install = 0;
 static int        g_btn_hover_cancel  = 0;
 
+/* ---- Optional components ---- */
+typedef struct {
+    int  index;
+    char label[256];
+    char group[64];
+    int  default_checked;
+    HWND hwnd_ctrl;
+} ComponentInfo;
+
+static ComponentInfo g_components[MAX_COMPONENTS];
+static int           g_num_components = 0;
+
 /* ---- Forward declarations ---- */
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 
@@ -161,6 +177,65 @@ static double json_get_double(const char *json, const char *key)
     p += strlen(search);
     while (*p == ' ' || *p == ':') p++;
     return strtod(p, NULL);
+}
+
+static int json_get_bool(const char *json, const char *key, int def)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return def;
+    p += strlen(search);
+    while (*p == ' ' || *p == ':') p++;
+    if (strncmp(p, "true",  4) == 0) return 1;
+    if (strncmp(p, "false", 5) == 0) return 0;
+    return def;
+}
+
+/* Parse "components" JSON array from metadata into g_components[]. */
+static void json_parse_components(const char *json)
+{
+    const char *p = strstr(json, "\"components\"");
+    if (!p) return;
+    p = strchr(p, '[');
+    if (!p) return;
+    p++;
+
+    g_num_components = 0;
+    while (g_num_components < MAX_COMPONENTS) {
+        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',') p++;
+        if (*p == ']' || !*p) break;
+        if (*p != '{') break;
+
+        /* Find the closing brace for this object */
+        const char *obj_start = p;
+        const char *q = p + 1;
+        int depth = 1;
+        while (*q && depth > 0) {
+            if      (*q == '{') depth++;
+            else if (*q == '}') depth--;
+            q++;
+        }
+
+        int obj_len = (int)(q - obj_start);
+        char *tmp = (char *)malloc(obj_len + 1);
+        if (!tmp) break;
+        memcpy(tmp, obj_start, obj_len);
+        tmp[obj_len] = '\0';
+
+        ComponentInfo *c = &g_components[g_num_components];
+        memset(c, 0, sizeof(*c));
+        c->index           = (int)json_get_int(tmp, "index");
+        c->default_checked = json_get_bool(tmp, "default_checked", 1);
+        json_get_str(tmp, "label", c->label, sizeof(c->label));
+        json_get_str(tmp, "group", c->group, sizeof(c->group));
+        free(tmp);
+
+        if (c->index > 0 && c->label[0])
+            g_num_components++;
+
+        p = q;
+    }
 }
 
 /* ==================================================================== */
@@ -213,6 +288,8 @@ static int read_install_meta(void)
     g_meta.pack_data_size           = json_get_int(buf, "pack_data_size");
     g_meta.backdrop_offset          = json_get_int(buf, "backdrop_offset");
     g_meta.backdrop_size            = json_get_int(buf, "backdrop_size");
+
+    json_parse_components(buf);
 
     free(buf);
     return 1;
@@ -588,14 +665,17 @@ static void ensure_dir_for_file(const char *filepath)
 struct InstallArgs {
     char install_dir[MAX_PATH];
     int  low_load;
+    int  selected_comps[MAX_COMPONENTS];  /* selected_comps[i] = 1 if component (i+1) selected */
+    int  num_components;
 };
 
-static int do_install(const char *install_dir, int low_load)
+static int do_install(const char *install_dir, int low_load,
+                      const int *selected_comps, int num_components)
 {
     FILE *f = fopen(g_exe_path, "rb");
     if (!f) return 0;
 
-    /* Seek past the file table to reach the compressed data size field */
+    /* Seek past the file table */
     _fseeki64(f, g_meta.pack_data_offset, SEEK_SET);
     uint32_t n = 0;
     fread(&n, 4, 1, f);
@@ -605,15 +685,23 @@ static int do_install(const char *install_dir, int low_load)
         _fseeki64(f, (int64_t)(plen + 8 + 8 + 4), SEEK_CUR);
     }
 
-    uint64_t csize = 0;
-    fread(&csize, 8, 1, f);
-    /* f is now positioned at the first byte of compressed data */
+    /* Read number of compressed streams */
+    uint32_t num_streams = 0;
+    fread(&num_streams, 4, 1, f);
 
-    lzma_stream strm = LZMA_STREAM_INIT;
-    if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK) {
-        fclose(f);
-        return 0;
+    /* Count how many files will actually be installed (for progress %) */
+    uint32_t total_to_install = 0;
+    for (uint32_t i = 0; i < g_num_entries; i++) {
+        uint32_t cidx = g_entries[i].component;
+        int install_this = (cidx == 0);
+        if (!install_this && (int)cidx <= num_components)
+            install_this = selected_comps[cidx - 1];
+        if (install_this) total_to_install++;
     }
+    if (total_to_install == 0) total_to_install = 1;
+
+    int success = 1;
+    uint32_t files_done = 0;
 
     const size_t IN_SZ  = 65536;
     const size_t OUT_SZ = low_load ? 65536 : 262144;
@@ -621,97 +709,130 @@ static int do_install(const char *install_dir, int low_load)
     uint8_t *outbuf = (uint8_t *)malloc(OUT_SZ);
     if (!inbuf || !outbuf) {
         free(inbuf); free(outbuf);
-        lzma_end(&strm);
         fclose(f);
         return 0;
     }
 
-    uint64_t total_read     = 0;
-    uint32_t cur_file       = 0;
-    uint64_t cur_file_written = 0;
-    HANDLE   hf             = INVALID_HANDLE_VALUE;
-    int      success        = 1;
-    lzma_action action      = LZMA_RUN;
+    for (uint32_t s = 0; s < num_streams && success; s++) {
+        uint32_t comp_idx = 0;
+        uint64_t csize    = 0;
+        fread(&comp_idx, 4, 1, f);
+        fread(&csize,    8, 1, f);
 
-    strm.next_in  = NULL;
-    strm.avail_in = 0;
+        /* Decide whether to extract this stream */
+        int install_this = (comp_idx == 0);
+        if (!install_this && (int)comp_idx <= num_components)
+            install_this = selected_comps[comp_idx - 1];
 
-    while (1) {
-        /* Feed more compressed input when the buffer is empty */
-        if (strm.avail_in == 0 && total_read < csize) {
-            size_t to_read = IN_SZ < (csize - total_read)
-                             ? IN_SZ : (size_t)(csize - total_read);
-            size_t got = fread(inbuf, 1, to_read, f);
-            strm.next_in  = inbuf;
-            strm.avail_in = (uint32_t)got;
-            total_read   += got;
-            if (total_read >= csize) action = LZMA_FINISH;
+        if (!install_this) {
+            _fseeki64(f, (int64_t)csize, SEEK_CUR);
+            continue;
         }
 
-        strm.next_out  = outbuf;
-        strm.avail_out = (uint32_t)OUT_SZ;
-
-        lzma_ret ret = lzma_code(&strm, action);
-        size_t produced = OUT_SZ - strm.avail_out;
-
-        /* Distribute decoded bytes across output files */
-        uint8_t *ptr = outbuf;
-        size_t   rem = produced;
-
-        while (rem > 0 && cur_file < g_num_entries) {
-            PackEntry *e = &g_entries[cur_file];
-            uint64_t need  = e->size - cur_file_written;
-            size_t   write = (size_t)(rem < need ? rem : need);
-
-            if (hf == INVALID_HANDLE_VALUE && e->size > 0) {
-                char fpath[MAX_PATH];
-                snprintf(fpath, MAX_PATH, "%s\\%s", install_dir, e->path);
-                /* Forward slashes → backslashes */
-                for (char *p = fpath; *p; p++) if (*p == '/') *p = '\\';
-                ensure_dir_for_file(fpath);
-                hf = CreateFileA(fpath, GENERIC_WRITE, 0, NULL,
-                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-            }
-
-            if (hf != INVALID_HANDLE_VALUE && write > 0) {
-                DWORD written = 0;
-                if (!WriteFile(hf, ptr, (DWORD)write, &written, NULL))
-                    success = 0;
-            }
-
-            ptr             += write;
-            rem             -= write;
-            cur_file_written += write;
-
-            if (cur_file_written >= e->size || e->size == 0) {
-                if (hf != INVALID_HANDLE_VALUE) {
-                    CloseHandle(hf);
-                    hf = INVALID_HANDLE_VALUE;
-                }
-                cur_file_written = 0;
-                cur_file++;
-
-                /* Progress + log */
-                int pct = (int)(cur_file * 100 / g_num_entries);
-                PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
-
-                char *log_msg = (char *)malloc(128);
-                if (log_msg) {
-                    snprintf(log_msg, 128, "Extracting file %u / %u: %s",
-                             cur_file, g_num_entries, e->path);
-                    PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
-                }
+        /* Find file entries belonging to this component (contiguous in table) */
+        uint32_t first_entry = g_num_entries, last_entry = g_num_entries;
+        for (uint32_t i = 0; i < g_num_entries; i++) {
+            if (g_entries[i].component == comp_idx) {
+                if (first_entry == g_num_entries) first_entry = i;
+                last_entry = i + 1;
             }
         }
+        if (first_entry == g_num_entries) {
+            _fseeki64(f, (int64_t)csize, SEEK_CUR);
+            continue;
+        }
 
-        if (low_load) Sleep(1);
+        /* Decompress stream and extract files */
+        lzma_stream strm = LZMA_STREAM_INIT;
+        if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK) {
+            success = 0;
+            break;
+        }
 
-        if (ret == LZMA_STREAM_END) break;
-        if (ret != LZMA_OK) { success = 0; break; }
+        uint64_t    total_read       = 0;
+        uint32_t    cur_file         = first_entry;
+        uint64_t    cur_file_written = 0;
+        HANDLE      hf               = INVALID_HANDLE_VALUE;
+        lzma_action action           = LZMA_RUN;
+
+        strm.next_in  = NULL;
+        strm.avail_in = 0;
+
+        while (1) {
+            if (strm.avail_in == 0 && total_read < csize) {
+                size_t to_read = IN_SZ < (csize - total_read)
+                                 ? IN_SZ : (size_t)(csize - total_read);
+                size_t got = fread(inbuf, 1, to_read, f);
+                strm.next_in  = inbuf;
+                strm.avail_in = (uint32_t)got;
+                total_read   += got;
+                if (total_read >= csize) action = LZMA_FINISH;
+            }
+
+            strm.next_out  = outbuf;
+            strm.avail_out = (uint32_t)OUT_SZ;
+
+            lzma_ret ret = lzma_code(&strm, action);
+            size_t produced = OUT_SZ - strm.avail_out;
+
+            uint8_t *ptr = outbuf;
+            size_t   rem = produced;
+
+            while (rem > 0 && cur_file < last_entry) {
+                PackEntry *e = &g_entries[cur_file];
+                uint64_t need  = e->size - cur_file_written;
+                size_t   write = (size_t)(rem < need ? rem : need);
+
+                if (hf == INVALID_HANDLE_VALUE && e->size > 0) {
+                    char fpath[MAX_PATH];
+                    snprintf(fpath, MAX_PATH, "%s\\%s", install_dir, e->path);
+                    for (char *fp = fpath; *fp; fp++) if (*fp == '/') *fp = '\\';
+                    ensure_dir_for_file(fpath);
+                    hf = CreateFileA(fpath, GENERIC_WRITE, 0, NULL,
+                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                }
+
+                if (hf != INVALID_HANDLE_VALUE && write > 0) {
+                    DWORD written = 0;
+                    if (!WriteFile(hf, ptr, (DWORD)write, &written, NULL))
+                        success = 0;
+                }
+
+                ptr              += write;
+                rem              -= write;
+                cur_file_written += write;
+
+                if (cur_file_written >= e->size || e->size == 0) {
+                    if (hf != INVALID_HANDLE_VALUE) {
+                        CloseHandle(hf);
+                        hf = INVALID_HANDLE_VALUE;
+                    }
+                    cur_file_written = 0;
+                    cur_file++;
+                    files_done++;
+
+                    int pct = (int)(files_done * 100 / total_to_install);
+                    PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
+
+                    char *log_msg = (char *)malloc(128);
+                    if (log_msg) {
+                        snprintf(log_msg, 128, "Extracting %u / %u: %s",
+                                 files_done, total_to_install, e->path);
+                        PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                    }
+                }
+            }
+
+            if (low_load) Sleep(1);
+
+            if (ret == LZMA_STREAM_END) break;
+            if (ret != LZMA_OK) { success = 0; break; }
+        }
+
+        if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
+        lzma_end(&strm);
     }
 
-    if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
-    lzma_end(&strm);
     free(inbuf);
     free(outbuf);
     fclose(f);
@@ -734,7 +855,8 @@ static int do_install(const char *install_dir, int low_load)
 static DWORD WINAPI install_thread(LPVOID param)
 {
     struct InstallArgs *args = (struct InstallArgs *)param;
-    int ok = do_install(args->install_dir, args->low_load);
+    int ok = do_install(args->install_dir, args->low_load,
+                        args->selected_comps, args->num_components);
     PostMessageA(g_hwnd, WM_INSTALL_DONE, (WPARAM)ok, 0);
     free(args);
     return 0;
@@ -751,6 +873,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CREATE: {
         g_hwnd = hwnd;
         enable_dark_titlebar(hwnd);
+
+        /* Dynamic y-offset: each optional component adds 24px below the
+           "Reduce system load" checkbox.  co == 0 when no components. */
+        int co = g_num_components * 24;
 
         /* Title */
         HWND lbl = CreateWindowExA(0, "STATIC",
@@ -812,39 +938,68 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             20, 130, 460, 20, hwnd, (HMENU)IDC_CHK_LOWLOAD, NULL, NULL);
         SendMessageA(g_hwnd_chk_lowload, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
-        /* Disk space label */
+        /* Optional component checkboxes / radio buttons */
+        if (g_num_components > 0) {
+            char prev_group[64] = {0};
+            for (int ci = 0; ci < g_num_components; ci++) {
+                ComponentInfo *c = &g_components[ci];
+                DWORD btn_style = WS_CHILD | WS_VISIBLE;
+                if (c->group[0]) {
+                    btn_style |= BS_AUTORADIOBUTTON;
+                    /* First radio in a new group needs WS_GROUP so Win32 knows
+                       where each mutual-exclusion group begins. */
+                    if (strcmp(c->group, prev_group) != 0) {
+                        btn_style |= WS_GROUP;
+                        strncpy(prev_group, c->group, sizeof(prev_group) - 1);
+                    }
+                } else {
+                    btn_style |= BS_AUTOCHECKBOX | WS_GROUP;
+                    prev_group[0] = '\0';
+                }
+                c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
+                    btn_style,
+                    20, 154 + ci * 24, 680, 22,
+                    hwnd, (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
+                SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                /* Set default checked state */
+                if (c->default_checked)
+                    SendMessageA(c->hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
+            }
+        }
+
+        /* Disk space label (shifts down when components are present) */
         g_hwnd_space_lbl = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 154, 680, 16, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
+            20, 154 + co, 680, 16, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
         SendMessageA(g_hwnd_space_lbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Log area */
         g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            20, 180, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            20, 180 + co, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 310, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+            20, 310 + co, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
         SetWindowLongA(g_hwnd_progress, GWLP_USERDATA, 0);
 
         /* Status */
         g_hwnd_status = CreateWindowExA(0, "STATIC",
             "Select an install folder and click Install.",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 326, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+            20, 326 + co, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
         SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Install / Cancel buttons */
         g_hwnd_btn_install = CreateWindowExA(0, "BUTTON", "Install",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            530, 354, 80, 28, hwnd, (HMENU)IDC_BTN_INSTALL, NULL, NULL);
+            530, 354 + co, 80, 28, hwnd, (HMENU)IDC_BTN_INSTALL, NULL, NULL);
         CreateWindowExA(0, "BUTTON", "Cancel",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            620, 354, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+            620, 354 + co, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
         /* Bottom-left info: company · copyright · contact */
         {
@@ -863,7 +1018,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (pos > 0) {
                 HWND infolbl = CreateWindowExA(0, "STATIC", info,
                     WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    20, 358, 500, 16, hwnd, NULL, NULL, NULL);
+                    20, 358 + co, 500, 16, hwnd, NULL, NULL, NULL);
                 SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
         }
@@ -874,7 +1029,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             snprintf(verbuf, sizeof(verbuf), "Version %s", g_meta.version);
             HWND verlbl = CreateWindowExA(0, "STATIC", verbuf,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 378, 500, 14, hwnd, NULL, NULL, NULL);
+                20, 378 + co, 500, 14, hwnd, NULL, NULL, NULL);
             SendMessageA(verlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         }
 
@@ -1017,14 +1172,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ensure_dir(path);
 
             EnableWindow(g_hwnd_btn_install, FALSE);
-            set_status("Installing…", COL_TEXT);
+            set_status("Installing\xe2\x80\xa6", COL_TEXT);
 
             int low_load = (SendMessageA(g_hwnd_chk_lowload, BM_GETCHECK, 0, 0) == BST_CHECKED);
             struct InstallArgs *args =
                 (struct InstallArgs *)malloc(sizeof(struct InstallArgs));
             strncpy(args->install_dir, path, MAX_PATH - 1);
             args->install_dir[MAX_PATH - 1] = '\0';
-            args->low_load = low_load;
+            args->low_load      = low_load;
+            args->num_components = g_num_components;
+            memset(args->selected_comps, 0, sizeof(args->selected_comps));
+            for (int ci = 0; ci < g_num_components; ci++) {
+                args->selected_comps[ci] =
+                    (SendMessageA(g_components[ci].hwnd_ctrl, BM_GETCHECK, 0, 0)
+                     == BST_CHECKED) ? 1 : 0;
+            }
             CloseHandle(CreateThread(NULL, 0, install_thread, args, 0, NULL));
         } else if (id == IDC_BTN_CANCEL) {
             DestroyWindow(hwnd);
@@ -1176,9 +1338,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                       : "PatchForge Installer";
 
     /* Compute outer window size from desired client area so the non-client
-       frame (title bar + borders) never clips controls at the bottom. */
+       frame (title bar + borders) never clips controls at the bottom.
+       Each optional component adds 24 px to the client height. */
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT wr = {0, 0, 720, 412};
+    RECT wr = {0, 0, 720, 412 + g_num_components * 24};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
         0, "PFGInstaller", title, wstyle,

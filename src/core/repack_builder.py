@@ -60,6 +60,14 @@ def build(
         return RepackResult(success=False,
                             error=f"Unknown compression quality: {settings.compression!r}")
 
+    for i, c in enumerate(settings.components or []):
+        cf = Path(c.get("folder", ""))
+        if not cf.is_dir():
+            return RepackResult(
+                success=False,
+                error=f"Component {i + 1} folder not found: {cf}"
+            )
+
     _progress(5, "Validating…")
 
     # ------------------------------------------------------------------ #
@@ -73,6 +81,7 @@ def build(
         blob, total_files, uncompressed_size = build_archive(
             game_dir,
             quality=settings.compression,
+            components=settings.components or [],
             progress=_archive_prog,
         )
     except Exception as exc:
@@ -103,6 +112,16 @@ def build(
         "detect_running_exe":      settings.detect_running_exe,
         "close_delay":             settings.close_delay,
         "required_free_space_gb":  settings.required_free_space_gb,
+        # Optional components metadata (installer renders checkboxes/radio buttons)
+        "components": [
+            {
+                "index":           i + 1,
+                "label":           c.get("label", f"Component {i + 1}"),
+                "group":           c.get("group", ""),
+                "default_checked": bool(c.get("default_checked", True)),
+            }
+            for i, c in enumerate(settings.components or [])
+        ],
     }
 
     # ------------------------------------------------------------------ #

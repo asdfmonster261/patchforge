@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QSplitter, QSizePolicy, QFrame, QStatusBar,
     QCheckBox, QListWidget, QListWidgetItem, QScrollArea, QInputDialog,
     QSpinBox, QDoubleSpinBox, QTabWidget,
+    QDialog, QDialogButtonBox, QFormLayout,
 )
 
 from .theme import QSS, ACCENT, SUCCESS, ERROR, WARN, TEXT_DIM
@@ -617,6 +618,49 @@ class MainWindow(QMainWindow):
         dg.addWidget(self.rp_out_picker)
         layout.addWidget(dirs_grp)
 
+        # ── Optional Components ──────────────────────────────────────────
+        comp_grp = QGroupBox("Optional Components")
+        comp_grp.setToolTip(
+            "Extra folders to offer during install.\n"
+            "Each becomes a checkbox (or radio button if in a group) that the user can toggle."
+        )
+        comp_layout = QVBoxLayout(comp_grp)
+        comp_layout.setSpacing(4)
+
+        comp_note = QLabel(
+            "Each component is a separate folder that will be merged on top of the base game. "
+            "Components in the same group are mutually exclusive (radio buttons); "
+            "others are independent checkboxes."
+        )
+        comp_note.setWordWrap(True)
+        comp_note.setObjectName("dim")
+        comp_layout.addWidget(comp_note)
+
+        self.rp_comp_list = QListWidget()
+        self.rp_comp_list.setFixedHeight(110)
+        self.rp_comp_list.setSelectionMode(QListWidget.SingleSelection)
+        comp_layout.addWidget(self.rp_comp_list)
+
+        comp_btn_row = QHBoxLayout()
+        comp_add_btn    = QPushButton("Add…")
+        comp_edit_btn   = QPushButton("Edit…")
+        comp_remove_btn = QPushButton("Remove")
+        comp_add_btn.setFixedWidth(70)
+        comp_edit_btn.setFixedWidth(70)
+        comp_remove_btn.setFixedWidth(70)
+        comp_btn_row.addWidget(comp_add_btn)
+        comp_btn_row.addWidget(comp_edit_btn)
+        comp_btn_row.addWidget(comp_remove_btn)
+        comp_btn_row.addStretch()
+        comp_layout.addLayout(comp_btn_row)
+
+        comp_add_btn.clicked.connect(self._on_rp_comp_add)
+        comp_edit_btn.clicked.connect(self._on_rp_comp_edit)
+        comp_remove_btn.clicked.connect(self._on_rp_comp_remove)
+        self.rp_comp_list.itemDoubleClicked.connect(self._on_rp_comp_edit)
+
+        layout.addWidget(comp_grp)
+
         # ── Installer Info ───────────────────────────────────────────────
         info_grp = QGroupBox("Installer Info")
         ig = QGridLayout(info_grp)
@@ -963,6 +1007,101 @@ class MainWindow(QMainWindow):
         if path:
             self.rp_backdrop_edit.setText(path)
 
+    # ------------------------------------------------------------------ #
+    # Optional component dialog helpers                                    #
+    # ------------------------------------------------------------------ #
+
+    def _component_dialog(self, title: str, data: dict | None = None) -> dict | None:
+        """Show a dialog to add or edit a component. Returns dict or None if cancelled."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumWidth(420)
+
+        form = QFormLayout(dlg)
+        form.setSpacing(8)
+
+        label_edit = QLineEdit(data.get("label", "") if data else "")
+        label_edit.setPlaceholderText("e.g. Crack, DLC Pack 1")
+        form.addRow("Label:", label_edit)
+
+        folder_row = QHBoxLayout()
+        folder_edit = QLineEdit(data.get("folder", "") if data else "")
+        folder_edit.setPlaceholderText("Folder containing files for this component")
+        folder_edit.setReadOnly(True)
+        folder_browse = QPushButton("Browse…")
+        folder_browse.setFixedWidth(70)
+        def _browse_folder():
+            path = QFileDialog.getExistingDirectory(
+                dlg, "Select Component Folder",
+                folder_edit.text() or str(Path.home())
+            )
+            if path:
+                folder_edit.setText(path)
+        folder_browse.clicked.connect(_browse_folder)
+        folder_row.addWidget(folder_edit)
+        folder_row.addWidget(folder_browse)
+        folder_w = QWidget(); folder_w.setLayout(folder_row)
+        form.addRow("Folder:", folder_w)
+
+        default_chk = QCheckBox("Selected by default")
+        default_chk.setChecked(data.get("default_checked", True) if data else True)
+        form.addRow("", default_chk)
+
+        group_edit = QLineEdit(data.get("group", "") if data else "")
+        group_edit.setPlaceholderText(
+            "Leave blank for checkbox  —  same name = mutually exclusive radio buttons"
+        )
+        form.addRow("Group:", group_edit)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        form.addRow(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        lbl = label_edit.text().strip()
+        fld = folder_edit.text().strip()
+        if not lbl or not fld:
+            return None
+        return {
+            "label":           lbl,
+            "folder":          fld,
+            "default_checked": default_chk.isChecked(),
+            "group":           group_edit.text().strip(),
+        }
+
+    @staticmethod
+    def _comp_item_text(c: dict) -> str:
+        chk = "✓" if c.get("default_checked", True) else "○"
+        grp = f"  [group: {c['group']}]" if c.get("group") else ""
+        folder_name = Path(c["folder"]).name if c.get("folder") else ""
+        return f"[{chk}]  {c['label']}  ({folder_name}){grp}"
+
+    def _on_rp_comp_add(self):
+        comp = self._component_dialog("Add Optional Component")
+        if comp is None:
+            return
+        item = QListWidgetItem(self._comp_item_text(comp))
+        item.setData(Qt.UserRole, comp)
+        self.rp_comp_list.addItem(item)
+
+    def _on_rp_comp_edit(self, _item=None):
+        row = self.rp_comp_list.currentRow()
+        if row < 0:
+            return
+        item = self.rp_comp_list.item(row)
+        comp = self._component_dialog("Edit Optional Component", item.data(Qt.UserRole))
+        if comp is None:
+            return
+        item.setText(self._comp_item_text(comp))
+        item.setData(Qt.UserRole, comp)
+
+    def _on_rp_comp_remove(self):
+        row = self.rp_comp_list.currentRow()
+        if row >= 0:
+            self.rp_comp_list.takeItem(row)
+
     def _on_find_method_changed(self):
         self.reg_panel.setVisible(self.find_registry.isChecked())
         self.ini_panel.setVisible(self.find_ini.isChecked())
@@ -1233,6 +1372,12 @@ class MainWindow(QMainWindow):
         return result
 
     def _collect_repack_settings(self, validate: bool = True) -> Optional[RepackSettings]:
+        components = []
+        for i in range(self.rp_comp_list.count()):
+            d = self.rp_comp_list.item(i).data(Qt.UserRole)
+            if d:
+                components.append(d)
+
         s = RepackSettings(
             app_name             = self.rp_app_name_edit.text().strip(),
             app_note             = self.rp_app_note_edit.text().strip(),
@@ -1255,6 +1400,7 @@ class MainWindow(QMainWindow):
             detect_running_exe   = self.rp_detect_running_edit.text().strip(),
             required_free_space_gb = self.rp_free_space_spin.value(),
             close_delay          = self.rp_close_delay_spin.value(),
+            components           = components,
         )
         if validate:
             errors = []
@@ -1262,6 +1408,12 @@ class MainWindow(QMainWindow):
                 errors.append("App name is required")
             if not s.game_dir:
                 errors.append("Game directory is required")
+            for i, c in enumerate(s.components):
+                if not c.get("folder") or not Path(c["folder"]).is_dir():
+                    errors.append(
+                        f"Component {i + 1} ({c.get('label', '?')}): "
+                        f"folder not found: {c.get('folder', '')}"
+                    )
             if errors:
                 for e in errors:
                     self._log(f"✗  {e}", color=ERROR)
@@ -1294,6 +1446,11 @@ class MainWindow(QMainWindow):
         self.rp_detect_running_edit.setText(s.detect_running_exe)
         self.rp_free_space_spin.setValue(s.required_free_space_gb)
         self.rp_close_delay_spin.setValue(s.close_delay)
+        self.rp_comp_list.clear()
+        for c in (s.components or []):
+            item = QListWidgetItem(self._comp_item_text(c))
+            item.setData(Qt.UserRole, c)
+            self.rp_comp_list.addItem(item)
 
     def _collect_settings(self, validate: bool = True) -> Optional[ProjectSettings]:
         s = ProjectSettings(

@@ -1,7 +1,7 @@
 """PatchForge repack project file — save/load .xpr (JSON) project state."""
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -40,6 +40,11 @@ class RepackSettings:
     detect_running_exe: str = ""     # warn if this process is running before install
     close_delay: int = 0             # seconds to auto-close after success (0 = stay open)
     required_free_space_gb: float = 0.0
+
+    # Optional components — list of dicts:
+    #   {"label": str, "folder": str, "default_checked": bool, "group": str}
+    # index 0 = base game (always installed); components here start at index 1.
+    components: list = field(default_factory=list)
 
 
 def save(settings: RepackSettings, path: Path) -> None:
