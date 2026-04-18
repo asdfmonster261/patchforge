@@ -28,7 +28,7 @@ from ..core.project import ProjectSettings, save as save_project, load as load_p
 from ..core.patch_builder import build, BuildResult
 from ..core.repack_project import RepackSettings, save as save_repack, load as load_repack
 from ..core.repack_builder import build as build_repack, RepackResult
-from ..core.xpack_archive import QUALITY_LABELS as REPACK_QUALITY_LABELS
+from ..core.xpack_archive import QUALITY_LABELS as REPACK_QUALITY_LABELS, THREAD_OPTIONS as REPACK_THREAD_OPTIONS
 from ..core import verification
 
 
@@ -790,6 +790,12 @@ class MainWindow(QMainWindow):
         rp_arch_l.addStretch()
         cg.addWidget(rp_arch_w, 0, 3)
 
+        cg.addWidget(QLabel("Threads:"), 1, 0)
+        self.rp_threads_combo = QComboBox()
+        for t in REPACK_THREAD_OPTIONS:
+            self.rp_threads_combo.addItem(str(t), userData=t)
+        cg.addWidget(self.rp_threads_combo, 1, 1)
+
         layout.addWidget(comp_grp)
 
         # ── Post-Install Options ─────────────────────────────────────────
@@ -1393,6 +1399,7 @@ class MainWindow(QMainWindow):
             output_dir           = self.rp_out_picker.path,
             arch                 = "x64" if self.rp_arch_x64.isChecked() else "x86",
             compression          = self.rp_comp_combo.currentData() or "max",
+            threads              = self.rp_threads_combo.currentData() or 1,
             icon_path            = self.rp_icon_edit.text().strip(),
             backdrop_path        = self.rp_backdrop_edit.text().strip(),
             install_registry_key = self.rp_registry_key_edit.text().strip(),
@@ -1438,6 +1445,10 @@ class MainWindow(QMainWindow):
         for i in range(self.rp_comp_combo.count()):
             if self.rp_comp_combo.itemData(i) == s.compression:
                 self.rp_comp_combo.setCurrentIndex(i)
+                break
+        for i in range(self.rp_threads_combo.count()):
+            if self.rp_threads_combo.itemData(i) == s.threads:
+                self.rp_threads_combo.setCurrentIndex(i)
                 break
         self.rp_icon_edit.setText(s.icon_path)
         self.rp_backdrop_edit.setText(s.backdrop_path)

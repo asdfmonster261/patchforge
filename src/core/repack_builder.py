@@ -82,6 +82,7 @@ def build(
             game_dir,
             quality=settings.compression,
             components=settings.components or [],
+            threads=settings.threads,
             progress=_archive_prog,
         )
     except Exception as exc:
