@@ -509,9 +509,23 @@ static int check_elevate(const char *path)
     CloseHandle(token);
     if (elev.TokenIsElevated) return 1;
 
-    /* Try to write a probe file */
+    /* Walk up to the deepest existing ancestor — the target dir may not exist
+       yet, so probing it directly would always fail even on writable paths. */
+    char probe_dir[MAX_PATH];
+    strncpy(probe_dir, path, MAX_PATH - 1);
+    probe_dir[MAX_PATH - 1] = '\0';
+    while (probe_dir[0]) {
+        DWORD attr = GetFileAttributesA(probe_dir);
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
+            break;
+        char *last = strrchr(probe_dir, '\\');
+        if (!last) { probe_dir[0] = '\0'; break; }
+        *last = '\0';
+    }
+    if (!probe_dir[0]) return 1; /* can't determine — assume ok */
+
     char probe[MAX_PATH];
-    snprintf(probe, MAX_PATH, "%s\\~pfg_probe.tmp", path);
+    snprintf(probe, MAX_PATH, "%s\\~pfg_probe.tmp", probe_dir);
     HANDLE fh = CreateFileA(probe, GENERIC_WRITE, 0, NULL,
                             CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
                             NULL);
@@ -867,28 +881,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         /* Backdrop */
         g_backdrop_bmp = load_backdrop();
 
-        /* Pre-populate install path.
-           Priority: argv[1] (elevated relaunch) > Program Files\<subdir> */
+        /* Pre-populate install path from argv[1] on elevated relaunch only.
+           No default is set otherwise — the user always browses explicitly. */
         {
-            char init_path[MAX_PATH] = {0};
-
-            /* Check for elevated-relaunch pre-set path */
             int argc = 0;
             LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-            if (argv && argc >= 2)
-                WideCharToMultiByte(CP_ACP, 0, argv[1], -1, init_path, MAX_PATH, NULL, NULL);
-            if (argv) LocalFree(argv);
-
-            /* Fall back to Program Files\<install_subdir> */
-            if (!init_path[0] && g_meta.install_subdir[0]) {
-                char prog_files[MAX_PATH] = {0};
-                SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, prog_files);
-                if (prog_files[0])
-                    snprintf(init_path, MAX_PATH, "%s\\%s",
-                             prog_files, g_meta.install_subdir);
+            if (argv && argc >= 2) {
+                char path8[MAX_PATH] = {0};
+                WideCharToMultiByte(CP_ACP, 0, argv[1], -1, path8, MAX_PATH, NULL, NULL);
+                if (path8[0]) SetWindowTextA(g_hwnd_filepath, path8);
             }
-
-            if (init_path[0]) SetWindowTextA(g_hwnd_filepath, init_path);
+            if (argv) LocalFree(argv);
         }
 
         update_space_label();
