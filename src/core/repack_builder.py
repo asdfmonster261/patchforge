@@ -1,0 +1,153 @@
+"""
+repack_builder.py — Orchestrates the full repack build process.
+
+Steps:
+  1. Validate inputs
+  2. Walk game_dir, compress all files into an XPACK01 solid archive
+  3. Build metadata JSON
+  4. Package installer_stub + XPACK01 blob + backdrop + metadata into output .exe
+"""
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+from .repack_project import RepackSettings
+from .xpack_archive import build as build_archive
+from .exe_packager import package_repack
+
+
+@dataclass
+class RepackResult:
+    success: bool
+    output_path: Optional[Path] = None
+    total_files: int = 0
+    uncompressed_size: int = 0
+    output_size: int = 0
+    error: str = ""
+
+
+def build(
+    settings: RepackSettings,
+    progress: Optional[Callable[[int, str], None]] = None,
+) -> RepackResult:
+    """
+    Build a self-contained Windows installer exe from settings.
+
+    progress(pct, message) is called with 0–100 as the build proceeds.
+    """
+
+    def _progress(pct: int, msg: str) -> None:
+        if progress:
+            progress(pct, msg)
+
+    # ------------------------------------------------------------------ #
+    # 1. Validate                                                          #
+    # ------------------------------------------------------------------ #
+    game_dir = Path(settings.game_dir)
+
+    if not game_dir.exists():
+        return RepackResult(success=False, error=f"Game directory not found: {game_dir}")
+    if not game_dir.is_dir():
+        return RepackResult(success=False, error=f"Game path is not a directory: {game_dir}")
+    if not settings.app_name.strip():
+        return RepackResult(success=False, error="App name is required")
+    if settings.arch not in ("x64", "x86"):
+        return RepackResult(success=False,
+                            error=f"Invalid architecture: {settings.arch!r} (must be x64 or x86)")
+    from .xpack_archive import _QUALITY_MAP
+    if settings.compression not in _QUALITY_MAP:
+        return RepackResult(success=False,
+                            error=f"Unknown compression quality: {settings.compression!r}")
+
+    _progress(5, "Validating…")
+
+    # ------------------------------------------------------------------ #
+    # 2. Build XPACK01 archive                                            #
+    # ------------------------------------------------------------------ #
+    def _archive_prog(pct: int, msg: str) -> None:
+        # Map archive progress (0-100) to overall range 10-75
+        _progress(10 + int(pct * 0.65), msg)
+
+    try:
+        blob, total_files, uncompressed_size = build_archive(
+            game_dir,
+            quality=settings.compression,
+            progress=_archive_prog,
+        )
+    except Exception as exc:
+        return RepackResult(success=False, error=f"Compression failed: {exc}")
+
+    # ------------------------------------------------------------------ #
+    # 3. Build metadata                                                    #
+    # ------------------------------------------------------------------ #
+    _progress(78, "Building metadata…")
+
+    metadata = {
+        "app_name":                settings.app_name,
+        "app_note":                settings.app_note,
+        "version":                 settings.version,
+        "description":             settings.description,
+        "copyright":               settings.copyright,
+        "contact":                 settings.contact,
+        "company_info":            settings.company_info,
+        "window_title":            settings.window_title,
+        "installer_exe_version":   settings.installer_exe_version,
+        # Install-time info
+        "total_files":             total_files,
+        "total_uncompressed_size": uncompressed_size,
+        # Post-install behaviour
+        "install_registry_key":    settings.install_registry_key,
+        "run_after_install":       settings.run_after_install,
+        "detect_running_exe":      settings.detect_running_exe,
+        "close_delay":             settings.close_delay,
+        "required_free_space_gb":  settings.required_free_space_gb,
+    }
+
+    # ------------------------------------------------------------------ #
+    # 4. Load backdrop                                                     #
+    # ------------------------------------------------------------------ #
+    backdrop_data: Optional[bytes] = None
+    if settings.backdrop_path:
+        bp = Path(settings.backdrop_path)
+        if not bp.exists():
+            return RepackResult(success=False, error=f"Backdrop image not found: {bp}")
+        backdrop_data = bp.read_bytes()
+
+    # ------------------------------------------------------------------ #
+    # 5. Package                                                           #
+    # ------------------------------------------------------------------ #
+    _progress(82, "Packaging installer exe…")
+
+    output_dir = Path(settings.output_dir) if settings.output_dir else Path.cwd()
+    if settings.installer_exe_name.strip():
+        safe = "".join(c if c.isalnum() or c in "-_." else "_"
+                       for c in settings.installer_exe_name.strip())
+        output_path = output_dir / f"{safe}_{settings.arch}.exe"
+    else:
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in settings.app_name)
+        version_tag = f"_{settings.version}" if settings.version else ""
+        output_path = output_dir / f"{safe}{version_tag}_installer_{settings.arch}.exe"
+
+    try:
+        icon = Path(settings.icon_path) if settings.icon_path else None
+        package_repack(
+            arch=settings.arch,
+            pack_blob=blob,
+            metadata=metadata,
+            output_path=output_path,
+            icon_path=icon,
+            backdrop_data=backdrop_data,
+        )
+    except Exception as exc:
+        return RepackResult(success=False, error=str(exc))
+
+    _progress(100, "Done.")
+
+    return RepackResult(
+        success=True,
+        output_path=output_path,
+        total_files=total_files,
+        uncompressed_size=uncompressed_size,
+        output_size=output_path.stat().st_size,
+    )

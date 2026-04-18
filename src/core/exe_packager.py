@@ -24,7 +24,8 @@ import json
 import struct
 from pathlib import Path
 
-MAGIC = b"XPATCH01"
+MAGIC        = b"XPATCH01"
+REPACK_MAGIC = b"XPACK01\x00"
 STUB_DIR = Path(__file__).parent.parent.parent / "stub" / "prebuilt"
 
 
@@ -123,5 +124,82 @@ def package(
         f.write(meta_json)
         f.write(meta_len)
         f.write(MAGIC)
+
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Repack packaging
+# ---------------------------------------------------------------------------
+
+def _installer_stub_path(arch: str) -> Path:
+    name = f"installer_{arch}.exe"
+    p = STUB_DIR / name
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Prebuilt installer stub not found: {p}\n"
+            f"Run 'make installer' in stub/ to build it."
+        )
+    return p
+
+
+def package_repack(
+    arch: str,
+    pack_blob: bytes,
+    metadata: dict,
+    output_path: Path,
+    icon_path: Path | None = None,
+    backdrop_data: bytes | None = None,
+) -> Path:
+    """
+    Build a self-extracting installer .exe.
+
+    Output layout:
+      [installer_stub.exe]
+      [XPACK01 blob      ]
+      [backdrop bytes    ]  (zero if none)
+      [JSON metadata     ]
+      [4B LE: meta_len   ]
+      [8B magic XPACK01\\x00]
+    """
+    stub_path = _installer_stub_path(arch)
+    stub_bytes = stub_path.read_bytes()
+
+    if len(stub_bytes) < 0x40:
+        raise ValueError(f"Stub file is too small to be a valid PE: {stub_path}")
+    e_lfanew = struct.unpack_from("<I", stub_bytes, 0x3C)[0]
+    if e_lfanew + 4 > len(stub_bytes) or stub_bytes[e_lfanew:e_lfanew + 4] != b"PE\x00\x00":
+        raise ValueError(f"Stub does not have a valid PE signature: {stub_path}")
+
+    if icon_path is not None:
+        from . import pe_icon
+        stub_bytes = pe_icon.inject(stub_bytes, Path(icon_path))
+
+    pack_data_offset = len(stub_bytes)
+    pack_data_size   = len(pack_blob)
+
+    bd_offset = pack_data_offset + pack_data_size
+    bd_size   = len(backdrop_data) if backdrop_data else 0
+
+    meta = dict(metadata)
+    meta["pack_data_offset"] = pack_data_offset
+    meta["pack_data_size"]   = pack_data_size
+    meta["backdrop_offset"]  = bd_offset
+    meta["backdrop_size"]    = bd_size
+
+    meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+    meta_len  = struct.pack("<I", len(meta_json))
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, "wb") as f:
+        f.write(stub_bytes)
+        f.write(pack_blob)
+        if backdrop_data:
+            f.write(backdrop_data)
+        f.write(meta_json)
+        f.write(meta_len)
+        f.write(REPACK_MAGIC)
 
     return output_path
