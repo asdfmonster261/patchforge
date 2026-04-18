@@ -1,30 +1,45 @@
 # PatchForge
 
-A video game binary patch generator that produces self-contained Windows patcher executables. Point it at an old and new copy of a game directory, choose an engine and compression preset, and get a standalone `.exe` your end-users can double-click to update their installation.
+A video game binary patch and installer generator that produces self-contained Windows executables. Two modes:
+
+- **Update Patch** — diff an old and new copy of a game directory and produce a standalone patcher `.exe` users double-click to update their install
+- **Repack** — compress a complete game directory into a standalone installer `.exe` users double-click to install the game from scratch
 
 ---
 
 ## Features
 
+### Update Patch mode
+
 - **Three diff engines** — HDiffPatch 4.12.2, xdelta3 3.0.8, JojoDiff 0.8.1
 - **Directory patching** — handles multi-file games; tracks new, modified, and deleted files
 - **Engine-specific presets** — named compression presets tuned for each engine
 - **Multi-threading** — parallel patch generation for directory mode
-- **Source version verification** — checksums of the original files are embedded; the patcher aborts with a clear message if the user has the wrong game version
+- **Source version verification** — checksums of original files are embedded; patcher aborts with a clear message if the user has the wrong game version
 - **Post-patch verification** — CRC32C, MD5, or filesize checksums confirm the update applied correctly
 - **Change summary** — patcher window shows a _N modified · M added · K removed_ header at launch
 - **Target discovery** — end-users can locate their game via manual browse, Windows Registry, or INI file
-- **Icon injection** — embed a custom `.ico` into the output executable
-- **Backdrop image** — optional PNG/JPEG/BMP background drawn behind the patcher UI
-- **Extra file bundling** — ship additional files (DLC, configs, redistributables) inside the patch exe; they are written to the game folder after patching
+- **Extra file bundling** — ship additional files (DLC, configs, redistributables) inside the patch exe
 - **Run before/after** — execute arbitrary commands before patching starts or after it succeeds
 - **Backup** — optionally create a full backup of the game folder before applying the patch
+
+### Repack mode
+
+- **Solid LZMA2 archive** — entire game directory compressed into an XPACK01 blob using XZ/LZMA2
+- **Multi-threaded compression** — xz CLI MT encoder (liblzma native); up to 32 threads; stream-level parallelism when multiple components are present
+- **Four quality presets** — Fast (lzma2-1), Normal (lzma2-6), Max (lzma2-9), Ultra64 (lzma2-9, 64 MB dict)
+- **Optional components** — extra folders offered as checkboxes during install; components in the same named group become mutually exclusive radio buttons
+- **Repack project files** — save and reload all settings as `.xpr` JSON files
+
+### Shared
+
+- **Icon injection** — embed a custom `.ico` into the output executable
+- **Backdrop image** — optional PNG/JPEG/BMP background drawn behind the UI
 - **Smart UAC elevation** — automatically relaunches as administrator if write access is denied
-- **Patch notes fields** — app note, copyright, contact, company info, custom window title, and custom output exe name/version
+- **Metadata fields** — app note, copyright, contact, company info, custom window title, custom output exe name/version
 - **Drag-and-drop** — drop folders and files directly onto path fields in the GUI
 - **x64 and x86 stubs** — target both 32-bit and 64-bit Windows installs
-- **Project files** — save and reload all settings as `.xpm` JSON files
-- **GUI + CLI** — dark-themed PySide6 GUI when run with no arguments; full CLI otherwise
+- **GUI + CLI** — dark-themed PySide6 GUI when run with no arguments; full CLI for patch mode
 
 ---
 
@@ -33,6 +48,7 @@ A video game binary patch generator that produces self-contained Windows patcher
 - Python 3.10+
 - PySide6 ≥ 6.5.0 (GUI only; CLI works without it)
 - Linux build host (outputs are Windows executables)
+- `xz` CLI (for multi-threaded repack compression; already present on most Linux distros)
 - MinGW-w64 cross-compiler (only needed to rebuild stubs from source)
 
 ## Installation
@@ -55,9 +71,9 @@ The Linux engine binaries (`engines/linux-x64/`) are included in the repository.
 patchforge
 ```
 
-Launch with no arguments to open the GUI. Fill in the panels and click **Build Patch**.
+Launch with no arguments to open the GUI. Use the **Update Patch** tab to generate a patch, or the **Repack** tab to build an installer. Fill in the panels and click **Build Patch** / **Build Repack**.
 
-### CLI
+### CLI (Update Patch mode)
 
 ```bash
 patchforge build \
@@ -79,6 +95,8 @@ Use `--patch-exe-name` to override the output filename stem:
 patchforge build ... --patch-exe-name "MyGame_Update_Nov2025"
 # → dist/MyGame_Update_Nov2025_x64.exe
 ```
+
+Repack mode does not currently have a CLI; use the GUI.
 
 #### All `build` flags
 
@@ -179,9 +197,89 @@ xdelta3 is almost always the least efficient choice for binary game data.
 
 ---
 
-## Project Files (`.xpm`)
+## Repack Mode
 
-All settings can be saved and reloaded as a JSON project file. Example:
+Repack compresses a complete game directory into a standalone installer exe. The end user runs it on a clean machine — no previous game installation required.
+
+### Compression
+
+| Quality key | Description |
+|------------|-------------|
+| `fast` | lzma2-1 — fastest, largest output |
+| `normal` | lzma2-6 — balanced |
+| **`max`** | **lzma2-9 — best compression (default)** |
+| `ultra64` | lzma2-9 with 64 MB dictionary — marginal gain over max |
+
+Thread count (1, 2, 4, 8, 16, 32) controls parallelism:
+
+- **1 thread** — stdlib lzma (no external dependencies)
+- **>1 threads** — delegates to the `xz` CLI which uses `lzma_stream_encoder_mt` (native liblzma multi-threaded encoder). Output is a single valid XZ stream, fully compatible with the installer's decoder. When multiple component streams exist, they are compressed in parallel using separate processes.
+
+### Optional Components
+
+Each component is a folder of files merged on top of the base game during install. Components are shown to the user as:
+
+- **Checkboxes** — when the group field is blank (independent, togglable)
+- **Radio buttons** — when two or more components share the same group name (mutually exclusive)
+
+Up to 16 components are supported.
+
+### Repack Project Files (`.xpr`)
+
+All repack settings are saved as a JSON file. Example:
+
+```json
+{
+  "app_name": "My Game",
+  "app_note": "Complete Edition",
+  "version": "1.0",
+  "description": "Full game installer",
+  "copyright": "© 2025 My Company",
+  "contact": "support@example.com",
+  "company_info": "My Company",
+  "window_title": "My Game Installer",
+  "installer_exe_name": "",
+  "installer_exe_version": "1.0.0.0",
+  "game_dir": "/path/to/game_files",
+  "output_dir": "dist/",
+  "arch": "x64",
+  "compression": "max",
+  "threads": 8,
+  "icon_path": "assets/icon.ico",
+  "backdrop_path": "assets/backdrop.jpg",
+  "install_registry_key": "SOFTWARE\\MyCompany\\MyGame",
+  "run_after_install": "",
+  "detect_running_exe": "MyGame.exe",
+  "close_delay": 0,
+  "required_free_space_gb": 0.0,
+  "components": [
+    {
+      "label": "High-res textures",
+      "folder": "/path/to/hires_textures",
+      "default_checked": false,
+      "group": ""
+    },
+    {
+      "label": "English voices",
+      "folder": "/path/to/voices_en",
+      "default_checked": true,
+      "group": "voices"
+    },
+    {
+      "label": "Japanese voices",
+      "folder": "/path/to/voices_jp",
+      "default_checked": false,
+      "group": "voices"
+    }
+  ]
+}
+```
+
+---
+
+## Project Files (`.xpm`) — Update Patch mode
+
+All patch mode settings can be saved and reloaded as a JSON project file. Example:
 
 ```json
 {
@@ -218,9 +316,9 @@ All settings can be saved and reloaded as a JSON project file. Example:
 
 ---
 
-## Output Format
+## Output Formats
 
-The output executable is the patcher stub with patch data and metadata appended:
+### Update Patch exe
 
 ```
 [ stub EXE bytes                ]
@@ -234,13 +332,44 @@ The output executable is the patcher stub with patch data and metadata appended:
 [ magic "XPATCH01"  8 bytes     ]  ← end of file
 ```
 
+### Repack (XPACK01) exe
+
+```
+[ installer_stub EXE bytes      ]
+[ XPACK01 blob                  ]  ← see format below
+[ JSON metadata (UTF-8)         ]
+[ metadata length   4 bytes LE  ]
+[ magic "XPACK01\0" 8 bytes     ]  ← end of file
+```
+
+**XPACK01 blob layout:**
+
+```
+[ 4B LE: num_files              ]
+  Per file:
+    [ 2B LE: path_len           ]
+    [ path_len bytes: UTF-8 path (forward slashes) ]
+    [ 8B LE: offset within stream ]
+    [ 8B LE: uncompressed size  ]
+    [ 4B LE: component_index    ]  0 = base game; 1..N = optional components
+[ 4B LE: num_streams            ]
+  Per stream:
+    [ 4B LE: component_index    ]
+    [ 8B LE: compressed size    ]
+    [ N bytes: XZ/LZMA2 stream  ]
+```
+
+Each optional component has its own compressed XZ stream. The installer decompresses only the streams corresponding to the user's selections. File offsets are relative to the start of their own stream's decompressed data.
+
 The stub reads backwards from the end of its own file to locate and parse the embedded data. End-users just double-click the `.exe` — no installer or runtime required.
 
 ---
 
 ## Stub System
 
-Pre-built stubs live in `stub/prebuilt/`. They are compiled C programs that provide the patcher UI and apply the embedded patch at runtime.
+Pre-built stubs live in `stub/prebuilt/`. They are compiled C programs that provide the UI and apply the embedded data at runtime.
+
+**Update Patch stubs:**
 
 | File | Description |
 |------|-------------|
@@ -249,13 +378,19 @@ Pre-built stubs live in `stub/prebuilt/`. They are compiled C programs that prov
 | `xdelta3_x64.exe` / `_x86.exe` | xdelta3 stub (DJW + LZMA secondary) |
 | `jojodiff_x64.exe` / `_x86.exe` | JojoDiff stub |
 
+**Repack (installer) stubs:**
+
+| File | Description |
+|------|-------------|
+| `installer_x64.exe` / `_x86.exe` | XPACK01 installer stub |
+
 ### Rebuilding stubs from source
 
 Requires MinGW-w64 cross-compilers.
 
 ```bash
 cd stub
-make           # x64 stubs for all three engines
+make           # x64 stubs for all engines + installer
 make win32     # x86 stubs
 make full      # HDiffPatch full stubs (zlib + bzip2); run `make deps` first
 make full32    # HDiffPatch full stubs, x86
@@ -274,11 +409,14 @@ patchforge/
 ├── pyproject.toml
 ├── engines/linux-x64/           # Linux diff binaries (hdiffz, xdelta3, jdiff, …)
 ├── src/
-│   ├── cli/main.py              # CLI argument parser & commands
+│   ├── cli/main.py              # CLI argument parser & commands (patch mode)
 │   └── core/
-│       ├── project.py           # ProjectSettings dataclass, save/load
-│       ├── patch_builder.py     # Build orchestration
-│       ├── exe_packager.py      # Appends patch + metadata to stub
+│       ├── project.py           # ProjectSettings dataclass, save/load (.xpm)
+│       ├── patch_builder.py     # Patch build orchestration
+│       ├── repack_project.py    # RepackSettings dataclass, save/load (.xpr)
+│       ├── repack_builder.py    # Repack build orchestration
+│       ├── xpack_archive.py     # XPACK01 solid-archive format + MT compression
+│       ├── exe_packager.py      # Appends data + metadata to stub
 │       ├── pe_icon.py           # PE icon injection
 │       ├── verification.py      # CRC32C / MD5 / filesize
 │       └── engines/
@@ -288,7 +426,7 @@ patchforge/
 │           ├── jojodiff.py
 │           └── dir_format.py    # PFMD container (xdelta3 / JojoDiff dir mode)
 │   └── gui/
-│       ├── main_window.py       # PySide6 GUI
+│       ├── main_window.py       # PySide6 GUI (both modes)
 │       └── theme.py             # Dark theme QSS
 └── stub/
     ├── Makefile
@@ -296,6 +434,7 @@ patchforge/
     ├── hdiffpatch_stub.c
     ├── xdelta3_stub.c
     ├── jojodiff_stub.c
+    ├── installer_stub.c         # XPACK01 installer stub
     ├── dir_patch_format.h       # PFMD container parser (C)
     ├── prebuilt/                # Pre-compiled stub EXEs
     └── third_party/             # liblzma, zlib, bzip2 headers + static libs
