@@ -96,6 +96,7 @@ def build(
         # Install-time info
         "total_files":             total_files,
         "total_uncompressed_size": uncompressed_size,
+        "install_subdir":          game_dir.name,   # e.g. "CloverPit"
         # Post-install behaviour
         "install_registry_key":    settings.install_registry_key,
         "run_after_install":       settings.run_after_install,
