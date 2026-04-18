@@ -1137,10 +1137,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                       : g_meta.app_name[0]      ? g_meta.app_name
                       : "PatchForge Installer";
 
+    /* Compute outer window size from desired client area so the non-client
+       frame (title bar + borders) never clips controls at the bottom. */
+    DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    RECT wr = {0, 0, 720, 412};
+    AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
-        0, "PFGInstaller", title,
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 720, 412,
+        0, "PFGInstaller", title, wstyle,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        wr.right - wr.left, wr.bottom - wr.top,
         NULL, NULL, hInst, NULL);
 
     ShowWindow(hwnd, nShow);
