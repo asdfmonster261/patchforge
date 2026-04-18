@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QButtonGroup, QProgressBar, QPlainTextEdit,
     QFileDialog, QSplitter, QSizePolicy, QFrame, QStatusBar,
     QCheckBox, QListWidget, QListWidgetItem, QScrollArea, QInputDialog,
-    QSpinBox, QDoubleSpinBox,
+    QSpinBox, QDoubleSpinBox, QTabWidget,
 )
 
 from .theme import QSS, ACCENT, SUCCESS, ERROR, WARN, TEXT_DIM
@@ -25,6 +25,9 @@ from ..core.engines.jojodiff import JojoDiffEngine
 from ..core.engines.xdelta3 import XDelta3Engine
 from ..core.project import ProjectSettings, save as save_project, load as load_project
 from ..core.patch_builder import build, BuildResult
+from ..core.repack_project import RepackSettings, save as save_repack, load as load_repack
+from ..core.repack_builder import build as build_repack, RepackResult
+from ..core.xpack_archive import QUALITY_LABELS as REPACK_QUALITY_LABELS
 from ..core import verification
 
 
@@ -42,6 +45,19 @@ class BuildWorker(QObject):
 
     def run(self):
         result = build(self._settings, progress=self.progress.emit)
+        self.finished.emit(result)
+
+
+class RepackWorker(QObject):
+    progress = Signal(int, str)
+    finished = Signal(object)   # RepackResult
+
+    def __init__(self, settings: RepackSettings):
+        super().__init__()
+        self._settings = settings
+
+    def run(self):
+        result = build_repack(self._settings, progress=self.progress.emit)
         self.finished.emit(result)
 
 
@@ -142,8 +158,10 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(QSS)
 
         self._worker: Optional[BuildWorker] = None
+        self._repack_worker: Optional[RepackWorker] = None
         self._thread: Optional[QThread] = None
         self._current_project_path: Optional[Path] = None
+        self._current_repack_path: Optional[Path] = None
 
         self._build_ui()
         self._connect_signals()
@@ -160,12 +178,17 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
 
-        # ── Splitter: left settings / right log ──
+        # ── Mode tab widget ──
+        self.mode_tabs = QTabWidget()
+        self.mode_tabs.addTab(self._build_patch_panel(), "Update Patch")
+        self.mode_tabs.addTab(self._build_repack_panel(), "Repack")
+
+        # ── Splitter: left tabs / right log ──
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
         root.addWidget(splitter, 1)
 
-        splitter.addWidget(self._build_settings_panel())
+        splitter.addWidget(self.mode_tabs)
         splitter.addWidget(self._build_output_panel())
         splitter.setSizes([580, 480])
 
@@ -178,7 +201,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
-    def _build_settings_panel(self) -> QWidget:
+    def _build_patch_panel(self) -> QWidget:
         # Wrap everything in a scroll area so the panel doesn't get clipped
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -573,6 +596,215 @@ class MainWindow(QMainWindow):
         scroll.setWidget(inner)
         return scroll
 
+    def _build_repack_panel(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(8)
+
+        # ── Directories ──────────────────────────────────────────────────
+        dirs_grp = QGroupBox("Directories")
+        dg = QVBoxLayout(dirs_grp)
+        dg.setSpacing(5)
+        self.rp_game_picker  = FilePicker("Game dir:", "dir")
+        self.rp_out_picker   = FilePicker("Output dir:", "dir")
+        dg.addWidget(self.rp_game_picker)
+        dg.addWidget(self.rp_out_picker)
+        layout.addWidget(dirs_grp)
+
+        # ── Installer Info ───────────────────────────────────────────────
+        info_grp = QGroupBox("Installer Info")
+        ig = QGridLayout(info_grp)
+        ig.setSpacing(6)
+        ig.setColumnStretch(1, 1)
+        ig.setColumnStretch(3, 1)
+
+        ig.addWidget(QLabel("App name:"),   0, 0)
+        self.rp_app_name_edit = QLineEdit()
+        self.rp_app_name_edit.setPlaceholderText("My Game")
+        ig.addWidget(self.rp_app_name_edit, 0, 1)
+
+        ig.addWidget(QLabel("App note:"),   0, 2)
+        self.rp_app_note_edit = QLineEdit()
+        self.rp_app_note_edit.setPlaceholderText("Short subtitle (optional)")
+        ig.addWidget(self.rp_app_note_edit, 0, 3)
+
+        ig.addWidget(QLabel("Version:"),    1, 0)
+        self.rp_version_edit = QLineEdit()
+        self.rp_version_edit.setPlaceholderText("1.0.0")
+        ig.addWidget(self.rp_version_edit, 1, 1)
+
+        ig.addWidget(QLabel("Exe version:"), 1, 2)
+        self.rp_exe_version_edit = QLineEdit()
+        self.rp_exe_version_edit.setPlaceholderText("1.0.0.0  (informational)")
+        ig.addWidget(self.rp_exe_version_edit, 1, 3)
+
+        ig.addWidget(QLabel("Description:"), 2, 0)
+        self.rp_desc_edit = QLineEdit()
+        self.rp_desc_edit.setPlaceholderText("Optional description shown in installer")
+        ig.addWidget(self.rp_desc_edit, 2, 1, 1, 3)
+
+        ig.addWidget(QLabel("Copyright:"),  3, 0)
+        self.rp_copyright_edit = QLineEdit()
+        self.rp_copyright_edit.setPlaceholderText("© 2025 My Company")
+        ig.addWidget(self.rp_copyright_edit, 3, 1)
+
+        ig.addWidget(QLabel("Company:"),    3, 2)
+        self.rp_company_edit = QLineEdit()
+        self.rp_company_edit.setPlaceholderText("Publisher / company name")
+        ig.addWidget(self.rp_company_edit, 3, 3)
+
+        ig.addWidget(QLabel("Contact:"),    4, 0)
+        self.rp_contact_edit = QLineEdit()
+        self.rp_contact_edit.setPlaceholderText("support@example.com or URL")
+        ig.addWidget(self.rp_contact_edit, 4, 1)
+
+        ig.addWidget(QLabel("Window title:"), 4, 2)
+        self.rp_window_title_edit = QLineEdit()
+        self.rp_window_title_edit.setPlaceholderText("Installer title bar (defaults to app name)")
+        ig.addWidget(self.rp_window_title_edit, 4, 3)
+
+        ig.addWidget(QLabel("Exe name:"),   5, 0)
+        self.rp_exe_name_edit = QLineEdit()
+        self.rp_exe_name_edit.setPlaceholderText(
+            "Output exe filename stem — blank = auto (AppName_version_installer_x64.exe)")
+        ig.addWidget(self.rp_exe_name_edit, 5, 1, 1, 3)
+
+        ig.addWidget(QLabel("Icon (.ico):"), 6, 0)
+        rp_icon_row = QHBoxLayout()
+        rp_icon_row.setSpacing(4)
+        self.rp_icon_edit = QLineEdit()
+        self.rp_icon_edit.setPlaceholderText("Optional — leave blank for default icon")
+        self.rp_icon_edit.setReadOnly(True)
+        rp_icon_row.addWidget(self.rp_icon_edit)
+        rp_icon_btn = QPushButton("Browse…")
+        rp_icon_btn.setFixedWidth(70)
+        rp_icon_btn.clicked.connect(self._on_rp_icon_browse)
+        rp_icon_row.addWidget(rp_icon_btn)
+        rp_icon_clr = QPushButton("✕")
+        rp_icon_clr.setFixedWidth(24)
+        rp_icon_clr.clicked.connect(lambda: self.rp_icon_edit.setText(""))
+        rp_icon_row.addWidget(rp_icon_clr)
+        rp_icon_w = QWidget(); rp_icon_w.setLayout(rp_icon_row)
+        ig.addWidget(rp_icon_w, 6, 1, 1, 3)
+
+        ig.addWidget(QLabel("Backdrop:"),   7, 0)
+        rp_bd_row = QHBoxLayout()
+        rp_bd_row.setSpacing(4)
+        self.rp_backdrop_edit = QLineEdit()
+        self.rp_backdrop_edit.setPlaceholderText("Optional background image (PNG/JPEG/BMP)")
+        self.rp_backdrop_edit.setReadOnly(True)
+        rp_bd_row.addWidget(self.rp_backdrop_edit)
+        rp_bd_btn = QPushButton("Browse…")
+        rp_bd_btn.setFixedWidth(70)
+        rp_bd_btn.clicked.connect(self._on_rp_backdrop_browse)
+        rp_bd_row.addWidget(rp_bd_btn)
+        rp_bd_clr = QPushButton("✕")
+        rp_bd_clr.setFixedWidth(24)
+        rp_bd_clr.clicked.connect(lambda: self.rp_backdrop_edit.setText(""))
+        rp_bd_row.addWidget(rp_bd_clr)
+        rp_bd_w = QWidget(); rp_bd_w.setLayout(rp_bd_row)
+        ig.addWidget(rp_bd_w, 7, 1, 1, 3)
+
+        layout.addWidget(info_grp)
+
+        # ── Compression & Architecture ───────────────────────────────────
+        comp_grp = QGroupBox("Compression & Architecture")
+        cg = QGridLayout(comp_grp)
+        cg.setSpacing(6)
+        cg.setColumnStretch(1, 1)
+        cg.setColumnStretch(3, 1)
+
+        cg.addWidget(QLabel("Compression:"), 0, 0)
+        self.rp_comp_combo = QComboBox()
+        for key, label in REPACK_QUALITY_LABELS.items():
+            self.rp_comp_combo.addItem(label, userData=key)
+        # Default to "max"
+        for i in range(self.rp_comp_combo.count()):
+            if self.rp_comp_combo.itemData(i) == "max":
+                self.rp_comp_combo.setCurrentIndex(i)
+                break
+        cg.addWidget(self.rp_comp_combo, 0, 1)
+
+        cg.addWidget(QLabel("Architecture:"), 0, 2)
+        rp_arch_w = QWidget()
+        rp_arch_l = QHBoxLayout(rp_arch_w)
+        rp_arch_l.setContentsMargins(0, 0, 0, 0)
+        self.rp_arch_x64 = QRadioButton("x64")
+        self.rp_arch_x86 = QRadioButton("x86")
+        self.rp_arch_x64.setChecked(True)
+        self._rp_arch_group = QButtonGroup()
+        self._rp_arch_group.addButton(self.rp_arch_x64)
+        self._rp_arch_group.addButton(self.rp_arch_x86)
+        rp_arch_l.addWidget(self.rp_arch_x64)
+        rp_arch_l.addWidget(self.rp_arch_x86)
+        rp_arch_l.addStretch()
+        cg.addWidget(rp_arch_w, 0, 3)
+
+        layout.addWidget(comp_grp)
+
+        # ── Post-Install Options ─────────────────────────────────────────
+        post_grp = QGroupBox("Post-Install Options")
+        pg = QGridLayout(post_grp)
+        pg.setSpacing(6)
+        pg.setColumnStretch(1, 1)
+
+        pg.addWidget(QLabel("Registry key:"), 0, 0)
+        self.rp_registry_key_edit = QLineEdit()
+        self.rp_registry_key_edit.setPlaceholderText(
+            r"SOFTWARE\MyCompany\MyGame  — written to HKCU after install (for patch detection)")
+        pg.addWidget(self.rp_registry_key_edit, 0, 1)
+
+        pg.addWidget(QLabel("Run after install:"), 1, 0)
+        self.rp_run_after_edit = QLineEdit()
+        self.rp_run_after_edit.setPlaceholderText("Command to run after successful install (optional)")
+        pg.addWidget(self.rp_run_after_edit, 1, 1)
+
+        pg.addWidget(QLabel("Detect running:"), 2, 0)
+        self.rp_detect_running_edit = QLineEdit()
+        self.rp_detect_running_edit.setPlaceholderText("e.g. GameApp.exe — warn if running before install")
+        pg.addWidget(self.rp_detect_running_edit, 2, 1)
+
+        pg.addWidget(QLabel("Min. free space:"), 3, 0)
+        rp_fs_row = QHBoxLayout()
+        rp_fs_row.setSpacing(6)
+        self.rp_free_space_spin = QDoubleSpinBox()
+        self.rp_free_space_spin.setRange(0.0, 9999.0)
+        self.rp_free_space_spin.setSingleStep(0.5)
+        self.rp_free_space_spin.setDecimals(1)
+        self.rp_free_space_spin.setValue(0.0)
+        self.rp_free_space_spin.setFixedWidth(90)
+        self.rp_free_space_spin.setToolTip("Warn if available disk space is below this threshold (0 = disabled)")
+        rp_fs_row.addWidget(self.rp_free_space_spin)
+        rp_fs_row.addWidget(QLabel("GB  (0 = no check)"))
+        rp_fs_row.addStretch()
+        rp_fs_w = QWidget(); rp_fs_w.setLayout(rp_fs_row)
+        pg.addWidget(rp_fs_w, 3, 1)
+
+        pg.addWidget(QLabel("Auto-close delay:"), 4, 0)
+        rp_cd_row = QHBoxLayout()
+        rp_cd_row.setSpacing(6)
+        self.rp_close_delay_spin = QSpinBox()
+        self.rp_close_delay_spin.setRange(0, 3600)
+        self.rp_close_delay_spin.setValue(0)
+        self.rp_close_delay_spin.setFixedWidth(70)
+        rp_cd_row.addWidget(self.rp_close_delay_spin)
+        rp_cd_row.addWidget(QLabel("seconds  (0 = stay open)"))
+        rp_cd_row.addStretch()
+        rp_cd_w = QWidget(); rp_cd_w.setLayout(rp_cd_row)
+        pg.addWidget(rp_cd_w, 4, 1)
+
+        layout.addWidget(post_grp)
+        layout.addStretch()
+
+        scroll.setWidget(inner)
+        return scroll
+
     def _build_output_panel(self) -> QWidget:
         w = QWidget()
         layout = QVBoxLayout(w)
@@ -624,6 +856,9 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.save_btn)
         return bar
 
+    def _is_repack_mode(self) -> bool:
+        return self.mode_tabs.currentIndex() == 1
+
     # ------------------------------------------------------------------ #
     # Signal wiring                                                        #
     # ------------------------------------------------------------------ #
@@ -638,6 +873,7 @@ class MainWindow(QMainWindow):
 
         self.backup_combo.currentIndexChanged.connect(self._on_backup_changed)
 
+        self.mode_tabs.currentChanged.connect(self._on_mode_changed)
         self.build_btn.clicked.connect(self._on_build)
         self.new_btn.clicked.connect(self._on_new_project)
         self.load_btn.clicked.connect(self._on_load_project)
@@ -712,6 +948,21 @@ class MainWindow(QMainWindow):
         if path:
             self.icon_edit.setText(path)
 
+    def _on_rp_icon_browse(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Icon", "", "Icon files (*.ico)"
+        )
+        if path:
+            self.rp_icon_edit.setText(path)
+
+    def _on_rp_backdrop_browse(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Backdrop Image", "",
+            "Image files (*.png *.jpg *.jpeg *.bmp);;All files (*)"
+        )
+        if path:
+            self.rp_backdrop_edit.setText(path)
+
     def _on_find_method_changed(self):
         self.reg_panel.setVisible(self.find_registry.isChecked())
         self.ini_panel.setVisible(self.find_ini.isChecked())
@@ -759,10 +1010,21 @@ class MainWindow(QMainWindow):
         for item in self.extra_files_list.selectedItems():
             self.extra_files_list.takeItem(self.extra_files_list.row(item))
 
+    def _on_mode_changed(self, index: int):
+        if index == 0:
+            self.build_btn.setText("⚡  Build Patch")
+        else:
+            self.build_btn.setText("⚡  Build Repack")
+
     def _on_build(self):
         if self._thread and self._thread.isRunning():
             return
+        if self._is_repack_mode():
+            self._on_build_repack()
+        else:
+            self._on_build_patch()
 
+    def _on_build_patch(self):
         settings = self._collect_settings()
         if not settings:
             return
@@ -770,7 +1032,7 @@ class MainWindow(QMainWindow):
         self.build_btn.setEnabled(False)
         self.progress_bar.setValue(0)
         self.log.clear()
-        self._log("Starting build…")
+        self._log("Starting patch build…")
 
         self._thread = QThread()
         self._worker = BuildWorker(settings)
@@ -779,6 +1041,26 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_build_done)
         self._worker.finished.connect(self._thread.quit)
+        self._thread.finished.connect(self._on_thread_done)
+        self._thread.start()
+
+    def _on_build_repack(self):
+        settings = self._collect_repack_settings()
+        if not settings:
+            return
+
+        self.build_btn.setEnabled(False)
+        self.progress_bar.setValue(0)
+        self.log.clear()
+        self._log("Starting repack build…")
+
+        self._thread = QThread()
+        self._repack_worker = RepackWorker(settings)
+        self._repack_worker.moveToThread(self._thread)
+        self._thread.started.connect(self._repack_worker.run)
+        self._repack_worker.progress.connect(self._on_progress)
+        self._repack_worker.finished.connect(self._on_repack_done)
+        self._repack_worker.finished.connect(self._thread.quit)
         self._thread.finished.connect(self._on_thread_done)
         self._thread.start()
 
@@ -812,51 +1094,113 @@ class MainWindow(QMainWindow):
             self.status_lbl.setText("Failed")
             self.open_folder_btn.setVisible(False)
 
+    def _on_repack_done(self, result: RepackResult):
+        if result.success:
+            self.progress_bar.setValue(100)
+            self._log(f"\n✓  Done!", color=SUCCESS)
+            self._log(f"   Output:       {result.output_path}")
+            self._log(f"   Files packed: {result.total_files}")
+            self._log(f"   Game size:    {_fmt_size(result.uncompressed_size)}")
+            self._log(f"   Installer:    {_fmt_size(result.output_size)}")
+            ratio = result.output_size / result.uncompressed_size * 100 if result.uncompressed_size else 0
+            self._log(f"   Compression:  {ratio:.1f}% of original")
+            self.status_bar.showMessage(f"Built: {Path(result.output_path).name}")
+            self.status_lbl.setText("Build complete")
+            out_dir = str(Path(result.output_path).parent)
+            try:
+                self.open_folder_btn.clicked.disconnect()
+            except RuntimeError:
+                pass
+            self.open_folder_btn.clicked.connect(
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(out_dir))
+            )
+            self.open_folder_btn.setVisible(True)
+        else:
+            self._log(f"\n✗  Repack failed: {result.error}", color=ERROR)
+            self.status_bar.showMessage("Repack failed")
+            self.status_lbl.setText("Failed")
+            self.open_folder_btn.setVisible(False)
+
     def _on_thread_done(self):
         self.build_btn.setEnabled(True)
 
     def _on_new_project(self):
-        self._clear_fields()
-        self._current_project_path = None
+        if self._is_repack_mode():
+            self._apply_repack_settings(RepackSettings())
+            self._current_repack_path = None
+        else:
+            self._clear_fields()
+            self._current_project_path = None
         self.setWindowTitle("PatchForge")
         self.status_bar.showMessage("New project")
 
     def _on_load_project(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Load Project", str(Path.home()),
-            "PatchForge Projects (*.xpm);;All files (*)")
-        if not path:
-            return
-        try:
-            s = load_project(Path(path))
-            self._apply_settings(s)
-            self._current_project_path = Path(path)
-            self.setWindowTitle(f"PatchForge — {Path(path).name}")
-            self.status_bar.showMessage(f"Loaded: {path}")
-        except Exception as exc:
-            self._log(f"Failed to load project: {exc}", color=ERROR)
+        if self._is_repack_mode():
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Load Repack Project", str(Path.home()),
+                "PatchForge Repack Projects (*.xpr);;All files (*)")
+            if not path:
+                return
+            try:
+                s = load_repack(Path(path))
+                self._apply_repack_settings(s)
+                self._current_repack_path = Path(path)
+                self.setWindowTitle(f"PatchForge — {Path(path).name}")
+                self.status_bar.showMessage(f"Loaded: {path}")
+            except Exception as exc:
+                self._log(f"Failed to load repack project: {exc}", color=ERROR)
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Load Project", str(Path.home()),
+                "PatchForge Projects (*.xpm);;All files (*)")
+            if not path:
+                return
+            try:
+                s = load_project(Path(path))
+                self._apply_settings(s)
+                self._current_project_path = Path(path)
+                self.setWindowTitle(f"PatchForge — {Path(path).name}")
+                self.status_bar.showMessage(f"Loaded: {path}")
+            except Exception as exc:
+                self._log(f"Failed to load project: {exc}", color=ERROR)
 
     def _on_save_project(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project",
-            str(self._current_project_path or Path.home() / "patch.xpm"),
-            "PatchForge Projects (*.xpm);;All files (*)")
-        if not path:
-            return
-        try:
-            s = self._collect_settings(validate=False)
-            save_project(s, Path(path))
-            self._current_project_path = Path(path)
-            self.setWindowTitle(f"PatchForge — {Path(path).name}")
-            self.status_bar.showMessage(f"Saved: {path}")
-            missing = [f for f, v in [("app name", s.app_name),
-                                       ("source dir", s.source_dir),
-                                       ("target dir", s.target_dir)] if not v]
-            if missing:
-                self._log(f"⚠  Project saved with missing required fields: {', '.join(missing)}",
-                          color=WARN)
-        except Exception as exc:
-            self._log(f"Failed to save project: {exc}", color=ERROR)
+        if self._is_repack_mode():
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save Repack Project",
+                str(self._current_repack_path or Path.home() / "repack.xpr"),
+                "PatchForge Repack Projects (*.xpr);;All files (*)")
+            if not path:
+                return
+            try:
+                s = self._collect_repack_settings(validate=False)
+                save_repack(s, Path(path))
+                self._current_repack_path = Path(path)
+                self.setWindowTitle(f"PatchForge — {Path(path).name}")
+                self.status_bar.showMessage(f"Saved: {path}")
+            except Exception as exc:
+                self._log(f"Failed to save repack project: {exc}", color=ERROR)
+        else:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save Project",
+                str(self._current_project_path or Path.home() / "patch.xpm"),
+                "PatchForge Projects (*.xpm);;All files (*)")
+            if not path:
+                return
+            try:
+                s = self._collect_settings(validate=False)
+                save_project(s, Path(path))
+                self._current_project_path = Path(path)
+                self.setWindowTitle(f"PatchForge — {Path(path).name}")
+                self.status_bar.showMessage(f"Saved: {path}")
+                missing = [f for f, v in [("app name", s.app_name),
+                                           ("source dir", s.source_dir),
+                                           ("target dir", s.target_dir)] if not v]
+                if missing:
+                    self._log(f"⚠  Project saved with missing required fields: {', '.join(missing)}",
+                              color=WARN)
+            except Exception as exc:
+                self._log(f"Failed to save project: {exc}", color=ERROR)
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #
@@ -887,6 +1231,69 @@ class MainWindow(QMainWindow):
             if data:
                 result.append(data)
         return result
+
+    def _collect_repack_settings(self, validate: bool = True) -> Optional[RepackSettings]:
+        s = RepackSettings(
+            app_name             = self.rp_app_name_edit.text().strip(),
+            app_note             = self.rp_app_note_edit.text().strip(),
+            version              = self.rp_version_edit.text().strip(),
+            description          = self.rp_desc_edit.text().strip(),
+            copyright            = self.rp_copyright_edit.text().strip(),
+            contact              = self.rp_contact_edit.text().strip(),
+            company_info         = self.rp_company_edit.text().strip(),
+            window_title         = self.rp_window_title_edit.text().strip(),
+            installer_exe_name   = self.rp_exe_name_edit.text().strip(),
+            installer_exe_version= self.rp_exe_version_edit.text().strip(),
+            game_dir             = self.rp_game_picker.path,
+            output_dir           = self.rp_out_picker.path,
+            arch                 = "x64" if self.rp_arch_x64.isChecked() else "x86",
+            compression          = self.rp_comp_combo.currentData() or "max",
+            icon_path            = self.rp_icon_edit.text().strip(),
+            backdrop_path        = self.rp_backdrop_edit.text().strip(),
+            install_registry_key = self.rp_registry_key_edit.text().strip(),
+            run_after_install    = self.rp_run_after_edit.text().strip(),
+            detect_running_exe   = self.rp_detect_running_edit.text().strip(),
+            required_free_space_gb = self.rp_free_space_spin.value(),
+            close_delay          = self.rp_close_delay_spin.value(),
+        )
+        if validate:
+            errors = []
+            if not s.app_name:
+                errors.append("App name is required")
+            if not s.game_dir:
+                errors.append("Game directory is required")
+            if errors:
+                for e in errors:
+                    self._log(f"✗  {e}", color=ERROR)
+                return None
+        return s
+
+    def _apply_repack_settings(self, s: RepackSettings):
+        self.rp_app_name_edit.setText(s.app_name)
+        self.rp_app_note_edit.setText(s.app_note)
+        self.rp_version_edit.setText(s.version)
+        self.rp_desc_edit.setText(s.description)
+        self.rp_copyright_edit.setText(s.copyright)
+        self.rp_contact_edit.setText(s.contact)
+        self.rp_company_edit.setText(s.company_info)
+        self.rp_window_title_edit.setText(s.window_title)
+        self.rp_exe_name_edit.setText(s.installer_exe_name)
+        self.rp_exe_version_edit.setText(s.installer_exe_version)
+        self.rp_game_picker.path = s.game_dir
+        self.rp_out_picker.path  = s.output_dir
+        self.rp_arch_x64.setChecked(s.arch == "x64")
+        self.rp_arch_x86.setChecked(s.arch == "x86")
+        for i in range(self.rp_comp_combo.count()):
+            if self.rp_comp_combo.itemData(i) == s.compression:
+                self.rp_comp_combo.setCurrentIndex(i)
+                break
+        self.rp_icon_edit.setText(s.icon_path)
+        self.rp_backdrop_edit.setText(s.backdrop_path)
+        self.rp_registry_key_edit.setText(s.install_registry_key)
+        self.rp_run_after_edit.setText(s.run_after_install)
+        self.rp_detect_running_edit.setText(s.detect_running_exe)
+        self.rp_free_space_spin.setValue(s.required_free_space_gb)
+        self.rp_close_delay_spin.setValue(s.close_delay)
 
     def _collect_settings(self, validate: bool = True) -> Optional[ProjectSettings]:
         s = ProjectSettings(

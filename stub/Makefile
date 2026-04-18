@@ -1,8 +1,9 @@
 # PatchForge stub Makefile — cross-compile Windows patchers with MinGW-w64
 #
 # Targets:
-#   make all       — build all three stubs (x64)
-#   make win32     — build all three stubs (x86)
+#   make all         — build all three patcher stubs (x64)
+#   make win32       — build all three patcher stubs (x86)
+#   make installer   — build installer stubs (x64 + x86)
 #   make clean
 
 CC64  = x86_64-w64-mingw32-gcc
@@ -81,6 +82,10 @@ CFLAGS_XD3_32 = $(CFLAGS_XD3_BASE) \
 
 CFLAGS_JOJO = $(CFLAGS_COMMON)
 
+# Installer stub flags: only needs liblzma
+CFLAGS_INST64 = $(CFLAGS_COMMON) -I$(XZ64)/include
+CFLAGS_INST32 = $(CFLAGS_COMMON) -I$(XZ32)/include
+
 LIBS     = -lcomdlg32 -lshell32 -ldwmapi -ladvapi32 -lole32 -luuid -lwindowscodecs
 LIBS_FULL64 = -L$(ZLIB64)/lib -L$(BZ2_64)/lib -lz -lbz2 $(LIBS)
 LIBS_FULL32 = -L$(ZLIB32)/lib -L$(BZ2_32)/lib -lz -lbz2 $(LIBS)
@@ -100,13 +105,16 @@ HDIFF_SRCS = \
     $(LZMA)/CpuArch.c \
     $(LZMA)/Alloc.c
 
-.PHONY: all win32 full full32 clean deps
+.PHONY: all win32 full full32 installer clean deps
 
 all: $(OUT)/hdiffpatch_x64.exe $(OUT)/xdelta3_x64.exe $(OUT)/jojodiff_x64.exe
 	@echo "=== All x64 stubs built ==="
 
 win32: $(OUT)/hdiffpatch_x86.exe $(OUT)/xdelta3_x86.exe $(OUT)/jojodiff_x86.exe
 	@echo "=== All x86 stubs built ==="
+
+installer: $(OUT)/installer_x64.exe $(OUT)/installer_x86.exe
+	@echo "=== Installer stubs built ==="
 
 # Full stubs with zlib+bzip2 support (requires build_deps.sh first)
 full: $(OUT)/hdiffpatch_full_x64.exe $(OUT)/xdelta3_x64.exe $(OUT)/jojodiff_x64.exe
@@ -191,6 +199,26 @@ $(OUT)/hdiffpatch_full_x86.exe: hdiffpatch_stub.c stub_common.h $(HDIFF_SRCS) | 
 	$(CC32) $(CFLAGS_HDIFF_FULL32) \
 	    hdiffpatch_stub.c $(HDIFF_SRCS) \
 	    $(LIBS_FULL32) \
+	    -o $@
+	$(STRIP32) $@
+	@echo "Built: $@  ($$(du -sh $@ | cut -f1))"
+
+# Installer stub x64
+$(OUT)/installer_x64.exe: installer_stub.c | $(OUT)
+	$(CC64) $(CFLAGS_INST64) \
+	    installer_stub.c \
+	    -L$(XZ64)/lib -llzma \
+	    $(LIBS) \
+	    -o $@
+	$(STRIP64) $@
+	@echo "Built: $@  ($$(du -sh $@ | cut -f1))"
+
+# Installer stub x86
+$(OUT)/installer_x86.exe: installer_stub.c | $(OUT)
+	$(CC32) $(CFLAGS_INST32) \
+	    installer_stub.c \
+	    -L$(XZ32)/lib -llzma \
+	    $(LIBS) \
 	    -o $@
 	$(STRIP32) $@
 	@echo "Built: $@  ($$(du -sh $@ | cut -f1))"
