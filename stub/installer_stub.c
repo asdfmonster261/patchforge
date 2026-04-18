@@ -71,6 +71,7 @@ typedef struct {
     char   installer_exe_version[64];
     int    total_files;
     int64_t total_uncompressed_size;
+    char   install_subdir[256];       /* base name of the source game folder */
     char   install_registry_key[512];
     char   run_after_install[512];
     char   detect_running_exe[256];
@@ -199,6 +200,7 @@ static int read_install_meta(void)
     json_get_str(buf, "company_info",           g_meta.company_info,          sizeof(g_meta.company_info));
     json_get_str(buf, "window_title",           g_meta.window_title,          sizeof(g_meta.window_title));
     json_get_str(buf, "installer_exe_version",  g_meta.installer_exe_version, sizeof(g_meta.installer_exe_version));
+    json_get_str(buf, "install_subdir",          g_meta.install_subdir,        sizeof(g_meta.install_subdir));
     json_get_str(buf, "install_registry_key",   g_meta.install_registry_key,  sizeof(g_meta.install_registry_key));
     json_get_str(buf, "run_after_install",      g_meta.run_after_install,     sizeof(g_meta.run_after_install));
     json_get_str(buf, "detect_running_exe",     g_meta.detect_running_exe,    sizeof(g_meta.detect_running_exe));
@@ -865,16 +867,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         /* Backdrop */
         g_backdrop_bmp = load_backdrop();
 
-        /* Pre-populate install path from argv[1] (elevated relaunch) */
+        /* Pre-populate install path.
+           Priority: argv[1] (elevated relaunch) > Program Files\<subdir> */
         {
+            char init_path[MAX_PATH] = {0};
+
+            /* Check for elevated-relaunch pre-set path */
             int argc = 0;
             LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-            if (argv && argc >= 2) {
-                char path8[MAX_PATH] = {0};
-                WideCharToMultiByte(CP_ACP, 0, argv[1], -1, path8, MAX_PATH, NULL, NULL);
-                if (path8[0]) SetWindowTextA(g_hwnd_filepath, path8);
-            }
+            if (argv && argc >= 2)
+                WideCharToMultiByte(CP_ACP, 0, argv[1], -1, init_path, MAX_PATH, NULL, NULL);
             if (argv) LocalFree(argv);
+
+            /* Fall back to Program Files\<install_subdir> */
+            if (!init_path[0] && g_meta.install_subdir[0]) {
+                char prog_files[MAX_PATH] = {0};
+                SHGetFolderPathA(NULL, CSIDL_PROGRAM_FILES, NULL, 0, prog_files);
+                if (prog_files[0])
+                    snprintf(init_path, MAX_PATH, "%s\\%s",
+                             prog_files, g_meta.install_subdir);
+            }
+
+            if (init_path[0]) SetWindowTextA(g_hwnd_filepath, init_path);
         }
 
         update_space_label();
@@ -955,8 +969,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (id == IDC_BTN_BROWSE) {
             char path[MAX_PATH] = {0};
             GetWindowTextA(g_hwnd_filepath, path, MAX_PATH);
-            if (browse_for_folder(hwnd, path, MAX_PATH))
+            /* If the current path already ends with \<subdir>, strip it so the
+               user browses to the parent folder — not inside it. */
+            if (g_meta.install_subdir[0]) {
+                size_t plen = strlen(path);
+                size_t slen = strlen(g_meta.install_subdir);
+                if (plen > slen + 1 &&
+                    path[plen - slen - 1] == '\\' &&
+                    _stricmp(path + plen - slen, g_meta.install_subdir) == 0)
+                    path[plen - slen - 1] = '\0';
+            }
+            if (browse_for_folder(hwnd, path, MAX_PATH)) {
+                /* Always append \<subdir> after the user picks a folder */
+                if (g_meta.install_subdir[0]) {
+                    size_t plen = strlen(path);
+                    size_t slen = strlen(g_meta.install_subdir);
+                    int already = (plen > slen + 1 &&
+                                   path[plen - slen - 1] == '\\' &&
+                                   _stricmp(path + plen - slen, g_meta.install_subdir) == 0);
+                    if (!already)
+                        snprintf(path + plen, MAX_PATH - plen, "\\%s", g_meta.install_subdir);
+                }
                 SetWindowTextA(g_hwnd_filepath, path);
+            }
             update_space_label();
         } else if (id == IDC_BTN_INSTALL) {
             char path[MAX_PATH] = {0};
