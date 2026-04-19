@@ -121,6 +121,8 @@ static int        g_close_countdown   = 0;
 static HBITMAP    g_backdrop_bmp      = NULL;
 static int        g_btn_hover_install = 0;
 static int        g_btn_hover_cancel  = 0;
+static int        g_silent            = 0;
+static char       g_silent_dir[MAX_PATH] = {0};
 
 /* ---- Optional components ---- */
 typedef struct {
@@ -820,13 +822,14 @@ static int do_install(const char *install_dir, int low_load,
                     files_done++;
 
                     int pct = (int)(files_done * 100 / total_to_install);
-                    PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
-
-                    char *log_msg = (char *)malloc(128);
-                    if (log_msg) {
-                        snprintf(log_msg, 128, "Extracting %u / %u: %s",
-                                 files_done, total_to_install, e->path);
-                        PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                    if (g_hwnd) {
+                        PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
+                        char *log_msg = (char *)malloc(128);
+                        if (log_msg) {
+                            snprintf(log_msg, 128, "Extracting %u / %u: %s",
+                                     files_done, total_to_install, e->path);
+                            PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                        }
                     }
                 }
             }
@@ -1395,24 +1398,74 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 {
-    (void)hPrev; (void)lpCmd;
+    (void)hPrev;
 
     GetModuleFileNameA(NULL, g_exe_path, MAX_PATH);
 
+    /* Parse /S (silent) and /D=<path> (install directory override) */
+    if (lpCmd) {
+        if (strstr(lpCmd, "/S") || strstr(lpCmd, "-S"))
+            g_silent = 1;
+        const char *darg = strstr(lpCmd, "/D=");
+        if (darg) {
+            darg += 3;
+            if (*darg == '"') {
+                darg++;
+                int i = 0;
+                while (*darg && *darg != '"' && i < MAX_PATH - 1)
+                    g_silent_dir[i++] = *darg++;
+                g_silent_dir[i] = '\0';
+            } else {
+                int i = 0;
+                while (*darg && *darg != ' ' && i < MAX_PATH - 1)
+                    g_silent_dir[i++] = *darg++;
+                g_silent_dir[i] = '\0';
+            }
+        }
+    }
+
     if (!read_install_meta()) {
-        MessageBoxA(NULL,
-            "This installer is incomplete or corrupted.\n"
-            "Please re-download the installer.",
-            "PatchForge Installer", MB_OK | MB_ICONERROR);
+        if (!g_silent)
+            MessageBoxA(NULL,
+                "This installer is incomplete or corrupted.\n"
+                "Please re-download the installer.",
+                "PatchForge Installer", MB_OK | MB_ICONERROR);
         return 1;
     }
 
     if (!read_pack_entries()) {
-        MessageBoxA(NULL,
-            "Failed to read the package file table.\n"
-            "The installer may be corrupted.",
-            "PatchForge Installer", MB_OK | MB_ICONERROR);
+        if (!g_silent)
+            MessageBoxA(NULL,
+                "Failed to read the package file table.\n"
+                "The installer may be corrupted.",
+                "PatchForge Installer", MB_OK | MB_ICONERROR);
         return 1;
+    }
+
+    /* ── Silent install ──────────────────────────────────────────────────
+       No UI — use /D= path or derive default from installer's own dir.
+       Component defaults are applied. Exits with 0 on success, 1 on fail. */
+    if (g_silent) {
+        char install_dir[MAX_PATH] = {0};
+        if (g_silent_dir[0]) {
+            snprintf(install_dir, MAX_PATH, "%s", g_silent_dir);
+        } else {
+            snprintf(install_dir, MAX_PATH, "%s", g_exe_path);
+            char *last = strrchr(install_dir, '\\');
+            if (last) *last = '\0';
+            if (g_meta.install_subdir[0]) {
+                size_t plen = strlen(install_dir);
+                snprintf(install_dir + plen, MAX_PATH - plen,
+                         "\\%s", g_meta.install_subdir);
+            }
+        }
+        ensure_dir(install_dir);
+        int selected_comps[MAX_COMPONENTS] = {0};
+        for (int i = 0; i < g_num_components; i++)
+            selected_comps[i] = g_components[i].default_checked;
+        int ok = do_install(install_dir, 0, selected_comps, g_num_components);
+        free(g_entries);
+        return ok ? 0 : 1;
     }
 
     /* Resources */
