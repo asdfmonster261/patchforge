@@ -23,10 +23,7 @@ The EXE layout produced by exe_packager.package_repack():
   [8B magic: XPACK01\\x00]
 """
 
-import concurrent.futures
 import lzma
-import multiprocessing
-import queue as _queue_mod
 import struct
 import subprocess
 import zlib
@@ -104,72 +101,6 @@ def _compress(data: bytes, quality: str, threads: int = 1) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# ProcessPoolExecutor worker (must be module-level for pickling)
-# ---------------------------------------------------------------------------
-
-def _stream_worker(
-    file_specs: list[tuple[str, str]],  # [(rel_path, abs_path_str), ...]
-    comp_idx: int,
-    stream_label: str,
-    quality: str,
-    threads: int,
-    progress_q,
-) -> tuple[int, bytes, list[dict]]:
-    """
-    Child-process worker: read all files for one component stream,
-    compress them, and post progress events to *progress_q*.
-
-    Returns (comp_idx, compressed_bytes, file_entries).
-    """
-    pieces: list[bytes] = []
-    file_entries: list[dict] = []
-    offset = 0
-    total = len(file_specs)
-
-    for i, (rel, abs_path) in enumerate(file_specs):
-        data = Path(abs_path).read_bytes()
-        file_entries.append({
-            "path":      rel,
-            "offset":    offset,
-            "size":      len(data),
-            "component": comp_idx,
-            "crc32":     zlib.crc32(data) & 0xFFFFFFFF,
-        })
-        pieces.append(data)
-        offset += len(data)
-        if (i + 1) % 200 == 0 or i == total - 1:
-            progress_q.put({
-                "stream":      comp_idx,
-                "label":       stream_label,
-                "stage":       "reading",
-                "files_done":  i + 1,
-                "files_total": total,
-            })
-
-    raw = b"".join(pieces)
-    del pieces
-
-    progress_q.put({
-        "stream":   comp_idx,
-        "label":    stream_label,
-        "stage":    "compressing",
-        "raw_size": len(raw),
-    })
-
-    compressed = _compress(raw, quality, threads)
-    del raw
-
-    progress_q.put({
-        "stream":          comp_idx,
-        "label":           stream_label,
-        "stage":           "done",
-        "compressed_size": len(compressed),
-    })
-
-    return comp_idx, compressed, file_entries
-
-
-# ---------------------------------------------------------------------------
 # Main build entry point
 # ---------------------------------------------------------------------------
 
@@ -185,9 +116,8 @@ def build(
     an XPACK01 blob.
 
     components: list of {"label": str, "folder": str, ...}
-    threads:    total worker threads (1 = single-threaded stdlib lzma;
-                >1 = xz CLI MT, plus stream-level ProcessPoolExecutor when
-                multiple streams exist).
+    threads:    xz thread count per stream (1 = single-threaded stdlib lzma;
+                >1 = xz CLI MT). Streams are always compressed sequentially.
 
     Returns (xpack01_blob, total_files, total_uncompressed_bytes, file_list).
     file_list is [{"path": str, "component": int, "offset": int, "size": int}].
@@ -229,30 +159,17 @@ def build(
         raise ValueError(f"No files found in: {game_dir}")
 
     num_streams = len(stream_specs)
-    if threads > 1 and num_streams > 1:
-        num_processes = min(num_streams, threads)
-        threads_per_stream = max(1, threads // num_processes)
-        _prog(3, f"Found {total_files} files across {num_streams} streams — "
-                 f"compressing with {num_processes} parallel processes, "
-                 f"{threads_per_stream} thread(s) each…")
-    else:
-        num_processes = 1
-        threads_per_stream = threads
-        _prog(3, f"Found {total_files} files. Compressing with {threads} thread(s)…")
+    stream_word = "stream" if num_streams == 1 else "streams"
+    _prog(3, f"Found {total_files} files across {num_streams} {stream_word}. "
+             f"Compressing with {threads} thread(s)…")
 
     all_file_entries: list[dict] = []
     streams_out: list[tuple[int, bytes]] = []  # (comp_idx, compressed_bytes), ordered
 
-    if num_processes > 1:
-        _compress_parallel(
-            stream_specs, quality, threads_per_stream,
-            all_file_entries, streams_out, num_streams, _prog,
-        )
-    else:
-        _compress_sequential(
-            stream_specs, quality, threads_per_stream,
-            total_estimated, all_file_entries, streams_out, _prog,
-        )
+    _compress_sequential(
+        stream_specs, quality, threads,
+        total_estimated, all_file_entries, streams_out, _prog,
+    )
 
     total_uncompressed = sum(e["size"] for e in all_file_entries)
 
@@ -325,121 +242,6 @@ def _compress_sequential(
 
         _prog(5 + int(s_end * 88), f"{label}: done — "
               f"{_fmt_size(len(streams_out[-1][1]))} compressed")
-
-
-# ---------------------------------------------------------------------------
-# Parallel compression path  (num_processes > 1)
-# ---------------------------------------------------------------------------
-
-def _compress_parallel(
-    stream_specs: list,
-    quality: str,
-    threads_per_stream: int,
-    all_file_entries: list,
-    streams_out: list,
-    num_streams: int,
-    _prog: Callable,
-) -> None:
-    """Compress all streams in parallel using ProcessPoolExecutor (spawn)."""
-    ctx = multiprocessing.get_context("spawn")
-
-    with ctx.Manager() as manager:
-        q = manager.Queue()
-
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=len(stream_specs),
-            mp_context=ctx,
-        ) as executor:
-            # Submit all streams
-            future_map: dict = {}
-            for comp_idx, label, specs, _ in stream_specs:
-                f = executor.submit(
-                    _stream_worker,
-                    specs, comp_idx, label, quality, threads_per_stream, q,
-                )
-                future_map[f] = comp_idx
-
-            # Per-stream progress state (0–100)
-            stream_pct: dict[int, float] = {
-                comp_idx: 0.0 for comp_idx, *_ in stream_specs
-            }
-            stream_weight: dict[int, int] = {
-                comp_idx: est for comp_idx, _, _, est in stream_specs
-            }
-            results: dict[int, tuple[bytes, list]] = {}
-            pending = set(future_map)
-
-            while pending:
-                done_now, pending = concurrent.futures.wait(
-                    pending,
-                    timeout=0.1,
-                    return_when=concurrent.futures.FIRST_COMPLETED,
-                )
-
-                for f in done_now:
-                    comp_idx, compressed, entries = f.result()  # re-raises on error
-                    results[comp_idx] = (compressed, entries)
-
-                # Drain progress queue
-                while True:
-                    try:
-                        msg = q.get_nowait()
-                    except _queue_mod.Empty:
-                        break
-
-                    ci    = msg["stream"]
-                    stage = msg["stage"]
-                    label = msg["label"]
-
-                    if stage == "reading":
-                        stream_pct[ci] = msg["files_done"] / msg["files_total"] * 40
-                    elif stage == "compressing":
-                        stream_pct[ci] = 40.0
-                    elif stage == "done":
-                        stream_pct[ci] = 100.0
-
-                    # Weighted overall progress → 5–93 %
-                    total_w = sum(stream_weight.values())
-                    w_avg = sum(
-                        stream_pct[k] * stream_weight[k] for k in stream_pct
-                    ) / total_w
-                    overall = 5 + int(w_avg * 0.88)
-
-                    done_count = sum(1 for p in stream_pct.values() if p >= 100)
-
-                    if stage == "reading":
-                        status = (
-                            f"[{done_count}/{num_streams}] {label}: "
-                            f"reading ({msg['files_done']}/{msg['files_total']} files)"
-                        )
-                    elif stage == "compressing":
-                        status = (
-                            f"[{done_count}/{num_streams}] {label}: "
-                            f"compressing {_fmt_size(msg['raw_size'])}…"
-                        )
-                    else:
-                        status = (
-                            f"[{done_count}/{num_streams}] {label}: done — "
-                            f"{_fmt_size(msg['compressed_size'])} compressed"
-                        )
-                    _prog(overall, status)
-
-            # Final queue drain (messages that arrived after last wait)
-            while True:
-                try:
-                    msg = q.get_nowait()
-                    ci    = msg["stream"]
-                    stage = msg["stage"]
-                    if stage == "done":
-                        stream_pct[ci] = 100.0
-                except _queue_mod.Empty:
-                    break
-
-    # Assemble results in comp_idx order (stream_specs preserves the order)
-    for comp_idx, _, _, _ in stream_specs:
-        compressed, entries = results[comp_idx]
-        all_file_entries.extend(entries)
-        streams_out.append((comp_idx, compressed))
 
 
 # ---------------------------------------------------------------------------
