@@ -1027,8 +1027,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 DWORD btn_style = WS_CHILD | WS_VISIBLE;
                 if (c->group[0]) {
                     btn_style |= BS_AUTORADIOBUTTON;
-                    /* First radio in a new group needs WS_GROUP so Win32 knows
-                       where each mutual-exclusion group begins. */
                     if (strcmp(c->group, prev_group) != 0) {
                         btn_style |= WS_GROUP;
                         strncpy(prev_group, c->group, sizeof(prev_group) - 1);
@@ -1042,9 +1040,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     20, 154 + ci * 24, 680, 22,
                     hwnd, (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
                 SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-                /* Set default checked state */
-                if (c->default_checked)
-                    SendMessageA(c->hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
+            }
+
+            /* Set initial checked states.  For radio groups, BM_SETCHECK does
+               not auto-uncheck siblings — only BN_CLICKED does.  Track which
+               groups already have a checked button so at most one is set. */
+            char checked_groups[MAX_COMPONENTS][64];
+            int  num_checked_groups = 0;
+            for (int ci = 0; ci < g_num_components; ci++) {
+                ComponentInfo *c = &g_components[ci];
+                if (!c->default_checked) continue;
+                if (c->group[0]) {
+                    int already = 0;
+                    for (int gi = 0; gi < num_checked_groups; gi++) {
+                        if (strcmp(checked_groups[gi], c->group) == 0)
+                            { already = 1; break; }
+                    }
+                    if (already) continue;
+                    strncpy(checked_groups[num_checked_groups++], c->group,
+                            sizeof(checked_groups[0]) - 1);
+                }
+                SendMessageA(c->hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
             }
         }
 

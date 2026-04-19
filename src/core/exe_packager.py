@@ -166,6 +166,7 @@ def _build_uninstaller_blob(
     arp_subkey: str,
     metadata: dict,
     file_list: list[dict],
+    icon_path: Path | None = None,
 ) -> bytes:
     """
     Append data JSON + trailer to the prebuilt uninstaller stub.
@@ -177,6 +178,10 @@ def _build_uninstaller_blob(
       [8B magic: UNINST01  ]
     """
     stub = _uninstaller_stub_path(arch).read_bytes()
+
+    if icon_path is not None:
+        from . import pe_icon
+        stub = pe_icon.inject(stub, Path(icon_path))
 
     data = {
         "app_name":             metadata.get("app_name", ""),
@@ -236,7 +241,7 @@ def package_repack(
     arp_subkey = _make_arp_subkey(metadata.get("app_name", ""))
     uninst_blob = b""
     if include_uninstaller and file_list is not None:
-        uninst_blob = _build_uninstaller_blob(arch, arp_subkey, metadata, file_list)
+        uninst_blob = _build_uninstaller_blob(arch, arp_subkey, metadata, file_list, icon_path)
 
     uninst_offset = pack_data_offset + pack_data_size
     uninst_size   = len(uninst_blob)
