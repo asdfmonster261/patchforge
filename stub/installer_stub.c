@@ -144,6 +144,8 @@ typedef struct {
     char label[256];
     char group[64];
     int  default_checked;
+    int  requires[MAX_COMPONENTS];  /* 1-based indices of components this one depends on */
+    int  num_requires;
     HWND hwnd_ctrl;
 } ComponentInfo;
 
@@ -152,6 +154,7 @@ static int           g_num_components = 0;
 
 /* ---- Forward declarations ---- */
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+static void refresh_component_states(void);
 
 /* ==================================================================== */
 /* CRC32 (IEEE 802.3 polynomial, same as zlib)                          */
@@ -235,6 +238,27 @@ static int json_get_bool(const char *json, const char *key, int def)
     return def;
 }
 
+static int json_parse_int_array(const char *json, const char *key, int *out, int max)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return 0;
+    p += strlen(search);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '[') return 0;
+    p++;
+    int count = 0;
+    while (count < max) {
+        while (*p == ' ' || *p == ',') p++;
+        if (*p == ']' || !*p) break;
+        if (*p >= '0' && *p <= '9')
+            out[count++] = (int)_atoi64(p);
+        while (*p && *p != ',' && *p != ']') p++;
+    }
+    return count;
+}
+
 /* Parse "components" JSON array from metadata into g_components[]. */
 static void json_parse_components(const char *json)
 {
@@ -272,6 +296,8 @@ static void json_parse_components(const char *json)
         c->default_checked = json_get_bool(tmp, "default_checked", 1);
         json_get_str(tmp, "label", c->label, sizeof(c->label));
         json_get_str(tmp, "group", c->group, sizeof(c->group));
+        c->num_requires    = json_parse_int_array(tmp, "requires",
+                                                  c->requires, MAX_COMPONENTS);
         free(tmp);
 
         if (c->index > 0 && c->label[0])
@@ -1162,6 +1188,38 @@ static DWORD WINAPI install_thread(LPVOID param)
 }
 
 /* ==================================================================== */
+/* Component dependency enforcement                                      */
+/* ==================================================================== */
+
+/* After any component checkbox change: disable components whose required
+   dependencies are not checked, re-enable them when requirements are met.
+   Runs a full recompute so cascades (A needs B needs C) resolve correctly. */
+static void refresh_component_states(void)
+{
+    for (int j = 0; j < g_num_components; j++) {
+        ComponentInfo *cj = &g_components[j];
+        if (!cj->hwnd_ctrl || cj->num_requires == 0) continue;
+
+        int enabled = 1;
+        for (int r = 0; r < cj->num_requires && enabled; r++) {
+            int ri = cj->requires[r] - 1;   /* 1-based → 0-based */
+            if (ri < 0 || ri >= g_num_components) continue;
+            ComponentInfo *cr = &g_components[ri];
+            if (!cr->hwnd_ctrl) continue;
+            if (SendMessageA(cr->hwnd_ctrl, BM_GETCHECK, 0, 0) != BST_CHECKED)
+                enabled = 0;
+        }
+
+        if (!enabled) {
+            SendMessageA(cj->hwnd_ctrl, BM_SETCHECK, BST_UNCHECKED, 0);
+            EnableWindow(cj->hwnd_ctrl, FALSE);
+        } else {
+            EnableWindow(cj->hwnd_ctrl, TRUE);
+        }
+    }
+}
+
+/* ==================================================================== */
 /* Window procedure                                                      */
 /* ==================================================================== */
 
@@ -1297,6 +1355,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 SendMessageA(c->hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
             }
         }
+        refresh_component_states();
 
         /* Shortcut checkboxes — shown whenever a target exe is configured.
            Default checked state mirrors the Python GUI setting. */
@@ -1485,7 +1544,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_COMMAND: {
         int id    = LOWORD(wp);
         int notif = HIWORD(wp);
-        if (id == IDC_FILEPATH && notif == EN_CHANGE) {
+        if (id >= IDC_COMP_BASE && id < IDC_COMP_BASE + g_num_components) {
+            if (notif == BN_CLICKED) {
+                int ci = id - IDC_COMP_BASE;
+                ComponentInfo *cc = &g_components[ci];
+                /* If just checked, auto-check everything it requires */
+                if (SendMessageA(cc->hwnd_ctrl, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                    for (int r = 0; r < cc->num_requires; r++) {
+                        int ri = cc->requires[r] - 1;
+                        if (ri >= 0 && ri < g_num_components && g_components[ri].hwnd_ctrl)
+                            SendMessageA(g_components[ri].hwnd_ctrl,
+                                         BM_SETCHECK, BST_CHECKED, 0);
+                    }
+                }
+                refresh_component_states();
+            }
+        } else if (id == IDC_FILEPATH && notif == EN_CHANGE) {
             update_space_label();
         } else if (id == IDC_BTN_BROWSE) {
             char path[MAX_PATH] = {0};

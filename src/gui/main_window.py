@@ -1088,6 +1088,13 @@ class MainWindow(QMainWindow):
         )
         form.addRow("Group:", group_edit)
 
+        existing_requires = data.get("requires", []) if data else []
+        requires_edit = QLineEdit(", ".join(str(r) for r in existing_requires))
+        requires_edit.setPlaceholderText(
+            "Comma-separated component numbers that must be selected  (e.g. 1, 2)"
+        )
+        form.addRow("Requires:", requires_edit)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -1099,19 +1106,27 @@ class MainWindow(QMainWindow):
         fld = folder_edit.text().strip()
         if not lbl or not fld:
             return None
+        requires = []
+        for tok in requires_edit.text().split(","):
+            tok = tok.strip()
+            if tok.isdigit() and int(tok) > 0:
+                requires.append(int(tok))
         return {
             "label":           lbl,
             "folder":          fld,
             "default_checked": default_chk.isChecked(),
             "group":           group_edit.text().strip(),
+            "requires":        requires,
         }
 
     @staticmethod
     def _comp_item_text(c: dict) -> str:
         chk = "✓" if c.get("default_checked", True) else "○"
         grp = f"  [group: {c['group']}]" if c.get("group") else ""
+        req = c.get("requires", [])
+        req_str = f"  [requires: {', '.join(str(r) for r in req)}]" if req else ""
         folder_name = Path(c["folder"]).name if c.get("folder") else ""
-        return f"[{chk}]  {c['label']}  ({folder_name}){grp}"
+        return f"[{chk}]  {c['label']}  ({folder_name}){grp}{req_str}"
 
     def _on_rp_comp_add(self):
         comp = self._component_dialog("Add Optional Component")
