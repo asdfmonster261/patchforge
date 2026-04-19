@@ -416,10 +416,33 @@ def _add_repack(sub):
                    dest="required_free_space_gb",
                    help="Warn if available disk space is below this threshold in GB (default: 0 = disabled)")
 
+    # Integrity
+    p.add_argument("--no-verify-crc32", action="store_true", dest="no_verify_crc32",
+                   help="Skip CRC32 integrity check after installation (default: verify enabled)")
+
+    # Shortcuts
+    p.add_argument("--shortcut-target", metavar="REL_PATH", dest="shortcut_target",
+                   help=r"Relative path to the exe for shortcuts (e.g. Bin\Game.exe)")
+    p.add_argument("--shortcut-name", metavar="NAME", dest="shortcut_name",
+                   help="Shortcut display name (default: app name)")
+    p.add_argument("--shortcut-desktop", action="store_true", default=None,
+                   dest="shortcut_desktop",
+                   help="Create a Desktop shortcut (default: off)")
+    p.add_argument("--no-shortcut-desktop", action="store_false",
+                   dest="shortcut_desktop",
+                   help="Do not create a Desktop shortcut")
+    p.add_argument("--shortcut-startmenu", action="store_true", default=None,
+                   dest="shortcut_startmenu",
+                   help="Create a Start Menu shortcut (default: on)")
+    p.add_argument("--no-shortcut-startmenu", action="store_false",
+                   dest="shortcut_startmenu",
+                   help="Do not create a Start Menu shortcut")
+
     # Optional components
     p.add_argument("--component", metavar="JSON", action="append", dest="components_json",
                    help=(
                        "Add an optional component as a JSON object. Repeatable. "
+                       'Keys: label, folder, default_checked, group, shortcut_target. '
                        'Example: \'{"label":"DLC","folder":"dlc/","default_checked":true,"group":""}\''
                    ))
 
@@ -468,9 +491,14 @@ def _cmd_repack(args):
     if args.install_registry_key:  settings.install_registry_key  = args.install_registry_key
     if args.run_after_install:     settings.run_after_install     = args.run_after_install
     if args.detect_running_exe:    settings.detect_running_exe    = args.detect_running_exe
-    if args.close_delay is not None:           settings.close_delay           = args.close_delay
+    if args.close_delay is not None:            settings.close_delay            = args.close_delay
     if args.required_free_space_gb is not None: settings.required_free_space_gb = args.required_free_space_gb
-    if args.no_uninstaller:                    settings.include_uninstaller   = False
+    if args.no_uninstaller:                     settings.include_uninstaller    = False
+    if args.no_verify_crc32:                    settings.verify_crc32           = False
+    if args.shortcut_target:                    settings.shortcut_target        = args.shortcut_target
+    if args.shortcut_name:                      settings.shortcut_name          = args.shortcut_name
+    if args.shortcut_desktop is not None:       settings.shortcut_create_desktop   = args.shortcut_desktop
+    if args.shortcut_startmenu is not None:     settings.shortcut_create_startmenu = args.shortcut_startmenu
 
     # Parse --component flags
     if args.components_json:
@@ -483,10 +511,11 @@ def _cmd_repack(args):
             if "label" not in c or "folder" not in c:
                 _die(f"--component JSON must have 'label' and 'folder' keys: {raw}")
             parsed.append({
-                "label":           str(c["label"]),
-                "folder":          str(c["folder"]),
-                "default_checked": bool(c.get("default_checked", True)),
-                "group":           str(c.get("group", "")),
+                "label":            str(c["label"]),
+                "folder":           str(c["folder"]),
+                "default_checked":  bool(c.get("default_checked", True)),
+                "group":            str(c.get("group", "")),
+                "shortcut_target":  str(c.get("shortcut_target", "")),
             })
         settings.components = parsed
 
@@ -546,6 +575,24 @@ def _add_new_repack_project(sub):
     p.add_argument("--arch",        choices=["x64", "x86"])
     p.add_argument("--icon-path",   metavar="FILE", dest="icon_path")
     p.add_argument("--backdrop",    metavar="FILE", dest="backdrop_path")
+    p.add_argument("--install-registry-key", metavar="KEY",  dest="install_registry_key")
+    p.add_argument("--run-after",   metavar="CMD",  dest="run_after_install")
+    p.add_argument("--detect-running", metavar="EXE", dest="detect_running_exe")
+    p.add_argument("--close-delay", metavar="N",    type=int,   dest="close_delay")
+    p.add_argument("--required-free-space", metavar="GB", type=float,
+                   dest="required_free_space_gb")
+    p.add_argument("--no-uninstaller", action="store_true", dest="no_uninstaller")
+    p.add_argument("--no-verify-crc32", action="store_true", dest="no_verify_crc32")
+    p.add_argument("--shortcut-target",    metavar="REL_PATH", dest="shortcut_target")
+    p.add_argument("--shortcut-name",      metavar="NAME",     dest="shortcut_name")
+    p.add_argument("--shortcut-desktop",   action="store_true", default=None,
+                   dest="shortcut_desktop")
+    p.add_argument("--no-shortcut-desktop", action="store_false", dest="shortcut_desktop")
+    p.add_argument("--shortcut-startmenu", action="store_true", default=None,
+                   dest="shortcut_startmenu")
+    p.add_argument("--no-shortcut-startmenu", action="store_false", dest="shortcut_startmenu")
+    p.add_argument("--component", metavar="JSON", action="append", dest="components_json",
+                   help="Add an optional component (same format as 'repack --component')")
     p.set_defaults(func=_cmd_new_repack_project)
 
 
@@ -570,6 +617,34 @@ def _cmd_new_repack_project(args):
     if args.arch:                 s.arch                 = args.arch
     if args.icon_path:            s.icon_path            = args.icon_path
     if args.backdrop_path:        s.backdrop_path        = args.backdrop_path
+    if args.install_registry_key: s.install_registry_key = args.install_registry_key
+    if args.run_after_install:    s.run_after_install    = args.run_after_install
+    if args.detect_running_exe:   s.detect_running_exe   = args.detect_running_exe
+    if args.close_delay is not None:            s.close_delay            = args.close_delay
+    if args.required_free_space_gb is not None: s.required_free_space_gb = args.required_free_space_gb
+    if args.no_uninstaller:                     s.include_uninstaller    = False
+    if args.no_verify_crc32:                    s.verify_crc32           = False
+    if args.shortcut_target:                    s.shortcut_target        = args.shortcut_target
+    if args.shortcut_name:                      s.shortcut_name          = args.shortcut_name
+    if args.shortcut_desktop is not None:       s.shortcut_create_desktop   = args.shortcut_desktop
+    if args.shortcut_startmenu is not None:     s.shortcut_create_startmenu = args.shortcut_startmenu
+    if args.components_json:
+        parsed = []
+        for raw in args.components_json:
+            try:
+                c = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                _die(f"Invalid --component JSON: {exc}\n  value: {raw}")
+            if "label" not in c or "folder" not in c:
+                _die(f"--component JSON must have 'label' and 'folder' keys: {raw}")
+            parsed.append({
+                "label":           str(c["label"]),
+                "folder":          str(c["folder"]),
+                "default_checked": bool(c.get("default_checked", True)),
+                "group":           str(c.get("group", "")),
+                "shortcut_target": str(c.get("shortcut_target", "")),
+            })
+        s.components = parsed
 
     out = Path(args.output)
     save_repack(s, out)
