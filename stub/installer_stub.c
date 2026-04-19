@@ -1330,60 +1330,66 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             lx + 572, path_y + 18, 108, 26, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
 
-        /* ── Settings section ────────────────────────────────────── */
-        int opt_y = path_y + 18 + 26 + 10;
-        int cur_y = opt_y;
+        /* ── Settings (left) + Optional Components (right) ─────────── */
+        const int col1_x = lx;          /* 20 */
+        const int col1_w = 320;
+        const int col2_x = 360;
+        const int col2_w = rmax - col2_x; /* 340 */
 
+        int opt_y  = path_y + 18 + 26 + 10;
+        int left_y = opt_y;
+        int right_y = opt_y;
+
+        /* Settings header (left column) */
         g_hwnd_sec_settings = CreateWindowExA(0, "STATIC", "SETTINGS",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            lx, cur_y, crw, 16, hwnd, NULL, NULL, NULL);
+            col1_x, left_y, col1_w, 16, hwnd, NULL, NULL, NULL);
         SendMessageA(g_hwnd_sec_settings, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        cur_y += 20;
+        left_y += 20;
 
         g_hwnd_chk_lowload = CreateWindowExA(0, "BUTTON",
             "Reduce system load during install (slower)",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            lx, cur_y, crw, 20, hwnd, (HMENU)IDC_CHK_LOWLOAD, NULL, NULL);
+            col1_x, left_y, col1_w, 20, hwnd, (HMENU)IDC_CHK_LOWLOAD, NULL, NULL);
         SendMessageA(g_hwnd_chk_lowload, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        cur_y += 24;
+        left_y += 24;
 
         if (g_meta.verify_crc32) {
             g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON",
                 "Verify file integrity after installation",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                lx, cur_y, crw, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
+                col1_x, left_y, col1_w, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
             SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
-            cur_y += 24;
+            left_y += 24;
         }
 
         if (g_meta.shortcut_target[0]) {
             g_hwnd_chk_sc_startmenu = CreateWindowExA(0, "BUTTON",
                 "Create Start Menu shortcut",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                lx, cur_y, crw, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
+                col1_x, left_y, col1_w, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
             SendMessageA(g_hwnd_chk_sc_startmenu, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             SendMessageA(g_hwnd_chk_sc_startmenu, BM_SETCHECK,
                          g_meta.shortcut_create_startmenu ? BST_CHECKED : BST_UNCHECKED, 0);
-            cur_y += 24;
+            left_y += 24;
             g_hwnd_chk_sc_desktop = CreateWindowExA(0, "BUTTON",
                 "Create Desktop shortcut",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                lx, cur_y, crw, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
+                col1_x, left_y, col1_w, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
             SendMessageA(g_hwnd_chk_sc_desktop, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             SendMessageA(g_hwnd_chk_sc_desktop, BM_SETCHECK,
                          g_meta.shortcut_create_desktop ? BST_CHECKED : BST_UNCHECKED, 0);
-            cur_y += 24;
+            left_y += 24;
         }
 
-        /* ── Optional Components section ─────────────────────────── */
+        /* Optional Components header + checkboxes (right column, same top y) */
         if (g_num_components > 0) {
-            cur_y += 8;
             g_hwnd_sec_comps = CreateWindowExA(0, "STATIC", "OPTIONAL COMPONENTS",
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                lx, cur_y, crw, 16, hwnd, NULL, NULL, NULL);
+                col2_x, right_y, col2_w, 16, hwnd, NULL, NULL, NULL);
             SendMessageA(g_hwnd_sec_comps, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-            cur_y += 20;
+            right_y += 20;
 
             char prev_group[64] = {0};
             for (int ci = 0; ci < g_num_components; ci++) {
@@ -1401,7 +1407,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
                     btn_style,
-                    lx, cur_y + ci * 24, crw, 20,
+                    col2_x, right_y + ci * 24, col2_w, 20,
                     hwnd, (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
                 SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
@@ -1423,12 +1429,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 SendMessageA(c->hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
             }
-            cur_y += g_num_components * 24;
+            right_y += g_num_components * 24;
         }
         refresh_component_states();
 
-        /* ── Disk space label ────────────────────────────────────── */
-        int space_y = cur_y + 6;
+        /* ── Disk space label (below whichever column is taller) ──── */
+        int space_y = (left_y > right_y ? left_y : right_y) + 6;
         g_hwnd_space_lbl = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
             lx, space_y, crw, 14, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
@@ -1988,10 +1994,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     int hdr_extra       = (g_meta.app_note[0]    ? 18 : 0)
                         + (g_meta.description[0] ? 18 : 0);
     int sum_extra       = (g_meta.total_files > 0)  ? 18 : 0;
-    int comps_sect      = g_num_components > 0 ? 28 : 0;
-    int client_h = g_img_h + 300 + hdr_extra + sum_extra
-                 + 20 + verify_offset + shortcut_offset
-                 + comps_sect + g_num_components * 24;
+    /* Settings and Optional Components columns sit side-by-side; height = max of the two. */
+    int left_col_h  = 20 + 24 + verify_offset + shortcut_offset; /* header + low-load + extras */
+    int right_col_h = g_num_components > 0 ? (20 + g_num_components * 24) : 0;
+    int two_col_h   = left_col_h > right_col_h ? left_col_h : right_col_h;
+    /* base 300 already budgets one low-load row (24px); subtract to avoid double-counting */
+    int client_h = g_img_h + 300 + hdr_extra + sum_extra + (two_col_h - 24);
     RECT wr = {0, 0, 720, client_h};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
