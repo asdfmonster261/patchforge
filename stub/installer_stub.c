@@ -94,9 +94,10 @@ typedef struct {
 /* ---- Per-file table entry ---- */
 typedef struct {
     char     path[512];
-    uint64_t offset;     /* byte offset in decompressed stream */
-    uint64_t size;       /* uncompressed byte count */
-    uint32_t component;  /* 0 = required; reserved for future optional components */
+    uint64_t offset;
+    uint64_t size;
+    uint32_t component;
+    uint32_t crc32;
 } PackEntry;
 
 /* ---- Global state ---- */
@@ -138,6 +139,29 @@ static int           g_num_components = 0;
 
 /* ---- Forward declarations ---- */
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
+
+/* ==================================================================== */
+/* CRC32 (IEEE 802.3 polynomial, same as zlib)                          */
+/* ==================================================================== */
+
+static uint32_t g_crc32_table[256];
+
+static void init_crc32_table(void)
+{
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t c = i;
+        for (int k = 0; k < 8; k++)
+            c = (c >> 1) ^ (0xEDB88320u & (uint32_t)(-(int)(c & 1)));
+        g_crc32_table[i] = c;
+    }
+}
+
+static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
+{
+    crc ^= 0xFFFFFFFFu;
+    while (len--) crc = g_crc32_table[(crc ^ *buf++) & 0xFF] ^ (crc >> 8);
+    return crc ^ 0xFFFFFFFFu;
+}
 
 /* ==================================================================== */
 /* JSON helpers (same lightweight approach as patcher stubs)             */
@@ -329,6 +353,7 @@ static int read_pack_entries(void)
         fread(&g_entries[i].offset,    8, 1, f);
         fread(&g_entries[i].size,      8, 1, f);
         fread(&g_entries[i].component, 4, 1, f);
+        fread(&g_entries[i].crc32,     4, 1, f);
     }
 
     fclose(f);
@@ -692,7 +717,7 @@ static int do_install(const char *install_dir, int low_load,
     for (uint32_t i = 0; i < n; i++) {
         uint16_t plen = 0;
         fread(&plen, 2, 1, f);
-        _fseeki64(f, (int64_t)(plen + 8 + 8 + 4), SEEK_CUR);
+        _fseeki64(f, (int64_t)(plen + 8 + 8 + 4 + 4), SEEK_CUR);
     }
 
     /* Read number of compressed streams */
@@ -762,6 +787,7 @@ static int do_install(const char *install_dir, int low_load,
         uint64_t    total_read       = 0;
         uint32_t    cur_file         = first_entry;
         uint64_t    cur_file_written = 0;
+        uint32_t    cur_crc32        = 0;
         HANDLE      hf               = INVALID_HANDLE_VALUE;
         lzma_action action           = LZMA_RUN;
 
@@ -806,6 +832,7 @@ static int do_install(const char *install_dir, int low_load,
                     DWORD written = 0;
                     if (!WriteFile(hf, ptr, (DWORD)write, &written, NULL))
                         success = 0;
+                    cur_crc32 = crc32_update(cur_crc32, ptr, write);
                 }
 
                 ptr              += write;
@@ -817,6 +844,19 @@ static int do_install(const char *install_dir, int low_load,
                         CloseHandle(hf);
                         hf = INVALID_HANDLE_VALUE;
                     }
+                    if (e->crc32 && cur_crc32 != e->crc32) {
+                        success = 0;
+                        if (g_hwnd) {
+                            char *log_msg = (char *)malloc(MAX_PATH);
+                            if (log_msg) {
+                                snprintf(log_msg, MAX_PATH,
+                                         "CRC32 MISMATCH: %s", e->path);
+                                PostMessageA(g_hwnd, WM_LOG_MSG,
+                                             (WPARAM)log_msg, 0);
+                            }
+                        }
+                    }
+                    cur_crc32        = 0;
                     cur_file_written = 0;
                     cur_file++;
                     files_done++;
@@ -1400,6 +1440,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 {
     (void)hPrev;
 
+    init_crc32_table();
     GetModuleFileNameA(NULL, g_exe_path, MAX_PATH);
 
     /* Parse /S (silent) and /D=<path> (install directory override) */
