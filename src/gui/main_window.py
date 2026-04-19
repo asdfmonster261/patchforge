@@ -4,9 +4,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import (Qt, QThread, QTimer, Signal, QObject, QUrl,
-                             QPropertyAnimation, QSequentialAnimationGroup,
-                             QEasingCurve, QAbstractAnimation)
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QUrl
 from PySide6.QtGui import QFont, QTextCursor, QColor, QDesktopServices, QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -167,24 +165,7 @@ class MainWindow(QMainWindow):
         self._current_project_path: Optional[Path] = None
         self._current_repack_path: Optional[Path] = None
 
-        # QPropertyAnimation drives setValue() through Qt's C++ property system,
-        # so the bounce animation runs even when lzma holds the Python GIL.
-        # A Python-based QTimer slot can't fire under those conditions.
-        self._sweep_anim = QSequentialAnimationGroup(self)
-        for start, end in [(5, 90), (90, 5)]:
-            a = QPropertyAnimation(self)   # target set after progress_bar exists
-            a.setPropertyName(b"value")
-            a.setStartValue(start)
-            a.setEndValue(end)
-            a.setDuration(1100)
-            a.setEasingCurve(QEasingCurve.Type.InOutSine)
-            self._sweep_anim.addAnimation(a)
-        self._sweep_anim.setLoopCount(-1)
-
         self._build_ui()
-        # Wire animation target now that progress_bar exists.
-        for i in range(self._sweep_anim.animationCount()):
-            self._sweep_anim.animationAt(i).setTargetObject(self.progress_bar)
         self._connect_signals()
         self._on_engine_changed()  # set initial compression list
 
@@ -1341,22 +1322,20 @@ class MainWindow(QMainWindow):
     def _on_progress(self, pct: int, msg: str):
         compressing = bool(msg and ": compressing " in msg and "done" not in msg)
         # In parallel mode multiple streams run simultaneously — a "reading"
-        # update from stream N must not stop the sweep started by stream M.
-        # Only stop the sweep when we reach a terminal stage (≥95 % or
+        # update from stream N must not stop the indeterminate bar started by
+        # stream M. Only exit indeterminate mode at a terminal stage (≥95% or
         # "Archive complete"), not on every non-compressing message.
         terminal = pct >= 95 or (msg and "Archive complete" in msg)
-        running = self._sweep_anim.state() == QAbstractAnimation.State.Running
+        indeterminate = self.progress_bar.maximum() == 0
 
         if compressing:
-            if not running:
-                self.progress_bar.setFormat("Compressing…")
-                self._sweep_anim.start()
-        elif running:
+            if not indeterminate:
+                self.progress_bar.setRange(0, 0)
+        elif indeterminate:
             if terminal:
-                self._sweep_anim.stop()
-                self.progress_bar.setFormat("%p%  %v / 100")
+                self.progress_bar.setRange(0, 100)
                 self.progress_bar.setValue(pct)
-            # else: keep sweeping — another stream is still compressing
+            # else: keep pulsing — another stream is still compressing
         else:
             self.progress_bar.setValue(pct)
 
@@ -1416,8 +1395,7 @@ class MainWindow(QMainWindow):
             self.open_folder_btn.setVisible(False)
 
     def _on_thread_done(self):
-        self._sweep_anim.stop()
-        self.progress_bar.setFormat("%p%  %v / 100")
+        self.progress_bar.setRange(0, 100)
         self.build_btn.setEnabled(True)
 
     def _on_new_project(self):
