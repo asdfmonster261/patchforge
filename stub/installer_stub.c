@@ -53,6 +53,7 @@
 #define IDC_CHK_SC_STARTMENU  1013
 #define IDC_CHK_SC_DESKTOP    1014
 #define IDC_COMP_BASE    1020   /* component checkboxes/radios: 1020, 1021, ... */
+#define IDC_GROUP_BASE   1040   /* group-enable checkboxes:    1040, 1041, ... */
 
 /* ---- Component limits ---- */
 #define MAX_COMPONENTS   16
@@ -161,6 +162,14 @@ typedef struct {
 
 static ComponentInfo g_components[MAX_COMPONENTS];
 static int           g_num_components = 0;
+
+typedef struct {
+    char group[64];
+    HWND hwnd_hdr;  /* the group-enable checkbox */
+} GroupInfo;
+
+static GroupInfo g_groups[MAX_COMPONENTS];
+static int       g_num_groups = 0;
 
 /* ---- Forward declarations ---- */
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
@@ -1218,18 +1227,38 @@ static void refresh_component_states(void)
 {
     for (int j = 0; j < g_num_components; j++) {
         ComponentInfo *cj = &g_components[j];
-        if (!cj->hwnd_ctrl || cj->num_requires == 0) continue;
+        if (!cj->hwnd_ctrl) continue;
 
+        /* Group-enable takes priority: if the group header is unchecked, disable. */
+        if (cj->group[0]) {
+            int grp_on = 1;
+            for (int gi = 0; gi < g_num_groups; gi++) {
+                if (strcmp(g_groups[gi].group, cj->group) == 0) {
+                    grp_on = (SendMessageA(g_groups[gi].hwnd_hdr,
+                                           BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    break;
+                }
+            }
+            if (!grp_on) {
+                EnableWindow(cj->hwnd_ctrl, FALSE);
+                continue;
+            }
+        }
+
+        /* Dependency check */
+        if (cj->num_requires == 0) {
+            EnableWindow(cj->hwnd_ctrl, TRUE);
+            continue;
+        }
         int enabled = 1;
         for (int r = 0; r < cj->num_requires && enabled; r++) {
-            int ri = cj->requires[r] - 1;   /* 1-based → 0-based */
+            int ri = cj->requires[r] - 1;
             if (ri < 0 || ri >= g_num_components) continue;
             ComponentInfo *cr = &g_components[ri];
             if (!cr->hwnd_ctrl) continue;
             if (SendMessageA(cr->hwnd_ctrl, BM_GETCHECK, 0, 0) != BST_CHECKED)
                 enabled = 0;
         }
-
         if (!enabled) {
             SendMessageA(cj->hwnd_ctrl, BM_SETCHECK, BST_UNCHECKED, 0);
             EnableWindow(cj->hwnd_ctrl, FALSE);
@@ -1394,42 +1423,68 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             char prev_group[64] = {0};
             for (int ci = 0; ci < g_num_components; ci++) {
                 ComponentInfo *c = &g_components[ci];
-                DWORD btn_style = WS_CHILD | WS_VISIBLE;
                 if (c->group[0]) {
-                    btn_style |= BS_AUTORADIOBUTTON;
+                    /* New group: emit a group-enable checkbox header */
                     if (strcmp(c->group, prev_group) != 0) {
-                        btn_style |= WS_GROUP;
                         strncpy(prev_group, c->group, sizeof(prev_group) - 1);
+                        int grp_on = 0;
+                        for (int j = ci; j < g_num_components; j++) {
+                            if (strcmp(g_components[j].group, c->group) != 0) break;
+                            if (g_components[j].default_checked) { grp_on = 1; break; }
+                        }
+                        int gi = g_num_groups;
+                        strncpy(g_groups[gi].group, c->group, sizeof(g_groups[gi].group) - 1);
+                        g_groups[gi].hwnd_hdr = CreateWindowExA(0, "BUTTON", c->group,
+                            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_GROUP,
+                            col2_x, right_y, col2_w, 20, hwnd,
+                            (HMENU)(LONG_PTR)(IDC_GROUP_BASE + gi), NULL, NULL);
+                        SendMessageA(g_groups[gi].hwnd_hdr, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                        SendMessageA(g_groups[gi].hwnd_hdr, BM_SETCHECK,
+                                     grp_on ? BST_CHECKED : BST_UNCHECKED, 0);
+                        g_num_groups++;
+                        right_y += 24;
                     }
+                    /* Radio button, indented; first in group gets WS_GROUP to bound
+                       the auto-uncheck set */
+                    BOOL first_in_grp = (ci == 0 ||
+                        strcmp(g_components[ci - 1].group, c->group) != 0);
+                    DWORD btn_style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON;
+                    if (first_in_grp) btn_style |= WS_GROUP;
+                    c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
+                        btn_style,
+                        col2_x + 16, right_y, col2_w - 16, 20, hwnd,
+                        (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
+                    SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                    right_y += 24;
                 } else {
-                    btn_style |= BS_AUTOCHECKBOX | WS_GROUP;
+                    /* Standalone checkbox */
                     prev_group[0] = '\0';
+                    c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
+                        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_GROUP,
+                        col2_x, right_y, col2_w, 20, hwnd,
+                        (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
+                    SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                    right_y += 24;
                 }
-                c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
-                    btn_style,
-                    col2_x, right_y + ci * 24, col2_w, 20,
-                    hwnd, (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
-                SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
 
-            char checked_groups[MAX_COMPONENTS][64];
-            int  num_checked_groups = 0;
+            /* Set initial checked states (first default per radio group) */
+            char checked_grps[MAX_COMPONENTS][64];
+            int  n_checked_grps = 0;
             for (int ci = 0; ci < g_num_components; ci++) {
                 ComponentInfo *c = &g_components[ci];
                 if (!c->default_checked) continue;
                 if (c->group[0]) {
                     int already = 0;
-                    for (int gi = 0; gi < num_checked_groups; gi++) {
-                        if (strcmp(checked_groups[gi], c->group) == 0)
-                            { already = 1; break; }
+                    for (int gi = 0; gi < n_checked_grps; gi++) {
+                        if (strcmp(checked_grps[gi], c->group) == 0) { already = 1; break; }
                     }
                     if (already) continue;
-                    strncpy(checked_groups[num_checked_groups++], c->group,
-                            sizeof(checked_groups[0]) - 1);
+                    strncpy(checked_grps[n_checked_grps++], c->group,
+                            sizeof(checked_grps[0]) - 1);
                 }
                 SendMessageA(c->hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
             }
-            right_y += g_num_components * 24;
         }
         refresh_component_states();
 
@@ -1635,7 +1690,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_COMMAND: {
         int id    = LOWORD(wp);
         int notif = HIWORD(wp);
-        if (id >= IDC_COMP_BASE && id < IDC_COMP_BASE + g_num_components) {
+        if (id >= IDC_GROUP_BASE && id < IDC_GROUP_BASE + g_num_groups) {
+            if (notif == BN_CLICKED)
+                refresh_component_states();
+        } else if (id >= IDC_COMP_BASE && id < IDC_COMP_BASE + g_num_components) {
             if (notif == BN_CLICKED) {
                 int ci = id - IDC_COMP_BASE;
                 ComponentInfo *cc = &g_components[ci];
@@ -1740,9 +1798,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             args->num_components     = g_num_components;
             memset(args->selected_comps, 0, sizeof(args->selected_comps));
             for (int ci = 0; ci < g_num_components; ci++) {
-                args->selected_comps[ci] =
-                    (SendMessageA(g_components[ci].hwnd_ctrl, BM_GETCHECK, 0, 0)
-                     == BST_CHECKED) ? 1 : 0;
+                int checked = (SendMessageA(g_components[ci].hwnd_ctrl,
+                                             BM_GETCHECK, 0, 0) == BST_CHECKED);
+                /* A radio button keeps its check mark even when disabled; skip if
+                   its group header is off. */
+                if (checked && g_components[ci].group[0]) {
+                    for (int gi = 0; gi < g_num_groups; gi++) {
+                        if (strcmp(g_groups[gi].group, g_components[ci].group) == 0) {
+                            if (SendMessageA(g_groups[gi].hwnd_hdr,
+                                             BM_GETCHECK, 0, 0) != BST_CHECKED)
+                                checked = 0;
+                            break;
+                        }
+                    }
+                }
+                args->selected_comps[ci] = checked;
             }
             CloseHandle(CreateThread(NULL, 0, install_thread, args, 0, NULL));
         } else if (id == IDC_BTN_CANCEL) {
@@ -1994,9 +2064,26 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     int hdr_extra       = (g_meta.app_note[0]    ? 18 : 0)
                         + (g_meta.description[0] ? 18 : 0);
     int sum_extra       = (g_meta.total_files > 0)  ? 18 : 0;
+    /* Count distinct groups so each header row is included in the right-column height. */
+    int num_distinct_groups = 0;
+    {
+        char seen[MAX_COMPONENTS][64];
+        int nseen = 0;
+        for (int ci = 0; ci < g_num_components; ci++) {
+            if (!g_components[ci].group[0]) continue;
+            int found = 0;
+            for (int j = 0; j < nseen; j++) {
+                if (strcmp(seen[j], g_components[ci].group) == 0) { found = 1; break; }
+            }
+            if (!found && nseen < MAX_COMPONENTS)
+                strncpy(seen[nseen++], g_components[ci].group, 63);
+        }
+        num_distinct_groups = nseen;
+    }
     /* Settings and Optional Components columns sit side-by-side; height = max of the two. */
     int left_col_h  = 20 + 24 + verify_offset + shortcut_offset; /* header + low-load + extras */
-    int right_col_h = g_num_components > 0 ? (20 + g_num_components * 24) : 0;
+    int right_col_h = g_num_components > 0
+        ? (20 + (g_num_components + num_distinct_groups) * 24) : 0;
     int two_col_h   = left_col_h > right_col_h ? left_col_h : right_col_h;
     /* base 300 already budgets one low-load row (24px); subtract to avoid double-counting */
     int client_h = g_img_h + 300 + hdr_extra + sum_extra + (two_col_h - 24);
