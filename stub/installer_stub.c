@@ -49,7 +49,9 @@
 #define IDC_LOG          1007
 #define IDC_CHK_LOWLOAD  1010
 #define IDC_SPACE_LBL    1011
-#define IDC_CHK_VERIFY   1012
+#define IDC_CHK_VERIFY        1012
+#define IDC_CHK_SC_STARTMENU  1013
+#define IDC_CHK_SC_DESKTOP    1014
 #define IDC_COMP_BASE    1020   /* component checkboxes/radios: 1020, 1021, ... */
 
 /* ---- Component limits ---- */
@@ -114,7 +116,9 @@ static HWND       g_hwnd_progress     = NULL;
 static HWND       g_hwnd_log          = NULL;
 static HWND       g_hwnd_btn_install  = NULL;
 static HWND       g_hwnd_chk_lowload  = NULL;
-static HWND       g_hwnd_chk_verify   = NULL;
+static HWND       g_hwnd_chk_verify        = NULL;
+static HWND       g_hwnd_chk_sc_startmenu  = NULL;
+static HWND       g_hwnd_chk_sc_desktop    = NULL;
 static HWND       g_hwnd_space_lbl    = NULL;
 static HBRUSH     g_brush_bg          = NULL;
 static HBRUSH     g_brush_light       = NULL;
@@ -709,10 +713,10 @@ static void ensure_dir_for_file(const char *filepath)
 /* Shortcut creation (COM / IShellLink)                                  */
 /* ==================================================================== */
 
-static void create_shortcuts(const char *install_dir)
+static void create_shortcuts(const char *install_dir, int do_desktop, int do_startmenu)
 {
     if (!g_meta.shortcut_target[0]) return;
-    if (!g_meta.shortcut_create_desktop && !g_meta.shortcut_create_startmenu) return;
+    if (!do_desktop && !do_startmenu) return;
 
     char target[MAX_PATH];
     snprintf(target, MAX_PATH, "%s\\%s", install_dir, g_meta.shortcut_target);
@@ -739,7 +743,7 @@ static void create_shortcuts(const char *install_dir)
         char lnk[MAX_PATH];
         WCHAR wlnk[MAX_PATH];
 
-        if (g_meta.shortcut_create_startmenu) {
+        if (do_startmenu) {
             char programs[MAX_PATH] = {0};
             SHGetFolderPathA(NULL, CSIDL_PROGRAMS, NULL, 0, programs);
             char subdir[MAX_PATH];
@@ -751,9 +755,9 @@ static void create_shortcuts(const char *install_dir)
             ppf->lpVtbl->Save(ppf, wlnk, TRUE);
         }
 
-        if (g_meta.shortcut_create_desktop) {
+        if (do_desktop) {
             char desktop[MAX_PATH] = {0};
-            SHGetFolderPathA(NULL, CSIDL_DESKTOP, NULL, 0, desktop);
+            SHGetFolderPathA(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop);
             snprintf(lnk, MAX_PATH, "%s\\%s.lnk", desktop, sname);
             MultiByteToWideChar(CP_ACP, 0, lnk, -1, wlnk, MAX_PATH);
             ppf->lpVtbl->Save(ppf, wlnk, TRUE);
@@ -818,6 +822,8 @@ struct InstallArgs {
     int  low_load;
     int  verify_crc32;
     int  repair_mode;   /* 0 = fresh/reinstall, 1 = skip files whose CRC32 matches */
+    int  shortcut_desktop;
+    int  shortcut_startmenu;
     int  selected_comps[MAX_COMPONENTS];
     int  num_components;
 };
@@ -831,6 +837,7 @@ struct InstallResult {
 
 static int do_install(const char *install_dir, int low_load, int verify_crc32,
                       int repair_mode, const int *selected_comps, int num_components,
+                      int shortcut_desktop, int shortcut_startmenu,
                       uint32_t *out_skipped, uint32_t *out_replaced)
 {
     FILE *f = fopen(g_exe_path, "rb");
@@ -1117,7 +1124,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
 
     /* Create shortcuts */
     if (success)
-        create_shortcuts(install_dir);
+        create_shortcuts(install_dir, shortcut_desktop, shortcut_startmenu);
 
     if (out_skipped)  *out_skipped  = files_skipped;
     if (out_replaced) *out_replaced = files_written;
@@ -1134,6 +1141,7 @@ static DWORD WINAPI install_thread(LPVOID param)
     uint32_t skipped = 0, replaced = 0;
     int ok = do_install(args->install_dir, args->low_load, verify, repair,
                         args->selected_comps, args->num_components,
+                        args->shortcut_desktop, args->shortcut_startmenu,
                         &skipped, &replaced);
     if (res) {
         res->verify_passed  = verify && ok;
@@ -1158,9 +1166,16 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_hwnd = hwnd;
         enable_dark_titlebar(hwnd);
 
-        /* Dynamic y-offset: each optional component adds 24px below the
-           "Reduce system load" checkbox.  co == 0 when no components. */
+        /* Dynamic y-offsets below the low-load checkbox:
+             vo = 24 if verify checkbox shown, else 0
+             co = num_components * 24
+             so = number of shortcut checkboxes * 24  */
         int co = g_num_components * 24;
+        int so = 0;
+        if (g_meta.shortcut_target[0]) {
+            if (g_meta.shortcut_create_startmenu) so += 24;
+            if (g_meta.shortcut_create_desktop)   so += 24;
+        }
 
         /* Title */
         HWND lbl = CreateWindowExA(0, "STATIC",
@@ -1279,40 +1294,62 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         }
 
-        /* Disk space label (shifts down when components/verify checkbox present) */
+        /* Shortcut checkboxes (only shown when shortcut_target is configured) */
+        if (g_meta.shortcut_target[0]) {
+            int sy = 154 + vo + co;
+            if (g_meta.shortcut_create_startmenu) {
+                g_hwnd_chk_sc_startmenu = CreateWindowExA(0, "BUTTON",
+                    "Create Start Menu shortcut",
+                    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                    20, sy, 460, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
+                SendMessageA(g_hwnd_chk_sc_startmenu, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                SendMessageA(g_hwnd_chk_sc_startmenu, BM_SETCHECK, BST_CHECKED, 0);
+                sy += 24;
+            }
+            if (g_meta.shortcut_create_desktop) {
+                g_hwnd_chk_sc_desktop = CreateWindowExA(0, "BUTTON",
+                    "Create Desktop shortcut",
+                    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                    20, sy, 460, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
+                SendMessageA(g_hwnd_chk_sc_desktop, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                SendMessageA(g_hwnd_chk_sc_desktop, BM_SETCHECK, BST_CHECKED, 0);
+            }
+        }
+
+        /* Disk space label (shifts down when components/verify/shortcut checkboxes present) */
         g_hwnd_space_lbl = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 154 + vo + co, 680, 16, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
+            20, 154 + vo + co + so, 680, 16, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
         SendMessageA(g_hwnd_space_lbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Log area */
         g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            20, 180 + vo + co, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            20, 180 + vo + co + so, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         SendMessageA(g_hwnd_log, EM_SETLIMITTEXT, 0, 0);  /* remove default ~32K char cap */
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 310 + vo + co, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+            20, 310 + vo + co + so, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
         SetWindowLongA(g_hwnd_progress, GWLP_USERDATA, 0);
 
         /* Status */
         g_hwnd_status = CreateWindowExA(0, "STATIC",
             "Select an install folder and click Install.",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 326 + vo + co, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+            20, 326 + vo + co + so, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
         SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Install / Cancel buttons */
         g_hwnd_btn_install = CreateWindowExA(0, "BUTTON", "Install",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            530, 354 + vo + co, 80, 28, hwnd, (HMENU)IDC_BTN_INSTALL, NULL, NULL);
+            530, 354 + vo + co + so, 80, 28, hwnd, (HMENU)IDC_BTN_INSTALL, NULL, NULL);
         CreateWindowExA(0, "BUTTON", "Cancel",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            620, 354 + vo + co, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+            620, 354 + vo + co + so, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
         /* Bottom-left info: company · copyright · contact */
         {
@@ -1331,7 +1368,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (pos > 0) {
                 HWND infolbl = CreateWindowExA(0, "STATIC", info,
                     WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    20, 358 + vo + co, 500, 16, hwnd, NULL, NULL, NULL);
+                    20, 358 + vo + co + so, 500, 16, hwnd, NULL, NULL, NULL);
                 SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
         }
@@ -1342,7 +1379,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             snprintf(verbuf, sizeof(verbuf), "Version %s", g_meta.version);
             HWND verlbl = CreateWindowExA(0, "STATIC", verbuf,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 378 + vo + co, 500, 14, hwnd, NULL, NULL, NULL);
+                20, 378 + vo + co + so, 500, 14, hwnd, NULL, NULL, NULL);
             SendMessageA(verlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         }
 
@@ -1518,14 +1555,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             int do_verify = g_meta.verify_crc32
                             && g_hwnd_chk_verify
                             && (SendMessageA(g_hwnd_chk_verify, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            int do_startmenu = g_hwnd_chk_sc_startmenu &&
+                (SendMessageA(g_hwnd_chk_sc_startmenu, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            int do_desktop = g_hwnd_chk_sc_desktop &&
+                (SendMessageA(g_hwnd_chk_sc_desktop, BM_GETCHECK, 0, 0) == BST_CHECKED);
+
             struct InstallArgs *args =
                 (struct InstallArgs *)malloc(sizeof(struct InstallArgs));
             strncpy(args->install_dir, path, MAX_PATH - 1);
             args->install_dir[MAX_PATH - 1] = '\0';
-            args->low_load      = low_load;
-            args->verify_crc32  = do_verify;
-            args->repair_mode   = repair_mode;
-            args->num_components = g_num_components;
+            args->low_load           = low_load;
+            args->verify_crc32       = do_verify;
+            args->repair_mode        = repair_mode;
+            args->shortcut_desktop   = do_desktop;
+            args->shortcut_startmenu = do_startmenu;
+            args->num_components     = g_num_components;
             memset(args->selected_comps, 0, sizeof(args->selected_comps));
             for (int ci = 0; ci < g_num_components; ci++) {
                 args->selected_comps[ci] =
@@ -1724,8 +1768,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         for (int i = 0; i < g_num_components; i++)
             selected_comps[i] = g_components[i].default_checked;
         int ok = do_install(install_dir, 0, verify, 0 /* fresh */,
-                            selected_comps, g_num_components, NULL, NULL);
-        if (ok) create_shortcuts(install_dir);
+                            selected_comps, g_num_components,
+                            g_meta.shortcut_create_desktop,
+                            g_meta.shortcut_create_startmenu,
+                            NULL, NULL);
         free(g_entries);
         return ok ? 0 : 1;
     }
@@ -1764,7 +1810,12 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
        Each optional component adds 24 px to the client height. */
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     int verify_offset = g_meta.verify_crc32 ? 24 : 0;
-    RECT wr = {0, 0, 720, 412 + verify_offset + g_num_components * 24};
+    int shortcut_offset = 0;
+    if (g_meta.shortcut_target[0]) {
+        if (g_meta.shortcut_create_startmenu) shortcut_offset += 24;
+        if (g_meta.shortcut_create_desktop)   shortcut_offset += 24;
+    }
+    RECT wr = {0, 0, 720, 412 + verify_offset + g_num_components * 24 + shortcut_offset};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
         0, "PFGInstaller", title, wstyle,
