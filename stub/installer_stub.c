@@ -1138,6 +1138,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ES_READONLY | WS_VSCROLL,
             20, 180 + vo + co, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        {
+            char _dbg[128];
+            snprintf(_dbg, sizeof(_dbg),
+                "[dbg] meta.verify_crc32=%d hwnd_chk_verify=%s vo=%d",
+                g_meta.verify_crc32,
+                g_hwnd_chk_verify ? "ok" : "null",
+                vo);
+            log_append(_dbg);
+        }
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
@@ -1377,7 +1386,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     }
 
-    case WM_INSTALL_DONE:
+    case WM_INSTALL_DONE: {
+        char _dbg2[64];
+        snprintf(_dbg2, sizeof(_dbg2), "[dbg] install_done wp=%d lp=%d", (int)wp, (int)lp);
+        log_append(_dbg2);
         if (wp) {
             if (lp)
                 log_append("Integrity check passed.");
@@ -1405,6 +1417,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         EnableWindow(g_hwnd_btn_install, TRUE);
         break;
+    }
 
     case WM_TIMER:
         if (wp == TIMER_CLOSE) {
