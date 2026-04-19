@@ -374,7 +374,7 @@ static void relocate_and_relaunch(void)
     STARTUPINFOA si = {0}; si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {0};
     if (CreateProcessA(NULL, cmd_line, NULL, NULL, FALSE, 0,
-                       NULL, NULL, &si, &pi)) {
+                       NULL, temp_dir, &si, &pi)) {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         ExitProcess(0);
