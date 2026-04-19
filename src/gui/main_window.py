@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QThread, Signal, QObject, QUrl
-from PySide6.QtGui import QFont, QTextCursor, QColor, QDesktopServices
+from PySide6.QtGui import QFont, QTextCursor, QColor, QDesktopServices, QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QSplitter, QSizePolicy, QFrame, QStatusBar,
     QCheckBox, QListWidget, QListWidgetItem, QScrollArea, QInputDialog,
     QSpinBox, QDoubleSpinBox, QTabWidget,
-    QDialog, QDialogButtonBox, QFormLayout,
+    QDialog, QDialogButtonBox, QFormLayout, QMenu,
 )
 
 from .theme import QSS, ACCENT, SUCCESS, ERROR, WARN, TEXT_DIM
@@ -30,6 +30,7 @@ from ..core.repack_project import RepackSettings, save as save_repack, load as l
 from ..core.repack_builder import build as build_repack, RepackResult
 from ..core.xpack_archive import QUALITY_LABELS as REPACK_QUALITY_LABELS, THREAD_OPTIONS as REPACK_THREAD_OPTIONS
 from ..core import verification
+from ..core import recent_files as _recent
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _build_ui(self):
+        self._build_menu_bar()
+
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
@@ -201,6 +204,69 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
+
+    def _build_menu_bar(self) -> None:
+        mb = self.menuBar()
+        file_menu = mb.addMenu("&File")
+
+        self._recent_menu = QMenu("Open &Recent", self)
+        self._recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+        file_menu.addMenu(self._recent_menu)
+
+    def _rebuild_recent_menu(self) -> None:
+        self._recent_menu.clear()
+        entries = _recent.load()
+        if not entries:
+            act = QAction("(no recent files)", self)
+            act.setEnabled(False)
+            self._recent_menu.addAction(act)
+            return
+        for entry in entries:
+            p = Path(entry["path"])
+            kind = entry["kind"]
+            label = f"{p.name}  [{kind}]  —  {p.parent}"
+            act = QAction(label, self)
+            act.setData(entry)
+            act.triggered.connect(self._on_open_recent)
+            self._recent_menu.addAction(act)
+        self._recent_menu.addSeparator()
+        clear_act = QAction("Clear Recent", self)
+        clear_act.triggered.connect(self._on_clear_recent)
+        self._recent_menu.addAction(clear_act)
+
+    def _on_open_recent(self) -> None:
+        entry = self.sender().data()
+        path = Path(entry["path"])
+        kind = entry["kind"]
+        if not path.exists():
+            _recent.remove(path)
+            self.status_bar.showMessage(f"File not found: {path}")
+            return
+        if kind == "repack":
+            self.mode_tabs.setCurrentIndex(1)
+            try:
+                s = load_repack(path)
+                self._apply_repack_settings(s)
+                self._current_repack_path = path
+                self.setWindowTitle(f"PatchForge — {path.name}")
+                self.status_bar.showMessage(f"Loaded: {path}")
+                _recent.add(path, "repack")
+            except Exception as exc:
+                self._log(f"Failed to load repack project: {exc}", color=ERROR)
+        else:
+            self.mode_tabs.setCurrentIndex(0)
+            try:
+                s = load_project(path)
+                self._apply_settings(s)
+                self._current_project_path = path
+                self.setWindowTitle(f"PatchForge — {path.name}")
+                self.status_bar.showMessage(f"Loaded: {path}")
+                _recent.add(path, "patch")
+            except Exception as exc:
+                self._log(f"Failed to load project: {exc}", color=ERROR)
+
+    def _on_clear_recent(self) -> None:
+        _recent.clear()
 
     def _build_patch_panel(self) -> QWidget:
         # Wrap everything in a scroll area so the panel doesn't get clipped
@@ -1349,6 +1415,7 @@ class MainWindow(QMainWindow):
                 self._current_repack_path = Path(path)
                 self.setWindowTitle(f"PatchForge — {Path(path).name}")
                 self.status_bar.showMessage(f"Loaded: {path}")
+                _recent.add(path, "repack")
             except Exception as exc:
                 self._log(f"Failed to load repack project: {exc}", color=ERROR)
         else:
@@ -1363,6 +1430,7 @@ class MainWindow(QMainWindow):
                 self._current_project_path = Path(path)
                 self.setWindowTitle(f"PatchForge — {Path(path).name}")
                 self.status_bar.showMessage(f"Loaded: {path}")
+                _recent.add(path, "patch")
             except Exception as exc:
                 self._log(f"Failed to load project: {exc}", color=ERROR)
 
@@ -1380,6 +1448,7 @@ class MainWindow(QMainWindow):
                 self._current_repack_path = Path(path)
                 self.setWindowTitle(f"PatchForge — {Path(path).name}")
                 self.status_bar.showMessage(f"Saved: {path}")
+                _recent.add(path, "repack")
             except Exception as exc:
                 self._log(f"Failed to save repack project: {exc}", color=ERROR)
         else:
@@ -1395,6 +1464,7 @@ class MainWindow(QMainWindow):
                 self._current_project_path = Path(path)
                 self.setWindowTitle(f"PatchForge — {Path(path).name}")
                 self.status_bar.showMessage(f"Saved: {path}")
+                _recent.add(path, "patch")
                 missing = [f for f, v in [("app name", s.app_name),
                                            ("source dir", s.source_dir),
                                            ("target dir", s.target_dir)] if not v]
