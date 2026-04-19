@@ -859,6 +859,32 @@ class MainWindow(QMainWindow):
         self.rp_verify_crc32_chk.setChecked(True)
         pg.addWidget(self.rp_verify_crc32_chk, 6, 0, 1, 2)
 
+        pg.addWidget(QLabel("Shortcut target:"), 7, 0)
+        rp_sc_row = QHBoxLayout()
+        rp_sc_row.setSpacing(4)
+        self.rp_shortcut_target_edit = QLineEdit()
+        self.rp_shortcut_target_edit.setPlaceholderText(
+            "Relative path to game exe within install dir  (e.g. Game.exe)")
+        rp_sc_row.addWidget(self.rp_shortcut_target_edit)
+        rp_sc_btn = QPushButton("Browse…")
+        rp_sc_btn.setFixedWidth(70)
+        rp_sc_btn.clicked.connect(self._on_rp_shortcut_browse)
+        rp_sc_row.addWidget(rp_sc_btn)
+        pg.addLayout(rp_sc_row, 7, 1)
+
+        pg.addWidget(QLabel("Shortcut name:"), 8, 0)
+        self.rp_shortcut_name_edit = QLineEdit()
+        self.rp_shortcut_name_edit.setPlaceholderText("Display name  (blank = use App Name)")
+        pg.addWidget(self.rp_shortcut_name_edit, 8, 1)
+
+        self.rp_shortcut_startmenu_chk = QCheckBox("Create Start Menu shortcut")
+        self.rp_shortcut_startmenu_chk.setChecked(True)
+        pg.addWidget(self.rp_shortcut_startmenu_chk, 9, 0, 1, 2)
+
+        self.rp_shortcut_desktop_chk = QCheckBox("Create Desktop shortcut")
+        self.rp_shortcut_desktop_chk.setChecked(False)
+        pg.addWidget(self.rp_shortcut_desktop_chk, 10, 0, 1, 2)
+
         layout.addWidget(post_grp)
         layout.addStretch()
 
@@ -1022,6 +1048,24 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.rp_backdrop_edit.setText(path)
+
+    def _on_rp_shortcut_browse(self):
+        game_dir = self.rp_game_dir_edit.text().strip()
+        start = game_dir if game_dir else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Game Executable", start,
+            "Executable files (*.exe);;All files (*)"
+        )
+        if path and game_dir:
+            import os
+            try:
+                rel = os.path.relpath(path, game_dir)
+                self.rp_shortcut_target_edit.setText(rel)
+                return
+            except ValueError:
+                pass
+        if path:
+            self.rp_shortcut_target_edit.setText(path)
 
     # ------------------------------------------------------------------ #
     # Optional component dialog helpers                                    #
@@ -1419,6 +1463,10 @@ class MainWindow(QMainWindow):
             close_delay          = self.rp_close_delay_spin.value(),
             include_uninstaller  = self.rp_include_uninstaller_chk.isChecked(),
             verify_crc32         = self.rp_verify_crc32_chk.isChecked(),
+            shortcut_target           = self.rp_shortcut_target_edit.text().strip(),
+            shortcut_name             = self.rp_shortcut_name_edit.text().strip(),
+            shortcut_create_startmenu = self.rp_shortcut_startmenu_chk.isChecked(),
+            shortcut_create_desktop   = self.rp_shortcut_desktop_chk.isChecked(),
             components           = components,
         )
         if validate:
@@ -1471,6 +1519,10 @@ class MainWindow(QMainWindow):
         self.rp_close_delay_spin.setValue(s.close_delay)
         self.rp_include_uninstaller_chk.setChecked(s.include_uninstaller)
         self.rp_verify_crc32_chk.setChecked(s.verify_crc32)
+        self.rp_shortcut_target_edit.setText(s.shortcut_target)
+        self.rp_shortcut_name_edit.setText(s.shortcut_name)
+        self.rp_shortcut_startmenu_chk.setChecked(s.shortcut_create_startmenu)
+        self.rp_shortcut_desktop_chk.setChecked(s.shortcut_create_desktop)
         self.rp_comp_list.clear()
         for c in (s.components or []):
             item = QListWidgetItem(self._comp_item_text(c))

@@ -91,6 +91,10 @@ typedef struct {
     char    arp_subkey[256];
     int     include_uninstaller;
     int     verify_crc32;
+    char    shortcut_target[512];
+    char    shortcut_name[256];
+    int     shortcut_create_desktop;
+    int     shortcut_create_startmenu;
 } InstallMeta;
 
 /* ---- Per-file table entry ---- */
@@ -325,6 +329,10 @@ static int read_install_meta(void)
     g_meta.uninstaller_size         = json_get_int(buf, "uninstaller_size");
     g_meta.include_uninstaller      = json_get_bool(buf, "include_uninstaller", 0);
     g_meta.verify_crc32             = json_get_bool(buf, "verify_crc32", 0);
+    json_get_str(buf, "shortcut_target", g_meta.shortcut_target, sizeof(g_meta.shortcut_target));
+    json_get_str(buf, "shortcut_name",   g_meta.shortcut_name,   sizeof(g_meta.shortcut_name));
+    g_meta.shortcut_create_desktop   = json_get_bool(buf, "shortcut_create_desktop",   0);
+    g_meta.shortcut_create_startmenu = json_get_bool(buf, "shortcut_create_startmenu", 0);
     json_get_str(buf, "arp_subkey", g_meta.arp_subkey, sizeof(g_meta.arp_subkey));
 
     json_parse_components(buf);
@@ -698,6 +706,67 @@ static void ensure_dir_for_file(const char *filepath)
 }
 
 /* ==================================================================== */
+/* Shortcut creation (COM / IShellLink)                                  */
+/* ==================================================================== */
+
+static void create_shortcuts(const char *install_dir)
+{
+    if (!g_meta.shortcut_target[0]) return;
+    if (!g_meta.shortcut_create_desktop && !g_meta.shortcut_create_startmenu) return;
+
+    char target[MAX_PATH];
+    snprintf(target, MAX_PATH, "%s\\%s", install_dir, g_meta.shortcut_target);
+    for (char *p = target; *p; p++) if (*p == '/') *p = '\\';
+
+    const char *sname = g_meta.shortcut_name[0] ? g_meta.shortcut_name : g_meta.app_name;
+    if (!sname || !sname[0]) sname = "Game";
+
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+
+    IShellLinkA *psl = NULL;
+    if (FAILED(CoCreateInstance(&CLSID_ShellLink, NULL, CLSCTX_INPROC_SERVER,
+                                &IID_IShellLinkA, (void **)&psl))) {
+        CoUninitialize();
+        return;
+    }
+
+    psl->lpVtbl->SetPath(psl, target);
+    psl->lpVtbl->SetWorkingDirectory(psl, install_dir);
+    psl->lpVtbl->SetIconLocation(psl, target, 0);
+
+    IPersistFile *ppf = NULL;
+    if (SUCCEEDED(psl->lpVtbl->QueryInterface(psl, &IID_IPersistFile, (void **)&ppf))) {
+        char lnk[MAX_PATH];
+        WCHAR wlnk[MAX_PATH];
+
+        if (g_meta.shortcut_create_startmenu) {
+            char programs[MAX_PATH] = {0};
+            SHGetFolderPathA(NULL, CSIDL_PROGRAMS, NULL, 0, programs);
+            char subdir[MAX_PATH];
+            const char *folder = g_meta.app_name[0] ? g_meta.app_name : sname;
+            snprintf(subdir, MAX_PATH, "%s\\%s", programs, folder);
+            CreateDirectoryA(subdir, NULL);
+            snprintf(lnk, MAX_PATH, "%s\\%s.lnk", subdir, sname);
+            MultiByteToWideChar(CP_ACP, 0, lnk, -1, wlnk, MAX_PATH);
+            ppf->lpVtbl->Save(ppf, wlnk, TRUE);
+        }
+
+        if (g_meta.shortcut_create_desktop) {
+            char desktop[MAX_PATH] = {0};
+            SHGetFolderPathA(NULL, CSIDL_DESKTOP, NULL, 0, desktop);
+            snprintf(lnk, MAX_PATH, "%s\\%s.lnk", desktop, sname);
+            MultiByteToWideChar(CP_ACP, 0, lnk, -1, wlnk, MAX_PATH);
+            ppf->lpVtbl->Save(ppf, wlnk, TRUE);
+        }
+
+        ppf->lpVtbl->Release(ppf);
+    }
+
+    psl->lpVtbl->Release(psl);
+    CoUninitialize();
+}
+
+/* ==================================================================== */
 /* Existing-install detection                                            */
 /* ==================================================================== */
 
@@ -1045,6 +1114,10 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             }
         }
     }
+
+    /* Create shortcuts */
+    if (success)
+        create_shortcuts(install_dir);
 
     if (out_skipped)  *out_skipped  = files_skipped;
     if (out_replaced) *out_replaced = files_written;
@@ -1652,6 +1725,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
             selected_comps[i] = g_components[i].default_checked;
         int ok = do_install(install_dir, 0, verify, 0 /* fresh */,
                             selected_comps, g_num_components, NULL, NULL);
+        if (ok) create_shortcuts(install_dir);
         free(g_entries);
         return ok ? 0 : 1;
     }
