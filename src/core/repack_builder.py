@@ -117,6 +117,11 @@ def build(
         "include_uninstaller": settings.include_uninstaller,
         # Integrity
         "verify_crc32": settings.verify_crc32,
+        # Shortcuts
+        "shortcut_target":           settings.shortcut_target,
+        "shortcut_name":             settings.shortcut_name or settings.app_name,
+        "shortcut_create_desktop":   settings.shortcut_create_desktop,
+        "shortcut_create_startmenu": settings.shortcut_create_startmenu,
         # Optional components metadata (installer renders checkboxes/radio buttons)
         "components": [
             {

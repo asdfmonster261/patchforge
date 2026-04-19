@@ -75,6 +75,9 @@ static char       g_version[64]                  = {0};
 static char       g_company_info[256]            = {0};
 static char       g_arp_subkey[256]              = {0};
 static char       g_install_registry_key[512]    = {0};
+static char       g_shortcut_name[256]           = {0};
+static int        g_shortcut_create_desktop      = 0;
+static int        g_shortcut_create_startmenu    = 0;
 static UninstFile *g_files                       = NULL;
 static int         g_num_files                   = 0;
 static int         g_installed_comps[32]         = {0};
@@ -133,6 +136,19 @@ static int64_t json_get_int(const char *json, const char *key)
     p += strlen(search);
     while (*p == ' ' || *p == ':') p++;
     return (int64_t)_atoi64(p);
+}
+
+static int json_get_bool(const char *json, const char *key, int def)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return def;
+    p += strlen(search);
+    while (*p == ' ' || *p == ':') p++;
+    if (strncmp(p, "true",  4) == 0) return 1;
+    if (strncmp(p, "false", 5) == 0) return 0;
+    return def;
 }
 
 /* Parse "files":[{path,component},...] into g_files/g_num_files. */
@@ -218,6 +234,9 @@ static int read_uninst_data(void)
     json_get_str(buf, "company_info",         g_company_info,         sizeof(g_company_info));
     json_get_str(buf, "arp_subkey",           g_arp_subkey,           sizeof(g_arp_subkey));
     json_get_str(buf, "install_registry_key", g_install_registry_key, sizeof(g_install_registry_key));
+    json_get_str(buf, "shortcut_name",        g_shortcut_name,        sizeof(g_shortcut_name));
+    g_shortcut_create_desktop   = json_get_bool(buf, "shortcut_create_desktop",   0);
+    g_shortcut_create_startmenu = json_get_bool(buf, "shortcut_create_startmenu", 0);
     json_parse_files(buf);
 
     free(buf);
@@ -416,6 +435,38 @@ static void cleanup_temp_self(void)
 }
 
 /* ==================================================================== */
+/* Shortcut deletion (COM / IShellLink)                                  */
+/* ==================================================================== */
+
+static void delete_shortcuts(void)
+{
+    if (!g_shortcut_create_desktop && !g_shortcut_create_startmenu) return;
+
+    const char *sname = g_shortcut_name[0] ? g_shortcut_name : g_app_name;
+    if (!sname || !sname[0]) return;
+
+    if (g_shortcut_create_startmenu) {
+        char programs[MAX_PATH] = {0};
+        SHGetFolderPathA(NULL, CSIDL_PROGRAMS, NULL, 0, programs);
+        const char *folder = g_app_name[0] ? g_app_name : sname;
+        char subdir[MAX_PATH];
+        snprintf(subdir, MAX_PATH, "%s\\%s", programs, folder);
+        char lnk[MAX_PATH];
+        snprintf(lnk, MAX_PATH, "%s\\%s.lnk", subdir, sname);
+        DeleteFileA(lnk);
+        RemoveDirectoryA(subdir);
+    }
+
+    if (g_shortcut_create_desktop) {
+        char desktop[MAX_PATH] = {0};
+        SHGetFolderPathA(NULL, CSIDL_DESKTOP, NULL, 0, desktop);
+        char lnk[MAX_PATH];
+        snprintf(lnk, MAX_PATH, "%s\\%s.lnk", desktop, sname);
+        DeleteFileA(lnk);
+    }
+}
+
+/* ==================================================================== */
 /* Uninstall worker thread                                               */
 /* ==================================================================== */
 
@@ -481,6 +532,9 @@ static DWORD WINAPI uninstall_thread(LPVOID param)
     /* Delete A/RP entry */
     if (g_arp_hive && g_arp_key_path[0])
         RegDeleteKeyA(g_arp_hive, g_arp_key_path);
+
+    /* Delete shortcuts */
+    delete_shortcuts();
 
     /* Running from %TEMP% — delete original uninstall.exe then the game dir.
        Both should succeed: we're not in the game dir, nothing else is running. */

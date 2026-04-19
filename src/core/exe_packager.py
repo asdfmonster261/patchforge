@@ -189,6 +189,9 @@ def _build_uninstaller_blob(
         "company_info":         metadata.get("company_info", ""),
         "arp_subkey":           arp_subkey,
         "install_registry_key": metadata.get("install_registry_key", ""),
+        "shortcut_name":             metadata.get("shortcut_name", "") or metadata.get("app_name", ""),
+        "shortcut_create_desktop":   metadata.get("shortcut_create_desktop", False),
+        "shortcut_create_startmenu": metadata.get("shortcut_create_startmenu", False),
         "files": [
             {"path": f["path"], "component": f["component"]}
             for f in file_list

@@ -50,6 +50,12 @@ class RepackSettings:
     # Integrity verification
     verify_crc32: bool = True
 
+    # Shortcuts
+    shortcut_target: str = ""           # relative path to exe within install dir
+    shortcut_name: str = ""             # display name (blank = use app_name)
+    shortcut_create_desktop: bool = False
+    shortcut_create_startmenu: bool = True
+
     # Optional components — list of dicts:
     #   {"label": str, "folder": str, "default_checked": bool, "group": str}
     # index 0 = base game (always installed); components here start at index 1.
