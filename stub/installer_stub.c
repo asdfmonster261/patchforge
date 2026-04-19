@@ -1133,17 +1133,27 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         /* Backdrop */
         g_backdrop_bmp = load_backdrop();
 
-        /* Pre-populate install path from argv[1] on elevated relaunch only.
-           No default is set otherwise — the user always browses explicitly. */
+        /* Pre-populate install path: argv[1] on elevated relaunch, otherwise
+           the directory containing the installer exe + install_subdir. */
         {
+            char default_path[MAX_PATH] = {0};
             int argc = 0;
             LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
             if (argv && argc >= 2) {
-                char path8[MAX_PATH] = {0};
-                WideCharToMultiByte(CP_ACP, 0, argv[1], -1, path8, MAX_PATH, NULL, NULL);
-                if (path8[0]) SetWindowTextA(g_hwnd_filepath, path8);
+                WideCharToMultiByte(CP_ACP, 0, argv[1], -1,
+                                    default_path, MAX_PATH, NULL, NULL);
+            } else {
+                snprintf(default_path, MAX_PATH, "%s", g_exe_path);
+                char *last = strrchr(default_path, '\\');
+                if (last) *last = '\0';
+                if (g_meta.install_subdir[0]) {
+                    size_t plen = strlen(default_path);
+                    snprintf(default_path + plen, MAX_PATH - plen,
+                             "\\%s", g_meta.install_subdir);
+                }
             }
             if (argv) LocalFree(argv);
+            if (default_path[0]) SetWindowTextA(g_hwnd_filepath, default_path);
         }
 
         update_space_label();
