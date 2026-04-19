@@ -47,6 +47,9 @@ class RepackSettings:
     # Uninstaller
     include_uninstaller: bool = True
 
+    # Integrity verification
+    verify_crc32: bool = True
+
     # Optional components — list of dicts:
     #   {"label": str, "folder": str, "default_checked": bool, "group": str}
     # index 0 = base game (always installed); components here start at index 1.

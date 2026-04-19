@@ -115,6 +115,8 @@ def build(
         "required_free_space_gb":  settings.required_free_space_gb,
         # Uninstaller
         "include_uninstaller": settings.include_uninstaller,
+        # Integrity
+        "verify_crc32": settings.verify_crc32,
         # Optional components metadata (installer renders checkboxes/radio buttons)
         "components": [
             {
