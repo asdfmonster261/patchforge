@@ -860,17 +860,10 @@ class MainWindow(QMainWindow):
         pg.addWidget(self.rp_verify_crc32_chk, 6, 0, 1, 2)
 
         pg.addWidget(QLabel("Shortcut target:"), 7, 0)
-        rp_sc_row = QHBoxLayout()
-        rp_sc_row.setSpacing(4)
         self.rp_shortcut_target_edit = QLineEdit()
         self.rp_shortcut_target_edit.setPlaceholderText(
             "Relative path to game exe within install dir  (e.g. Game.exe)")
-        rp_sc_row.addWidget(self.rp_shortcut_target_edit)
-        rp_sc_btn = QPushButton("Browse…")
-        rp_sc_btn.setFixedWidth(70)
-        rp_sc_btn.clicked.connect(self._on_rp_shortcut_browse)
-        rp_sc_row.addWidget(rp_sc_btn)
-        pg.addLayout(rp_sc_row, 7, 1)
+        pg.addWidget(self.rp_shortcut_target_edit, 7, 1)
 
         pg.addWidget(QLabel("Shortcut name:"), 8, 0)
         self.rp_shortcut_name_edit = QLineEdit()
@@ -1048,24 +1041,6 @@ class MainWindow(QMainWindow):
         )
         if path:
             self.rp_backdrop_edit.setText(path)
-
-    def _on_rp_shortcut_browse(self):
-        game_dir = self.rp_game_dir_edit.text().strip()
-        start = game_dir if game_dir else ""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Game Executable", start,
-            "Executable files (*.exe);;All files (*)"
-        )
-        if path and game_dir:
-            import os
-            try:
-                rel = os.path.relpath(path, game_dir)
-                self.rp_shortcut_target_edit.setText(rel)
-                return
-            except ValueError:
-                pass
-        if path:
-            self.rp_shortcut_target_edit.setText(path)
 
     # ------------------------------------------------------------------ #
     # Optional component dialog helpers                                    #
