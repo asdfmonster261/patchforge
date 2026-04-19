@@ -29,6 +29,7 @@ import multiprocessing
 import queue as _queue_mod
 import struct
 import subprocess
+import zlib
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -132,6 +133,7 @@ def _stream_worker(
             "offset":    offset,
             "size":      len(data),
             "component": comp_idx,
+            "crc32":     zlib.crc32(data) & 0xFFFFFFFF,
         })
         pieces.append(data)
         offset += len(data)
@@ -299,6 +301,7 @@ def _compress_sequential(
                 "offset":    offset,
                 "size":      len(data),
                 "component": comp_idx,
+                "crc32":     zlib.crc32(data) & 0xFFFFFFFF,
             })
             pieces.append(data)
             offset += len(data)
@@ -456,7 +459,7 @@ def _encode(
         path_b = f["path"].encode("utf-8")
         buf += struct.pack("<H", len(path_b))
         buf += path_b
-        buf += struct.pack("<QQI", f["offset"], f["size"], f["component"])
+        buf += struct.pack("<QQII", f["offset"], f["size"], f["component"], f["crc32"])
 
     # Compressed streams
     buf += struct.pack("<I", len(streams))
