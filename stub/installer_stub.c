@@ -1266,7 +1266,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         if (g_meta.version[0]) {
             char verbuf[80];
-            snprintf(verbuf, sizeof(verbuf), "v%s", g_meta.version);
+            snprintf(verbuf, sizeof(verbuf), "%s", g_meta.version);
             HWND lbl_ver = CreateWindowExA(0, "STATIC", verbuf,
                 WS_CHILD | WS_VISIBLE | SS_RIGHT,
                 rmax - 150, title_y + 8, 150, 16, hwnd, NULL, NULL, NULL);
