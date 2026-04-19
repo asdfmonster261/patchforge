@@ -698,6 +698,49 @@ static void ensure_dir_for_file(const char *filepath)
 }
 
 /* ==================================================================== */
+/* Existing-install detection                                            */
+/* ==================================================================== */
+
+static int detect_existing_install(const char *install_dir)
+{
+    /* Primary sentinel: uninstall.exe placed by a previous install */
+    char uninst[MAX_PATH];
+    snprintf(uninst, MAX_PATH, "%s\\uninstall.exe", install_dir);
+    if (GetFileAttributesA(uninst) != INVALID_FILE_ATTRIBUTES) return 1;
+
+    /* Fallback: non-empty directory */
+    DWORD attr = GetFileAttributesA(install_dir);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return 0;
+    char pattern[MAX_PATH];
+    snprintf(pattern, MAX_PATH, "%s\\*", install_dir);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int found = 0;
+    do {
+        if (strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, ".."))
+            { found = 1; break; }
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return found;
+}
+
+/* CRC32 of a file already on disk (for repair-mode skip check) */
+static int file_crc32_matches(const char *path, uint32_t expected)
+{
+    if (!expected) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint32_t crc = 0;
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+        crc = crc32_update(crc, buf, n);
+    fclose(f);
+    return crc == expected;
+}
+
+/* ==================================================================== */
 /* Install thread                                                        */
 /* ==================================================================== */
 
@@ -705,12 +748,21 @@ struct InstallArgs {
     char install_dir[MAX_PATH];
     int  low_load;
     int  verify_crc32;
-    int  selected_comps[MAX_COMPONENTS];  /* selected_comps[i] = 1 if component (i+1) selected */
+    int  repair_mode;   /* 0 = fresh/reinstall, 1 = skip files whose CRC32 matches */
+    int  selected_comps[MAX_COMPONENTS];
     int  num_components;
 };
 
+struct InstallResult {
+    int      verify_passed;
+    int      repair_mode;
+    uint32_t files_skipped;   /* files whose on-disk CRC32 already matched */
+    uint32_t files_replaced;  /* files actually written */
+};
+
 static int do_install(const char *install_dir, int low_load, int verify_crc32,
-                      const int *selected_comps, int num_components)
+                      int repair_mode, const int *selected_comps, int num_components,
+                      uint32_t *out_skipped, uint32_t *out_replaced)
 {
     FILE *f = fopen(g_exe_path, "rb");
     if (!f) return 0;
@@ -741,7 +793,9 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
     if (total_to_install == 0) total_to_install = 1;
 
     int success = 1;
-    uint32_t files_done = 0;
+    uint32_t files_done    = 0;
+    uint32_t files_skipped = 0;
+    uint32_t files_written = 0;
 
     const size_t IN_SZ  = 65536;
     const size_t OUT_SZ = low_load ? 65536 : 262144;
@@ -793,6 +847,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
         uint32_t    cur_file         = first_entry;
         uint64_t    cur_file_written = 0;
         uint32_t    cur_crc32        = 0;
+        int         skip_cur         = 0;   /* repair mode: skip this file */
         HANDLE      hf               = INVALID_HANDLE_VALUE;
         lzma_action action           = LZMA_RUN;
 
@@ -824,13 +879,18 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 uint64_t need  = e->size - cur_file_written;
                 size_t   write = (size_t)(rem < need ? rem : need);
 
-                if (hf == INVALID_HANDLE_VALUE && e->size > 0) {
+                if (hf == INVALID_HANDLE_VALUE && !skip_cur && e->size > 0) {
                     char fpath[MAX_PATH];
                     snprintf(fpath, MAX_PATH, "%s\\%s", install_dir, e->path);
                     for (char *fp = fpath; *fp; fp++) if (*fp == '/') *fp = '\\';
-                    ensure_dir_for_file(fpath);
-                    hf = CreateFileA(fpath, GENERIC_WRITE, 0, NULL,
-                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                    /* Repair mode: skip if on-disk CRC32 already matches stored value */
+                    if (repair_mode && e->crc32 && file_crc32_matches(fpath, e->crc32)) {
+                        skip_cur = 1;
+                    } else {
+                        ensure_dir_for_file(fpath);
+                        hf = CreateFileA(fpath, GENERIC_WRITE, 0, NULL,
+                                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                    }
                 }
 
                 if (hf != INVALID_HANDLE_VALUE && write > 0) {
@@ -849,7 +909,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                         CloseHandle(hf);
                         hf = INVALID_HANDLE_VALUE;
                     }
-                    if (verify_crc32 && e->crc32 && cur_crc32 != e->crc32) {
+                    if (!skip_cur && verify_crc32 && e->crc32 && cur_crc32 != e->crc32) {
                         success = 0;
                         if (g_hwnd) {
                             char *log_msg = (char *)malloc(MAX_PATH);
@@ -861,19 +921,27 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                             }
                         }
                     }
+                    int was_skipped = skip_cur;
+                    skip_cur         = 0;
                     cur_crc32        = 0;
                     cur_file_written = 0;
                     cur_file++;
                     files_done++;
+                    if (was_skipped) files_skipped++;
+                    else             files_written++;
 
                     int pct = (int)(files_done * 100 / total_to_install);
                     if (g_hwnd) {
                         PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
-                        char *log_msg = (char *)malloc(MAX_PATH + 32);
-                        if (log_msg) {
-                            snprintf(log_msg, MAX_PATH + 32, "Extracting %u / %u: %s",
-                                     files_done, total_to_install, e->path);
-                            PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                        if (!was_skipped) {
+                            char *log_msg = (char *)malloc(MAX_PATH + 32);
+                            if (log_msg) {
+                                snprintf(log_msg, MAX_PATH + 32,
+                                         repair_mode ? "Repairing %u / %u: %s"
+                                                     : "Extracting %u / %u: %s",
+                                         files_done, total_to_install, e->path);
+                                PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                            }
                         }
                     }
                 }
@@ -978,17 +1046,29 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
         }
     }
 
+    if (out_skipped)  *out_skipped  = files_skipped;
+    if (out_replaced) *out_replaced = files_written;
     return success;
 }
 
 static DWORD WINAPI install_thread(LPVOID param)
 {
     struct InstallArgs *args = (struct InstallArgs *)param;
-    int verify               = args->verify_crc32;
-    int ok = do_install(args->install_dir, args->low_load, verify,
-                        args->selected_comps, args->num_components);
-    /* LPARAM carries verify_passed: 1 if we ran CRC32 checks and install succeeded */
-    PostMessageA(g_hwnd, WM_INSTALL_DONE, (WPARAM)ok, (LPARAM)(verify && ok));
+    int verify      = args->verify_crc32;
+    int repair      = args->repair_mode;
+
+    struct InstallResult *res = (struct InstallResult *)malloc(sizeof(struct InstallResult));
+    uint32_t skipped = 0, replaced = 0;
+    int ok = do_install(args->install_dir, args->low_load, verify, repair,
+                        args->selected_comps, args->num_components,
+                        &skipped, &replaced);
+    if (res) {
+        res->verify_passed  = verify && ok;
+        res->repair_mode    = repair;
+        res->files_skipped  = skipped;
+        res->files_replaced = replaced;
+    }
+    PostMessageA(g_hwnd, WM_INSTALL_DONE, (WPARAM)ok, (LPARAM)res);
     free(args);
     return 0;
 }
@@ -1338,11 +1418,28 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (!check_free_space(hwnd, path, g_meta.required_free_space_gb)) return 0;
             if (!check_elevate(path)) return 0;
 
+            /* Detect existing install and ask the user what to do */
+            int repair_mode = 0;
+            if (detect_existing_install(path)) {
+                char det_msg[MAX_PATH + 256];
+                snprintf(det_msg, sizeof(det_msg),
+                    "An existing installation was detected at:\n%s\n\n"
+                    "Yes  \x97  Reinstall (overwrite all files)\n"
+                    "No   \x97  Repair (replace only missing or changed files)\n"
+                    "Cancel  \x97  Go back",
+                    path);
+                int answer = MessageBoxA(hwnd, det_msg,
+                    g_meta.app_name[0] ? g_meta.app_name : "PatchForge",
+                    MB_YESNOCANCEL | MB_ICONQUESTION);
+                if (answer == IDCANCEL) return 0;
+                repair_mode = (answer == IDNO) ? 1 : 0;
+            }
+
             /* Create install dir if it doesn't exist */
             ensure_dir(path);
 
             EnableWindow(g_hwnd_btn_install, FALSE);
-            set_status("Installing\xe2\x80\xa6", COL_TEXT);
+            set_status(repair_mode ? "Repairing\xe2\x80\xa6" : "Installing\xe2\x80\xa6", COL_TEXT);
 
             int low_load = (SendMessageA(g_hwnd_chk_lowload, BM_GETCHECK, 0, 0) == BST_CHECKED);
             int do_verify = g_meta.verify_crc32
@@ -1354,6 +1451,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             args->install_dir[MAX_PATH - 1] = '\0';
             args->low_load      = low_load;
             args->verify_crc32  = do_verify;
+            args->repair_mode   = repair_mode;
             args->num_components = g_num_components;
             memset(args->selected_comps, 0, sizeof(args->selected_comps));
             for (int ci = 0; ci < g_num_components; ci++) {
@@ -1378,16 +1476,31 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     }
 
-    case WM_INSTALL_DONE:
+    case WM_INSTALL_DONE: {
+        struct InstallResult *res = (struct InstallResult *)lp;
         if (wp) {
-            if (lp)
+            if (res && res->verify_passed)
                 log_append("Integrity check passed.");
-            log_append("Installation complete.");
+            if (res && res->repair_mode) {
+                char rbuf[128];
+                snprintf(rbuf, sizeof(rbuf),
+                    "Repair complete: %u file(s) replaced, %u already up to date.",
+                    res->files_replaced, res->files_skipped);
+                log_append(rbuf);
+            }
+            const char *done_label = (res && res->repair_mode)
+                                     ? "Repair complete." : "Installation complete.";
+            log_append(done_label);
             set_progress(100);
-            MessageBoxA(hwnd, "Installation complete!\nThe game has been installed successfully.",
+            const char *popup_msg  = (res && res->repair_mode)
+                                     ? "Repair complete!\nAll files have been verified."
+                                     : "Installation complete!\nThe game has been installed successfully.";
+            MessageBoxA(hwnd, popup_msg,
                         g_meta.app_name[0] ? g_meta.app_name : "PatchForge",
                         MB_OK | MB_ICONINFORMATION);
             run_async(g_meta.run_after_install);
+            const char *status_label = (res && res->repair_mode)
+                                       ? "Repair complete!" : "Installation complete!";
             if (g_meta.close_delay > 0) {
                 g_close_countdown = g_meta.close_delay;
                 char buf[64];
@@ -1396,7 +1509,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 set_status(buf, COL_SUCCESS);
                 SetTimer(hwnd, TIMER_CLOSE, 1000, NULL);
             } else {
-                set_status("Installation complete!", COL_SUCCESS);
+                set_status(status_label, COL_SUCCESS);
             }
         } else {
             set_status("Installation failed. See log for details.", COL_ERROR);
@@ -1404,8 +1517,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             MessageBoxA(hwnd, "Installation failed.\n\nSome files may not have been written.",
                         "Error", MB_OK | MB_ICONERROR);
         }
+        free(res);
         EnableWindow(g_hwnd_btn_install, TRUE);
         break;
+    }
 
     case WM_TIMER:
         if (wp == TIMER_CLOSE) {
@@ -1535,7 +1650,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         int selected_comps[MAX_COMPONENTS] = {0};
         for (int i = 0; i < g_num_components; i++)
             selected_comps[i] = g_components[i].default_checked;
-        int ok = do_install(install_dir, 0, verify, selected_comps, g_num_components);
+        int ok = do_install(install_dir, 0, verify, 0 /* fresh */,
+                            selected_comps, g_num_components, NULL, NULL);
         free(g_entries);
         return ok ? 0 : 1;
     }
