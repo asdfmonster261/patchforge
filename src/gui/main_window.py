@@ -854,6 +854,11 @@ class MainWindow(QMainWindow):
         self.rp_include_uninstaller_chk.setChecked(True)
         pg.addWidget(self.rp_include_uninstaller_chk, 5, 0, 1, 2)
 
+        self.rp_verify_crc32_chk = QCheckBox(
+            "Verify file integrity after installation (CRC32) — end user can skip with /NOVERIFY")
+        self.rp_verify_crc32_chk.setChecked(True)
+        pg.addWidget(self.rp_verify_crc32_chk, 6, 0, 1, 2)
+
         layout.addWidget(post_grp)
         layout.addStretch()
 
@@ -1413,6 +1418,7 @@ class MainWindow(QMainWindow):
             required_free_space_gb = self.rp_free_space_spin.value(),
             close_delay          = self.rp_close_delay_spin.value(),
             include_uninstaller  = self.rp_include_uninstaller_chk.isChecked(),
+            verify_crc32         = self.rp_verify_crc32_chk.isChecked(),
             components           = components,
         )
         if validate:
@@ -1464,6 +1470,7 @@ class MainWindow(QMainWindow):
         self.rp_free_space_spin.setValue(s.required_free_space_gb)
         self.rp_close_delay_spin.setValue(s.close_delay)
         self.rp_include_uninstaller_chk.setChecked(s.include_uninstaller)
+        self.rp_verify_crc32_chk.setChecked(s.verify_crc32)
         self.rp_comp_list.clear()
         for c in (s.components or []):
             item = QListWidgetItem(self._comp_item_text(c))

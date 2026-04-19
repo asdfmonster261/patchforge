@@ -49,6 +49,7 @@
 #define IDC_LOG          1007
 #define IDC_CHK_LOWLOAD  1010
 #define IDC_SPACE_LBL    1011
+#define IDC_CHK_VERIFY   1012
 #define IDC_COMP_BASE    1020   /* component checkboxes/radios: 1020, 1021, ... */
 
 /* ---- Component limits ---- */
@@ -89,6 +90,7 @@ typedef struct {
     int64_t uninstaller_size;
     char    arp_subkey[256];
     int     include_uninstaller;
+    int     verify_crc32;
 } InstallMeta;
 
 /* ---- Per-file table entry ---- */
@@ -108,6 +110,7 @@ static HWND       g_hwnd_progress     = NULL;
 static HWND       g_hwnd_log          = NULL;
 static HWND       g_hwnd_btn_install  = NULL;
 static HWND       g_hwnd_chk_lowload  = NULL;
+static HWND       g_hwnd_chk_verify   = NULL;
 static HWND       g_hwnd_space_lbl    = NULL;
 static HBRUSH     g_brush_bg          = NULL;
 static HBRUSH     g_brush_light       = NULL;
@@ -124,6 +127,7 @@ static int        g_btn_hover_install = 0;
 static int        g_btn_hover_cancel  = 0;
 static int        g_silent            = 0;
 static char       g_silent_dir[MAX_PATH] = {0};
+static int        g_verify_crc32      = 0;
 
 /* ---- Optional components ---- */
 typedef struct {
@@ -321,6 +325,7 @@ static int read_install_meta(void)
     g_meta.uninstaller_offset       = json_get_int(buf, "uninstaller_offset");
     g_meta.uninstaller_size         = json_get_int(buf, "uninstaller_size");
     g_meta.include_uninstaller      = json_get_bool(buf, "include_uninstaller", 0);
+    g_meta.verify_crc32             = json_get_bool(buf, "verify_crc32", 0);
     json_get_str(buf, "arp_subkey", g_meta.arp_subkey, sizeof(g_meta.arp_subkey));
 
     json_parse_components(buf);
@@ -844,7 +849,7 @@ static int do_install(const char *install_dir, int low_load,
                         CloseHandle(hf);
                         hf = INVALID_HANDLE_VALUE;
                     }
-                    if (e->crc32 && cur_crc32 != e->crc32) {
+                    if (g_verify_crc32 && e->crc32 && cur_crc32 != e->crc32) {
                         success = 0;
                         if (g_hwnd) {
                             char *log_msg = (char *)malloc(MAX_PATH);
@@ -1062,6 +1067,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             20, 130, 460, 20, hwnd, (HMENU)IDC_CHK_LOWLOAD, NULL, NULL);
         SendMessageA(g_hwnd_chk_lowload, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
+        /* Verify integrity checkbox — only shown when pack was built with CRC32 */
+        int vo = 0;
+        if (g_meta.verify_crc32) {
+            vo = 24;
+            g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON",
+                "Verify file integrity after installation",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                20, 154, 460, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
+            SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
+        }
+
         /* Optional component checkboxes / radio buttons */
         if (g_num_components > 0) {
             char prev_group[64] = {0};
@@ -1080,7 +1097,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
                     btn_style,
-                    20, 154 + ci * 24, 680, 22,
+                    20, 154 + vo + ci * 24, 680, 22,
                     hwnd, (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
                 SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
@@ -1107,39 +1124,39 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         }
 
-        /* Disk space label (shifts down when components are present) */
+        /* Disk space label (shifts down when components/verify checkbox present) */
         g_hwnd_space_lbl = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 154 + co, 680, 16, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
+            20, 154 + vo + co, 680, 16, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
         SendMessageA(g_hwnd_space_lbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Log area */
         g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            20, 180 + co, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            20, 180 + vo + co, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 310 + co, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+            20, 310 + vo + co, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
         SetWindowLongA(g_hwnd_progress, GWLP_USERDATA, 0);
 
         /* Status */
         g_hwnd_status = CreateWindowExA(0, "STATIC",
             "Select an install folder and click Install.",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 326 + co, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+            20, 326 + vo + co, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
         SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         /* Install / Cancel buttons */
         g_hwnd_btn_install = CreateWindowExA(0, "BUTTON", "Install",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            530, 354 + co, 80, 28, hwnd, (HMENU)IDC_BTN_INSTALL, NULL, NULL);
+            530, 354 + vo + co, 80, 28, hwnd, (HMENU)IDC_BTN_INSTALL, NULL, NULL);
         CreateWindowExA(0, "BUTTON", "Cancel",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            620, 354 + co, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+            620, 354 + vo + co, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
         /* Bottom-left info: company · copyright · contact */
         {
@@ -1158,7 +1175,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (pos > 0) {
                 HWND infolbl = CreateWindowExA(0, "STATIC", info,
                     WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    20, 358 + co, 500, 16, hwnd, NULL, NULL, NULL);
+                    20, 358 + vo + co, 500, 16, hwnd, NULL, NULL, NULL);
                 SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
         }
@@ -1169,7 +1186,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             snprintf(verbuf, sizeof(verbuf), "Version %s", g_meta.version);
             HWND verlbl = CreateWindowExA(0, "STATIC", verbuf,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 378 + co, 500, 14, hwnd, NULL, NULL, NULL);
+                20, 378 + vo + co, 500, 14, hwnd, NULL, NULL, NULL);
             SendMessageA(verlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         }
 
@@ -1325,6 +1342,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             set_status("Installing\xe2\x80\xa6", COL_TEXT);
 
             int low_load = (SendMessageA(g_hwnd_chk_lowload, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            g_verify_crc32 = g_meta.verify_crc32 && g_hwnd_chk_verify &&
+                             (SendMessageA(g_hwnd_chk_verify, BM_GETCHECK, 0, 0) == BST_CHECKED);
             struct InstallArgs *args =
                 (struct InstallArgs *)malloc(sizeof(struct InstallArgs));
             strncpy(args->install_dir, path, MAX_PATH - 1);
@@ -1447,6 +1466,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     if (lpCmd) {
         if (strstr(lpCmd, "/S") || strstr(lpCmd, "-S"))
             g_silent = 1;
+        if (strstr(lpCmd, "/NOVERIFY"))
+            g_verify_crc32 = -1;  /* -1 = user explicitly disabled */
         const char *darg = strstr(lpCmd, "/D=");
         if (darg) {
             darg += 3;
@@ -1501,6 +1522,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
             }
         }
         ensure_dir(install_dir);
+        if (g_verify_crc32 != -1)
+            g_verify_crc32 = g_meta.verify_crc32;
         int selected_comps[MAX_COMPONENTS] = {0};
         for (int i = 0; i < g_num_components; i++)
             selected_comps[i] = g_components[i].default_checked;
@@ -1542,7 +1565,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
        frame (title bar + borders) never clips controls at the bottom.
        Each optional component adds 24 px to the client height. */
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT wr = {0, 0, 720, 412 + g_num_components * 24};
+    int verify_offset = g_meta.verify_crc32 ? 24 : 0;
+    RECT wr = {0, 0, 720, 412 + verify_offset + g_num_components * 24};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
         0, "PFGInstaller", title, wstyle,
