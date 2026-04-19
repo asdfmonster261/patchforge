@@ -142,8 +142,10 @@ static char       g_user_desktop[MAX_PATH]  = {0}; /* per-user Desktop, captured
 static char       g_user_programs[MAX_PATH] = {0}; /* per-user Start Menu\Programs, same */
 static int        g_img_h             = 0;   /* rendered backdrop height in window */
 static int        g_foot_sep_y        = 0;   /* y of footer separator line */
-static HWND       g_hwnd_subtitle     = NULL; /* note/desc label (dim colour) */
+static HWND       g_hwnd_subtitle     = NULL; /* app_note label (dim colour) */
 static HWND       g_hwnd_summary      = NULL; /* files·size label (dim colour) */
+static HWND       g_hwnd_sec_settings = NULL; /* "SETTINGS" section header (dim) */
+static HWND       g_hwnd_sec_comps    = NULL; /* "OPTIONAL COMPONENTS" section header (dim) */
 
 /* ---- Optional components ---- */
 typedef struct {
@@ -1273,18 +1275,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SendMessageA(lbl_ver, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         }
 
-        /* ── Subtitle: app_note > description (dim text) ─────────── */
+        /* ── Subtitle: app_note (dim), then description (normal) ─── */
         int subtitle_h = 0;
-        {
-            const char *sub = g_meta.app_note[0]    ? g_meta.app_note
-                            : g_meta.description[0] ? g_meta.description : NULL;
-            if (sub) {
-                g_hwnd_subtitle = CreateWindowExA(0, "STATIC", sub,
-                    WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    lx, title_y + 30, crw, 16, hwnd, NULL, NULL, NULL);
-                SendMessageA(g_hwnd_subtitle, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-                subtitle_h = 18;
-            }
+        if (g_meta.app_note[0]) {
+            g_hwnd_subtitle = CreateWindowExA(0, "STATIC", g_meta.app_note,
+                WS_CHILD | WS_VISIBLE | SS_LEFT,
+                lx, title_y + 30, crw, 16, hwnd, NULL, NULL, NULL);
+            SendMessageA(g_hwnd_subtitle, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            subtitle_h = 18;
+        }
+        int desc_h = 0;
+        if (g_meta.description[0]) {
+            HWND lbl_desc = CreateWindowExA(0, "STATIC", g_meta.description,
+                WS_CHILD | WS_VISIBLE | SS_LEFT,
+                lx, title_y + 30 + subtitle_h, crw, 16, hwnd, NULL, NULL, NULL);
+            SendMessageA(lbl_desc, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            desc_h = 18;
         }
 
         /* ── Summary: "N files  ·  X GB installed" (dim text) ───── */
@@ -1302,13 +1308,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
             g_hwnd_summary = CreateWindowExA(0, "STATIC", cbuf,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                lx, title_y + 30 + subtitle_h, crw, 16, hwnd, NULL, NULL, NULL);
+                lx, title_y + 30 + subtitle_h + desc_h, crw, 16, hwnd, NULL, NULL, NULL);
             SendMessageA(g_hwnd_summary, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             summary_h = 18;
         }
 
         /* ── Install path ────────────────────────────────────────── */
-        int path_y = title_y + 30 + subtitle_h + summary_h + 12;
+        int path_y = title_y + 30 + subtitle_h + desc_h + summary_h + 12;
 
         HWND lbl_path = CreateWindowExA(0, "STATIC", "Install to:",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
@@ -1324,28 +1330,61 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
             lx + 572, path_y + 18, 108, 26, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
 
-        /* ── Options ─────────────────────────────────────────────── */
+        /* ── Settings section ────────────────────────────────────── */
         int opt_y = path_y + 18 + 26 + 10;
+        int cur_y = opt_y;
+
+        g_hwnd_sec_settings = CreateWindowExA(0, "STATIC", "SETTINGS",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            lx, cur_y, crw, 16, hwnd, NULL, NULL, NULL);
+        SendMessageA(g_hwnd_sec_settings, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        cur_y += 20;
 
         g_hwnd_chk_lowload = CreateWindowExA(0, "BUTTON",
             "Reduce system load during install (slower)",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            lx, opt_y, crw, 20, hwnd, (HMENU)IDC_CHK_LOWLOAD, NULL, NULL);
+            lx, cur_y, crw, 20, hwnd, (HMENU)IDC_CHK_LOWLOAD, NULL, NULL);
         SendMessageA(g_hwnd_chk_lowload, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        cur_y += 24;
 
-        int vo = 0;
         if (g_meta.verify_crc32) {
-            vo = 24;
             g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON",
                 "Verify file integrity after installation",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                lx, opt_y + 24, crw, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
+                lx, cur_y, crw, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
             SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
+            cur_y += 24;
         }
 
-        /* Optional component checkboxes / radio buttons */
+        if (g_meta.shortcut_target[0]) {
+            g_hwnd_chk_sc_startmenu = CreateWindowExA(0, "BUTTON",
+                "Create Start Menu shortcut",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                lx, cur_y, crw, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
+            SendMessageA(g_hwnd_chk_sc_startmenu, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            SendMessageA(g_hwnd_chk_sc_startmenu, BM_SETCHECK,
+                         g_meta.shortcut_create_startmenu ? BST_CHECKED : BST_UNCHECKED, 0);
+            cur_y += 24;
+            g_hwnd_chk_sc_desktop = CreateWindowExA(0, "BUTTON",
+                "Create Desktop shortcut",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                lx, cur_y, crw, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
+            SendMessageA(g_hwnd_chk_sc_desktop, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            SendMessageA(g_hwnd_chk_sc_desktop, BM_SETCHECK,
+                         g_meta.shortcut_create_desktop ? BST_CHECKED : BST_UNCHECKED, 0);
+            cur_y += 24;
+        }
+
+        /* ── Optional Components section ─────────────────────────── */
         if (g_num_components > 0) {
+            cur_y += 8;
+            g_hwnd_sec_comps = CreateWindowExA(0, "STATIC", "OPTIONAL COMPONENTS",
+                WS_CHILD | WS_VISIBLE | SS_LEFT,
+                lx, cur_y, crw, 16, hwnd, NULL, NULL, NULL);
+            SendMessageA(g_hwnd_sec_comps, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            cur_y += 20;
+
             char prev_group[64] = {0};
             for (int ci = 0; ci < g_num_components; ci++) {
                 ComponentInfo *c = &g_components[ci];
@@ -1362,7 +1401,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
                     btn_style,
-                    lx, opt_y + 24 + vo + ci * 24, crw, 20,
+                    lx, cur_y + ci * 24, crw, 20,
                     hwnd, (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
                 SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
@@ -1384,34 +1423,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 SendMessageA(c->hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
             }
+            cur_y += g_num_components * 24;
         }
         refresh_component_states();
 
-        int co = g_num_components * 24;
-
-        /* Shortcut checkboxes */
-        int so = 0;
-        if (g_meta.shortcut_target[0]) {
-            int sy = opt_y + 24 + vo + co;
-            g_hwnd_chk_sc_startmenu = CreateWindowExA(0, "BUTTON",
-                "Create Start Menu shortcut",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                lx, sy, crw, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
-            SendMessageA(g_hwnd_chk_sc_startmenu, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-            SendMessageA(g_hwnd_chk_sc_startmenu, BM_SETCHECK,
-                         g_meta.shortcut_create_startmenu ? BST_CHECKED : BST_UNCHECKED, 0);
-            g_hwnd_chk_sc_desktop = CreateWindowExA(0, "BUTTON",
-                "Create Desktop shortcut",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                lx, sy + 24, crw, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
-            SendMessageA(g_hwnd_chk_sc_desktop, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-            SendMessageA(g_hwnd_chk_sc_desktop, BM_SETCHECK,
-                         g_meta.shortcut_create_desktop ? BST_CHECKED : BST_UNCHECKED, 0);
-            so = 48;
-        }
-
         /* ── Disk space label ────────────────────────────────────── */
-        int space_y = opt_y + 24 + vo + co + so + 6;
+        int space_y = cur_y + 6;
         g_hwnd_space_lbl = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
             lx, space_y, crw, 14, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
@@ -1509,7 +1526,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetBkColor(dc, COL_LOG_BG);
             return (LRESULT)g_brush_log;
         }
-        if (ctl == g_hwnd_subtitle || ctl == g_hwnd_summary)
+        if (ctl == g_hwnd_subtitle || ctl == g_hwnd_summary
+                || ctl == g_hwnd_sec_settings || ctl == g_hwnd_sec_comps)
             SetTextColor(dc, COL_TEXT_DIM);
         else
             SetTextColor(dc, COL_TEXT);
@@ -1967,10 +1985,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     int verify_offset   = g_meta.verify_crc32       ? 24 : 0;
     int shortcut_offset = g_meta.shortcut_target[0] ? 48 : 0;
-    int hdr_extra       = (g_meta.app_note[0] || g_meta.description[0]) ? 18 : 0;
+    int hdr_extra       = (g_meta.app_note[0]    ? 18 : 0)
+                        + (g_meta.description[0] ? 18 : 0);
     int sum_extra       = (g_meta.total_files > 0)  ? 18 : 0;
+    int comps_sect      = g_num_components > 0 ? 28 : 0;
     int client_h = g_img_h + 300 + hdr_extra + sum_extra
-                 + verify_offset + g_num_components * 24 + shortcut_offset;
+                 + 20 + verify_offset + shortcut_offset
+                 + comps_sect + g_num_components * 24;
     RECT wr = {0, 0, 720, client_h};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
