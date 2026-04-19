@@ -127,7 +127,6 @@ static int        g_btn_hover_install = 0;
 static int        g_btn_hover_cancel  = 0;
 static int        g_silent            = 0;
 static char       g_silent_dir[MAX_PATH] = {0};
-static int        g_verify_crc32      = 0;
 
 /* ---- Optional components ---- */
 typedef struct {
@@ -705,11 +704,12 @@ static void ensure_dir_for_file(const char *filepath)
 struct InstallArgs {
     char install_dir[MAX_PATH];
     int  low_load;
+    int  verify_crc32;
     int  selected_comps[MAX_COMPONENTS];  /* selected_comps[i] = 1 if component (i+1) selected */
     int  num_components;
 };
 
-static int do_install(const char *install_dir, int low_load,
+static int do_install(const char *install_dir, int low_load, int verify_crc32,
                       const int *selected_comps, int num_components)
 {
     FILE *f = fopen(g_exe_path, "rb");
@@ -849,7 +849,7 @@ static int do_install(const char *install_dir, int low_load,
                         CloseHandle(hf);
                         hf = INVALID_HANDLE_VALUE;
                     }
-                    if (g_verify_crc32 && e->crc32 && cur_crc32 != e->crc32) {
+                    if (verify_crc32 && e->crc32 && cur_crc32 != e->crc32) {
                         success = 0;
                         if (g_hwnd) {
                             char *log_msg = (char *)malloc(MAX_PATH);
@@ -984,9 +984,11 @@ static int do_install(const char *install_dir, int low_load,
 static DWORD WINAPI install_thread(LPVOID param)
 {
     struct InstallArgs *args = (struct InstallArgs *)param;
-    int ok = do_install(args->install_dir, args->low_load,
+    int verify               = args->verify_crc32;
+    int ok = do_install(args->install_dir, args->low_load, verify,
                         args->selected_comps, args->num_components);
-    PostMessageA(g_hwnd, WM_INSTALL_DONE, (WPARAM)ok, 0);
+    /* LPARAM carries verify_passed: 1 if we ran CRC32 checks and install succeeded */
+    PostMessageA(g_hwnd, WM_INSTALL_DONE, (WPARAM)ok, (LPARAM)(verify && ok));
     free(args);
     return 0;
 }
@@ -1342,13 +1344,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             set_status("Installing\xe2\x80\xa6", COL_TEXT);
 
             int low_load = (SendMessageA(g_hwnd_chk_lowload, BM_GETCHECK, 0, 0) == BST_CHECKED);
-            g_verify_crc32 = g_meta.verify_crc32 && g_hwnd_chk_verify &&
-                             (SendMessageA(g_hwnd_chk_verify, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            int do_verify = g_meta.verify_crc32
+                            && g_hwnd_chk_verify
+                            && (SendMessageA(g_hwnd_chk_verify, BM_GETCHECK, 0, 0) == BST_CHECKED);
             struct InstallArgs *args =
                 (struct InstallArgs *)malloc(sizeof(struct InstallArgs));
             strncpy(args->install_dir, path, MAX_PATH - 1);
             args->install_dir[MAX_PATH - 1] = '\0';
             args->low_load      = low_load;
+            args->verify_crc32  = do_verify;
             args->num_components = g_num_components;
             memset(args->selected_comps, 0, sizeof(args->selected_comps));
             for (int ci = 0; ci < g_num_components; ci++) {
@@ -1375,7 +1379,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_INSTALL_DONE:
         if (wp) {
-            if (g_verify_crc32)
+            if (lp)
                 log_append("Integrity check passed.");
             log_append("Installation complete.");
             set_progress(100);
@@ -1464,12 +1468,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     init_crc32_table();
     GetModuleFileNameA(NULL, g_exe_path, MAX_PATH);
 
+    int g_noverify = 0;  /* /NOVERIFY flag for silent mode */
+
     /* Parse /S (silent) and /D=<path> (install directory override) */
     if (lpCmd) {
         if (strstr(lpCmd, "/S") || strstr(lpCmd, "-S"))
             g_silent = 1;
         if (strstr(lpCmd, "/NOVERIFY"))
-            g_verify_crc32 = -1;  /* -1 = user explicitly disabled */
+            g_noverify = 1;
         const char *darg = strstr(lpCmd, "/D=");
         if (darg) {
             darg += 3;
@@ -1524,12 +1530,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
             }
         }
         ensure_dir(install_dir);
-        if (g_verify_crc32 != -1)
-            g_verify_crc32 = g_meta.verify_crc32;
+        int verify = g_noverify ? 0 : g_meta.verify_crc32;
         int selected_comps[MAX_COMPONENTS] = {0};
         for (int i = 0; i < g_num_components; i++)
             selected_comps[i] = g_components[i].default_checked;
-        int ok = do_install(install_dir, 0, selected_comps, g_num_components);
+        int ok = do_install(install_dir, 0, verify, selected_comps, g_num_components);
         free(g_entries);
         return ok ? 0 : 1;
     }
