@@ -21,6 +21,7 @@ The JSON metadata contains:
 """
 
 import json
+import re
 import struct
 from pathlib import Path
 
@@ -143,23 +144,76 @@ def _installer_stub_path(arch: str) -> Path:
     return p
 
 
+def _uninstaller_stub_path(arch: str) -> Path:
+    name = f"uninstaller_{arch}.exe"
+    p = STUB_DIR / name
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Prebuilt uninstaller stub not found: {p}\n"
+            f"Run 'make uninstaller' in stub/ to build it."
+        )
+    return p
+
+
+def _make_arp_subkey(app_name: str) -> str:
+    """Sanitize app_name for use as a Windows registry subkey name."""
+    key = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', app_name).strip()
+    return key or "Game"
+
+
+def _build_uninstaller_blob(
+    arch: str,
+    arp_subkey: str,
+    metadata: dict,
+    file_list: list[dict],
+) -> bytes:
+    """
+    Append data JSON + trailer to the prebuilt uninstaller stub.
+
+    Layout:
+      [uninstaller_stub.exe]
+      [data JSON, UTF-8    ]
+      [4B LE: data_len     ]
+      [8B magic: UNINST01  ]
+    """
+    stub = _uninstaller_stub_path(arch).read_bytes()
+
+    data = {
+        "app_name":             metadata.get("app_name", ""),
+        "version":              metadata.get("version", ""),
+        "company_info":         metadata.get("company_info", ""),
+        "arp_subkey":           arp_subkey,
+        "install_registry_key": metadata.get("install_registry_key", ""),
+        "files": [
+            {"path": f["path"], "component": f["component"]}
+            for f in file_list
+        ],
+    }
+    data_json = json.dumps(data, separators=(",", ":")).encode("utf-8")
+    data_len  = struct.pack("<I", len(data_json))
+    return stub + data_json + data_len + b"UNINST01"
+
+
 def package_repack(
     arch: str,
     pack_blob: bytes,
     metadata: dict,
     output_path: Path,
+    file_list: list[dict] | None = None,
     icon_path: Path | None = None,
     backdrop_data: bytes | None = None,
+    include_uninstaller: bool = True,
 ) -> Path:
     """
     Build a self-extracting installer .exe.
 
     Output layout:
-      [installer_stub.exe]
-      [XPACK01 blob      ]
-      [backdrop bytes    ]  (zero if none)
-      [JSON metadata     ]
-      [4B LE: meta_len   ]
+      [installer_stub.exe  ]
+      [XPACK01 blob        ]
+      [uninstaller blob    ]  (zero bytes if include_uninstaller=False)
+      [backdrop bytes      ]  (zero bytes if no backdrop)
+      [JSON metadata       ]
+      [4B LE: meta_len     ]
       [8B magic XPACK01\\x00]
     """
     stub_path = _installer_stub_path(arch)
@@ -178,14 +232,26 @@ def package_repack(
     pack_data_offset = len(stub_bytes)
     pack_data_size   = len(pack_blob)
 
-    bd_offset = pack_data_offset + pack_data_size
+    # Build uninstaller blob (if requested)
+    arp_subkey = _make_arp_subkey(metadata.get("app_name", ""))
+    uninst_blob = b""
+    if include_uninstaller and file_list is not None:
+        uninst_blob = _build_uninstaller_blob(arch, arp_subkey, metadata, file_list)
+
+    uninst_offset = pack_data_offset + pack_data_size
+    uninst_size   = len(uninst_blob)
+
+    bd_offset = uninst_offset + uninst_size
     bd_size   = len(backdrop_data) if backdrop_data else 0
 
     meta = dict(metadata)
-    meta["pack_data_offset"] = pack_data_offset
-    meta["pack_data_size"]   = pack_data_size
-    meta["backdrop_offset"]  = bd_offset
-    meta["backdrop_size"]    = bd_size
+    meta["pack_data_offset"]    = pack_data_offset
+    meta["pack_data_size"]      = pack_data_size
+    meta["uninstaller_offset"]  = uninst_offset
+    meta["uninstaller_size"]    = uninst_size
+    meta["arp_subkey"]          = arp_subkey
+    meta["backdrop_offset"]     = bd_offset
+    meta["backdrop_size"]       = bd_size
 
     meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
     meta_len  = struct.pack("<I", len(meta_json))
@@ -196,6 +262,7 @@ def package_repack(
     with open(output_path, "wb") as f:
         f.write(stub_bytes)
         f.write(pack_blob)
+        f.write(uninst_blob)
         if backdrop_data:
             f.write(backdrop_data)
         f.write(meta_json)

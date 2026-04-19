@@ -44,6 +44,9 @@ class RepackSettings:
     # Compression threads (1 = single-threaded stdlib; >1 = xz CLI MT)
     threads: int = 1
 
+    # Uninstaller
+    include_uninstaller: bool = True
+
     # Optional components — list of dicts:
     #   {"label": str, "folder": str, "default_checked": bool, "group": str}
     # index 0 = base game (always installed); components here start at index 1.

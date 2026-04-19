@@ -849,6 +849,11 @@ class MainWindow(QMainWindow):
         rp_cd_w = QWidget(); rp_cd_w.setLayout(rp_cd_row)
         pg.addWidget(rp_cd_w, 4, 1)
 
+        self.rp_include_uninstaller_chk = QCheckBox(
+            "Include uninstaller (uninstall.exe + Add/Remove Programs entry)")
+        self.rp_include_uninstaller_chk.setChecked(True)
+        pg.addWidget(self.rp_include_uninstaller_chk, 5, 0, 1, 2)
+
         layout.addWidget(post_grp)
         layout.addStretch()
 
@@ -1407,6 +1412,7 @@ class MainWindow(QMainWindow):
             detect_running_exe   = self.rp_detect_running_edit.text().strip(),
             required_free_space_gb = self.rp_free_space_spin.value(),
             close_delay          = self.rp_close_delay_spin.value(),
+            include_uninstaller  = self.rp_include_uninstaller_chk.isChecked(),
             components           = components,
         )
         if validate:
@@ -1457,6 +1463,7 @@ class MainWindow(QMainWindow):
         self.rp_detect_running_edit.setText(s.detect_running_exe)
         self.rp_free_space_spin.setValue(s.required_free_space_gb)
         self.rp_close_delay_spin.setValue(s.close_delay)
+        self.rp_include_uninstaller_chk.setChecked(s.include_uninstaller)
         self.rp_comp_list.clear()
         for c in (s.components or []):
             item = QListWidgetItem(self._comp_item_text(c))

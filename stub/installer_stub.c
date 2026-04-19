@@ -85,6 +85,10 @@ typedef struct {
     int64_t pack_data_size;
     int64_t backdrop_offset;
     int64_t backdrop_size;
+    int64_t uninstaller_offset;
+    int64_t uninstaller_size;
+    char    arp_subkey[256];
+    int     include_uninstaller;
 } InstallMeta;
 
 /* ---- Per-file table entry ---- */
@@ -288,6 +292,10 @@ static int read_install_meta(void)
     g_meta.pack_data_size           = json_get_int(buf, "pack_data_size");
     g_meta.backdrop_offset          = json_get_int(buf, "backdrop_offset");
     g_meta.backdrop_size            = json_get_int(buf, "backdrop_size");
+    g_meta.uninstaller_offset       = json_get_int(buf, "uninstaller_offset");
+    g_meta.uninstaller_size         = json_get_int(buf, "uninstaller_size");
+    g_meta.include_uninstaller      = json_get_bool(buf, "include_uninstaller", 0);
+    json_get_str(buf, "arp_subkey", g_meta.arp_subkey, sizeof(g_meta.arp_subkey));
 
     json_parse_components(buf);
 
@@ -837,7 +845,7 @@ static int do_install(const char *install_dir, int low_load,
     free(outbuf);
     fclose(f);
 
-    /* Write registry key */
+    /* Write game registry key */
     if (success && g_meta.install_registry_key[0]) {
         HKEY hkey = NULL;
         if (RegCreateKeyExA(HKEY_CURRENT_USER, g_meta.install_registry_key,
@@ -846,6 +854,79 @@ static int do_install(const char *install_dir, int low_load,
                            (const BYTE *)install_dir,
                            (DWORD)(strlen(install_dir) + 1));
             RegCloseKey(hkey);
+        }
+    }
+
+    /* Extract uninstaller and register with Add/Remove Programs */
+    if (success && g_meta.include_uninstaller && g_meta.uninstaller_size > 0) {
+        char uninst_path[MAX_PATH];
+        snprintf(uninst_path, MAX_PATH, "%s\\uninstall.exe", install_dir);
+
+        /* Write uninstall.exe */
+        FILE *uf = fopen(g_exe_path, "rb");
+        if (uf) {
+            _fseeki64(uf, g_meta.uninstaller_offset, SEEK_SET);
+            BYTE *ubuf = (BYTE *)malloc((size_t)g_meta.uninstaller_size);
+            if (ubuf) {
+                fread(ubuf, 1, (size_t)g_meta.uninstaller_size, uf);
+                FILE *of = fopen(uninst_path, "wb");
+                if (of) { fwrite(ubuf, 1, (size_t)g_meta.uninstaller_size, of); fclose(of); }
+                free(ubuf);
+            }
+            fclose(uf);
+        }
+
+        /* Build InstalledComponents string: "0" or "0,1,2" etc. */
+        char comp_str[256];
+        int  cpos = (int)snprintf(comp_str, sizeof(comp_str), "0");
+        for (int ci = 0; ci < num_components; ci++) {
+            if (selected_comps[ci])
+                cpos += snprintf(comp_str + cpos, (int)sizeof(comp_str) - cpos, ",%d", ci + 1);
+        }
+
+        /* Write A/RP registry entry — try HKLM, fall back to HKCU */
+        char arp_key[512];
+        snprintf(arp_key, sizeof(arp_key),
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\%s",
+            g_meta.arp_subkey);
+
+        HKEY hives[2] = {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER};
+        for (int h = 0; h < 2; h++) {
+            HKEY hkey = NULL;
+            if (RegCreateKeyExA(hives[h], arp_key, 0, NULL, 0,
+                                KEY_SET_VALUE, NULL, &hkey, NULL) == ERROR_SUCCESS) {
+                char uninst_str[MAX_PATH + 4];
+                snprintf(uninst_str, sizeof(uninst_str), "\"%s\"", uninst_path);
+                DWORD est_kb = (DWORD)(g_meta.total_uncompressed_size / 1024);
+                DWORD one    = 1;
+
+                RegSetValueExA(hkey, "DisplayName",       0, REG_SZ,
+                    (BYTE *)g_meta.app_name, (DWORD)(strlen(g_meta.app_name) + 1));
+                if (g_meta.version[0])
+                    RegSetValueExA(hkey, "DisplayVersion", 0, REG_SZ,
+                        (BYTE *)g_meta.version, (DWORD)(strlen(g_meta.version) + 1));
+                if (g_meta.company_info[0])
+                    RegSetValueExA(hkey, "Publisher", 0, REG_SZ,
+                        (BYTE *)g_meta.company_info,
+                        (DWORD)(strlen(g_meta.company_info) + 1));
+                RegSetValueExA(hkey, "UninstallString",  0, REG_SZ,
+                    (BYTE *)uninst_str, (DWORD)(strlen(uninst_str) + 1));
+                RegSetValueExA(hkey, "InstallLocation",  0, REG_SZ,
+                    (BYTE *)install_dir, (DWORD)(strlen(install_dir) + 1));
+                RegSetValueExA(hkey, "DisplayIcon",      0, REG_SZ,
+                    (BYTE *)uninst_str, (DWORD)(strlen(uninst_str) + 1));
+                RegSetValueExA(hkey, "EstimatedSize",    0, REG_DWORD,
+                    (BYTE *)&est_kb, sizeof(est_kb));
+                RegSetValueExA(hkey, "NoModify",         0, REG_DWORD,
+                    (BYTE *)&one, sizeof(one));
+                RegSetValueExA(hkey, "NoRepair",         0, REG_DWORD,
+                    (BYTE *)&one, sizeof(one));
+                RegSetValueExA(hkey, "InstalledComponents", 0, REG_SZ,
+                    (BYTE *)comp_str, (DWORD)(strlen(comp_str) + 1));
+
+                RegCloseKey(hkey);
+                break;
+            }
         }
     }
 
