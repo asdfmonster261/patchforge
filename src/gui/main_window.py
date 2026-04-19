@@ -165,6 +165,15 @@ class MainWindow(QMainWindow):
         self._current_project_path: Optional[Path] = None
         self._current_repack_path: Optional[Path] = None
 
+        # Manual sweep animation used while LZMA compression blocks signals.
+        # Qt's built-in indeterminate animation doesn't fire with a custom
+        # QProgressBar::chunk stylesheet, so we drive it ourselves.
+        self._sweep_timer = QTimer(self)
+        self._sweep_timer.setInterval(30)
+        self._sweep_timer.timeout.connect(self._tick_sweep)
+        self._sweep_pos: float = 0.0
+        self._sweep_dir: float = 1.0
+
         self._build_ui()
         self._connect_signals()
         self._on_engine_changed()  # set initial compression list
@@ -1320,21 +1329,32 @@ class MainWindow(QMainWindow):
         self._thread.start()
 
     def _on_progress(self, pct: int, msg: str):
-        # LZMA compression fires no intermediate callbacks — the bar would freeze.
-        # Switch to indeterminate (pulsing) mode so the UI looks alive.
         compressing = bool(msg and ": compressing " in msg and "done" not in msg)
         if compressing:
-            if self.progress_bar.maximum() != 0:
-                self.progress_bar.setRange(0, 0)
+            if not self._sweep_timer.isActive():
+                self._sweep_pos = float(self.progress_bar.value())
+                self._sweep_dir = 1.0
+                self.progress_bar.setFormat("Compressing…")
+                self._sweep_timer.start()
         else:
-            if self.progress_bar.maximum() == 0:
-                self.progress_bar.setRange(0, 100)
+            if self._sweep_timer.isActive():
+                self._sweep_timer.stop()
+                self.progress_bar.setFormat("%p%  %v / 100")
             self.progress_bar.setValue(pct)
         self.status_lbl.setText(msg)
-        # Reading ticks ("stream: reading (N/M files)…") update the status label
-        # but are too noisy to log — only log milestones.
         if msg and ": reading " not in msg and ": compressing " not in msg:
             self._log(msg)
+
+    def _tick_sweep(self) -> None:
+        """Advance the sweep animation — runs in the main thread via QTimer."""
+        self._sweep_pos += self._sweep_dir * 0.8
+        if self._sweep_pos >= 95:
+            self._sweep_pos = 95.0
+            self._sweep_dir = -1.0
+        elif self._sweep_pos <= 5:
+            self._sweep_pos = 5.0
+            self._sweep_dir = 1.0
+        self.progress_bar.setValue(int(self._sweep_pos))
 
     def _on_build_done(self, result: BuildResult):
         if result.success:
@@ -1388,8 +1408,8 @@ class MainWindow(QMainWindow):
             self.open_folder_btn.setVisible(False)
 
     def _on_thread_done(self):
-        if self.progress_bar.maximum() == 0:
-            self.progress_bar.setRange(0, 100)
+        self._sweep_timer.stop()
+        self.progress_bar.setFormat("%p%  %v / 100")
         self.build_btn.setEnabled(True)
 
     def _on_new_project(self):
