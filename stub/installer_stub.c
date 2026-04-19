@@ -135,6 +135,8 @@ static int        g_btn_hover_install = 0;
 static int        g_btn_hover_cancel  = 0;
 static int        g_silent            = 0;
 static char       g_silent_dir[MAX_PATH] = {0};
+static char       g_user_desktop[MAX_PATH]  = {0}; /* per-user Desktop, captured pre-elevation */
+static char       g_user_programs[MAX_PATH] = {0}; /* per-user Start Menu\Programs, same */
 
 /* ---- Optional components ---- */
 typedef struct {
@@ -668,8 +670,9 @@ static int check_elevate(const char *path)
         "Elevation Required", MB_YESNO | MB_ICONQUESTION);
     if (answer != IDYES) return 0;
 
-    char args[MAX_PATH + 4];
-    snprintf(args, sizeof(args), "\"%s\"", path);
+    char args[MAX_PATH * 3 + 16];
+    snprintf(args, sizeof(args), "\"%s\" \"%s\" \"%s\"",
+             path, g_user_desktop, g_user_programs);
     SHELLEXECUTEINFOA sei = {0};
     sei.cbSize       = sizeof(sei);
     sei.lpVerb       = "runas";
@@ -743,22 +746,18 @@ static void create_shortcuts(const char *install_dir, int do_desktop, int do_sta
         char lnk[MAX_PATH];
         WCHAR wlnk[MAX_PATH];
 
-        if (do_startmenu) {
-            char programs[MAX_PATH] = {0};
-            SHGetFolderPathA(NULL, CSIDL_PROGRAMS, NULL, 0, programs);
+        if (do_startmenu && g_user_programs[0]) {
             char subdir[MAX_PATH];
             const char *folder = g_meta.app_name[0] ? g_meta.app_name : sname;
-            snprintf(subdir, MAX_PATH, "%s\\%s", programs, folder);
+            snprintf(subdir, MAX_PATH, "%s\\%s", g_user_programs, folder);
             CreateDirectoryA(subdir, NULL);
             snprintf(lnk, MAX_PATH, "%s\\%s.lnk", subdir, sname);
             MultiByteToWideChar(CP_ACP, 0, lnk, -1, wlnk, MAX_PATH);
             ppf->lpVtbl->Save(ppf, wlnk, TRUE);
         }
 
-        if (do_desktop) {
-            char desktop[MAX_PATH] = {0};
-            SHGetFolderPathA(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, desktop);
-            snprintf(lnk, MAX_PATH, "%s\\%s.lnk", desktop, sname);
+        if (do_desktop && g_user_desktop[0]) {
+            snprintf(lnk, MAX_PATH, "%s\\%s.lnk", g_user_desktop, sname);
             MultiByteToWideChar(CP_ACP, 0, lnk, -1, wlnk, MAX_PATH);
             ppf->lpVtbl->Save(ppf, wlnk, TRUE);
         }
@@ -1700,6 +1699,25 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 
     init_crc32_table();
     GetModuleFileNameA(NULL, g_exe_path, MAX_PATH);
+
+    /* Capture per-user shell folder paths before any UAC elevation.
+       If this is an elevated relaunch, argv[2]/argv[3] carry the original
+       user's paths (set by check_elevate before relaunching). */
+    SHGetFolderPathA(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, g_user_desktop);
+    SHGetFolderPathA(NULL, CSIDL_PROGRAMS,         NULL, 0, g_user_programs);
+    {
+        int argc_w = 0;
+        LPWSTR *argv_w = CommandLineToArgvW(GetCommandLineW(), &argc_w);
+        if (argv_w) {
+            if (argc_w >= 3 && argv_w[2][0])
+                WideCharToMultiByte(CP_ACP, 0, argv_w[2], -1,
+                                    g_user_desktop, MAX_PATH, NULL, NULL);
+            if (argc_w >= 4 && argv_w[3][0])
+                WideCharToMultiByte(CP_ACP, 0, argv_w[3], -1,
+                                    g_user_programs, MAX_PATH, NULL, NULL);
+            LocalFree(argv_w);
+        }
+    }
 
     int g_noverify = 0;  /* /NOVERIFY flag for silent mode */
 
