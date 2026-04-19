@@ -4,7 +4,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QUrl
+from PySide6.QtCore import (Qt, QThread, QTimer, Signal, QObject, QUrl,
+                             QPropertyAnimation, QSequentialAnimationGroup,
+                             QEasingCurve, QAbstractAnimation)
 from PySide6.QtGui import QFont, QTextCursor, QColor, QDesktopServices, QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -165,16 +167,24 @@ class MainWindow(QMainWindow):
         self._current_project_path: Optional[Path] = None
         self._current_repack_path: Optional[Path] = None
 
-        # Manual sweep animation used while LZMA compression blocks signals.
-        # Qt's built-in indeterminate animation doesn't fire with a custom
-        # QProgressBar::chunk stylesheet, so we drive it ourselves.
-        self._sweep_timer = QTimer(self)
-        self._sweep_timer.setInterval(30)
-        self._sweep_timer.timeout.connect(self._tick_sweep)
-        self._sweep_pos: float = 0.0
-        self._sweep_dir: float = 1.0
+        # QPropertyAnimation drives setValue() through Qt's C++ property system,
+        # so the bounce animation runs even when lzma holds the Python GIL.
+        # A Python-based QTimer slot can't fire under those conditions.
+        self._sweep_anim = QSequentialAnimationGroup(self)
+        for start, end in [(5, 90), (90, 5)]:
+            a = QPropertyAnimation(self)   # target set after progress_bar exists
+            a.setPropertyName(b"value")
+            a.setStartValue(start)
+            a.setEndValue(end)
+            a.setDuration(1100)
+            a.setEasingCurve(QEasingCurve.Type.InOutSine)
+            self._sweep_anim.addAnimation(a)
+        self._sweep_anim.setLoopCount(-1)
 
         self._build_ui()
+        # Wire animation target now that progress_bar exists.
+        for i in range(self._sweep_anim.animationCount()):
+            self._sweep_anim.animationAt(i).setTargetObject(self.progress_bar)
         self._connect_signals()
         self._on_engine_changed()  # set initial compression list
 
@@ -1330,31 +1340,19 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, pct: int, msg: str):
         compressing = bool(msg and ": compressing " in msg and "done" not in msg)
+        running = self._sweep_anim.state() == QAbstractAnimation.State.Running
         if compressing:
-            if not self._sweep_timer.isActive():
-                self._sweep_pos = float(self.progress_bar.value())
-                self._sweep_dir = 1.0
+            if not running:
                 self.progress_bar.setFormat("Compressing…")
-                self._sweep_timer.start()
+                self._sweep_anim.start()
         else:
-            if self._sweep_timer.isActive():
-                self._sweep_timer.stop()
+            if running:
+                self._sweep_anim.stop()
                 self.progress_bar.setFormat("%p%  %v / 100")
             self.progress_bar.setValue(pct)
         self.status_lbl.setText(msg)
         if msg and ": reading " not in msg and ": compressing " not in msg:
             self._log(msg)
-
-    def _tick_sweep(self) -> None:
-        """Advance the sweep animation — runs in the main thread via QTimer."""
-        self._sweep_pos += self._sweep_dir * 0.8
-        if self._sweep_pos >= 95:
-            self._sweep_pos = 95.0
-            self._sweep_dir = -1.0
-        elif self._sweep_pos <= 5:
-            self._sweep_pos = 5.0
-            self._sweep_dir = 1.0
-        self.progress_bar.setValue(int(self._sweep_pos))
 
     def _on_build_done(self, result: BuildResult):
         if result.success:
@@ -1408,7 +1406,7 @@ class MainWindow(QMainWindow):
             self.open_folder_btn.setVisible(False)
 
     def _on_thread_done(self):
-        self._sweep_timer.stop()
+        self._sweep_anim.stop()
         self.progress_bar.setFormat("%p%  %v / 100")
         self.build_btn.setEnabled(True)
 
