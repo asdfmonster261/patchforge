@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
         self._thread: Optional[QThread] = None
         self._current_project_path: Optional[Path] = None
         self._current_repack_path: Optional[Path] = None
+        self._output_dir: str = ""
 
         self._build_ui()
         self._connect_signals()
@@ -1023,6 +1024,11 @@ class MainWindow(QMainWindow):
         self.new_btn.clicked.connect(self._on_new_project)
         self.load_btn.clicked.connect(self._on_load_project)
         self.save_btn.clicked.connect(self._on_save_project)
+        self.open_folder_btn.clicked.connect(self._on_open_output_folder)
+
+    def _on_open_output_folder(self) -> None:
+        if self._output_dir:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._output_dir))
 
     # ------------------------------------------------------------------ #
     # Slot handlers                                                        #
@@ -1352,14 +1358,7 @@ class MainWindow(QMainWindow):
             self._log(f"   Output size: {_fmt_size(result.output_size)}")
             self.status_bar.showMessage(f"Built: {Path(result.output_path).name}")
             self.status_lbl.setText("Build complete")
-            out_dir = str(Path(result.output_path).parent)
-            try:
-                self.open_folder_btn.clicked.disconnect()
-            except RuntimeError:
-                pass
-            self.open_folder_btn.clicked.connect(
-                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(out_dir))
-            )
+            self._output_dir = str(Path(result.output_path).parent)
             self.open_folder_btn.setVisible(True)
         else:
             self._log(f"\n✗  Build failed: {result.error}", color=ERROR)
@@ -1379,14 +1378,7 @@ class MainWindow(QMainWindow):
             self._log(f"   Compression:  {ratio:.1f}% of original")
             self.status_bar.showMessage(f"Built: {Path(result.output_path).name}")
             self.status_lbl.setText("Build complete")
-            out_dir = str(Path(result.output_path).parent)
-            try:
-                self.open_folder_btn.clicked.disconnect()
-            except RuntimeError:
-                pass
-            self.open_folder_btn.clicked.connect(
-                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(out_dir))
-            )
+            self._output_dir = str(Path(result.output_path).parent)
             self.open_folder_btn.setVisible(True)
         else:
             self._log(f"\n✗  Repack failed: {result.error}", color=ERROR)
