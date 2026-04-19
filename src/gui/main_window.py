@@ -1167,6 +1167,12 @@ class MainWindow(QMainWindow):
         )
         form.addRow("Requires:", requires_edit)
 
+        shortcut_target_edit = QLineEdit(data.get("shortcut_target", "") if data else "")
+        shortcut_target_edit.setPlaceholderText(
+            "Override shortcut target for this component  (e.g. Crack\\Game.exe)"
+        )
+        form.addRow("Shortcut target:", shortcut_target_edit)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -1184,11 +1190,12 @@ class MainWindow(QMainWindow):
             if tok.isdigit() and int(tok) > 0:
                 requires.append(int(tok))
         return {
-            "label":           lbl,
-            "folder":          fld,
-            "default_checked": default_chk.isChecked(),
-            "group":           group_edit.text().strip(),
-            "requires":        requires,
+            "label":            lbl,
+            "folder":           fld,
+            "default_checked":  default_chk.isChecked(),
+            "group":            group_edit.text().strip(),
+            "requires":         requires,
+            "shortcut_target":  shortcut_target_edit.text().strip(),
         }
 
     @staticmethod
@@ -1198,7 +1205,8 @@ class MainWindow(QMainWindow):
         req = c.get("requires", [])
         req_str = f"  [requires: {', '.join(str(r) for r in req)}]" if req else ""
         folder_name = Path(c["folder"]).name if c.get("folder") else ""
-        return f"[{chk}]  {c['label']}  ({folder_name}){grp}{req_str}"
+        sc = f"  [→ {c['shortcut_target']}]" if c.get("shortcut_target") else ""
+        return f"[{chk}]  {c['label']}  ({folder_name}){grp}{req_str}{sc}"
 
     def _on_rp_comp_add(self):
         comp = self._component_dialog("Add Optional Component")

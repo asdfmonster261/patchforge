@@ -146,6 +146,7 @@ typedef struct {
     int  default_checked;
     int  requires[MAX_COMPONENTS];  /* 1-based indices of components this one depends on */
     int  num_requires;
+    char shortcut_target[512];      /* overrides g_meta.shortcut_target if non-empty */
     HWND hwnd_ctrl;
 } ComponentInfo;
 
@@ -298,6 +299,7 @@ static void json_parse_components(const char *json)
         json_get_str(tmp, "group", c->group, sizeof(c->group));
         c->num_requires    = json_parse_int_array(tmp, "requires",
                                                   c->requires, MAX_COMPONENTS);
+        json_get_str(tmp, "shortcut_target", c->shortcut_target, sizeof(c->shortcut_target));
         free(tmp);
 
         if (c->index > 0 && c->label[0])
@@ -1152,6 +1154,15 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 RegCloseKey(hkey);
                 break;
             }
+        }
+    }
+
+    /* If any installed component specifies a shortcut_target, the last one wins */
+    if (success) {
+        for (int ci = 0; ci < num_components; ci++) {
+            if (selected_comps[ci] && g_components[ci].shortcut_target[0])
+                snprintf(g_meta.shortcut_target, sizeof(g_meta.shortcut_target),
+                         "%s", g_components[ci].shortcut_target);
         }
     }
 

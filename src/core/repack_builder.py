@@ -125,11 +125,12 @@ def build(
         # Optional components metadata (installer renders checkboxes/radio buttons)
         "components": [
             {
-                "index":           i + 1,
-                "label":           c.get("label", f"Component {i + 1}"),
-                "group":           c.get("group", ""),
-                "default_checked": bool(c.get("default_checked", True)),
-                "requires":        [int(r) for r in c.get("requires", [])],
+                "index":            i + 1,
+                "label":            c.get("label", f"Component {i + 1}"),
+                "group":            c.get("group", ""),
+                "default_checked":  bool(c.get("default_checked", True)),
+                "requires":         [int(r) for r in c.get("requires", [])],
+                "shortcut_target":  c.get("shortcut_target", ""),
             }
             for i, c in enumerate(settings.components or [])
         ],
