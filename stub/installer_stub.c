@@ -739,7 +739,15 @@ static void create_shortcuts(const char *install_dir, int do_desktop, int do_sta
 
     psl->lpVtbl->SetPath(psl, target);
     psl->lpVtbl->SetWorkingDirectory(psl, install_dir);
-    psl->lpVtbl->SetIconLocation(psl, target, 0);
+
+    /* Prefer the uninstaller exe as icon source — it has the custom icon
+       PE-injected from the Python GUI. Fall back to the target exe. */
+    char icon_src[MAX_PATH];
+    if (g_meta.include_uninstaller && g_meta.uninstaller_size > 0)
+        snprintf(icon_src, MAX_PATH, "%s\\uninstall.exe", install_dir);
+    else
+        snprintf(icon_src, MAX_PATH, "%s", target);
+    psl->lpVtbl->SetIconLocation(psl, icon_src, 0);
 
     IPersistFile *ppf = NULL;
     if (SUCCEEDED(psl->lpVtbl->QueryInterface(psl, &IID_IPersistFile, (void **)&ppf))) {
