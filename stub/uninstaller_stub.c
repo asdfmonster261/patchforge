@@ -78,6 +78,8 @@ static char       g_install_registry_key[512]    = {0};
 static char       g_shortcut_name[256]           = {0};
 static int        g_shortcut_create_desktop      = 0;
 static int        g_shortcut_create_startmenu    = 0;
+static char       g_user_desktop[MAX_PATH]       = {0};
+static char       g_user_programs[MAX_PATH]      = {0};
 static UninstFile *g_files                       = NULL;
 static int         g_num_files                   = 0;
 static int         g_installed_comps[32]         = {0};
@@ -445,23 +447,19 @@ static void delete_shortcuts(void)
     const char *sname = g_shortcut_name[0] ? g_shortcut_name : g_app_name;
     if (!sname || !sname[0]) return;
 
-    if (g_shortcut_create_startmenu) {
-        char programs[MAX_PATH] = {0};
-        SHGetFolderPathA(NULL, CSIDL_PROGRAMS, NULL, 0, programs);
+    if (g_shortcut_create_startmenu && g_user_programs[0]) {
         const char *folder = g_app_name[0] ? g_app_name : sname;
         char subdir[MAX_PATH];
-        snprintf(subdir, MAX_PATH, "%s\\%s", programs, folder);
+        snprintf(subdir, MAX_PATH, "%s\\%s", g_user_programs, folder);
         char lnk[MAX_PATH];
         snprintf(lnk, MAX_PATH, "%s\\%s.lnk", subdir, sname);
         DeleteFileA(lnk);
         RemoveDirectoryA(subdir);
     }
 
-    if (g_shortcut_create_desktop) {
-        char desktop[MAX_PATH] = {0};
-        SHGetFolderPathA(NULL, CSIDL_DESKTOP, NULL, 0, desktop);
+    if (g_shortcut_create_desktop && g_user_desktop[0]) {
         char lnk[MAX_PATH];
-        snprintf(lnk, MAX_PATH, "%s\\%s.lnk", desktop, sname);
+        snprintf(lnk, MAX_PATH, "%s\\%s.lnk", g_user_desktop, sname);
         DeleteFileA(lnk);
     }
 }
@@ -785,6 +783,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev,
 
     GetModuleFileNameA(NULL, g_own_path, MAX_PATH);
     g_relocated = (strstr(lpCmdLine, "--relocated") != NULL);
+
+    SHGetFolderPathA(NULL, CSIDL_DESKTOPDIRECTORY, NULL, 0, g_user_desktop);
+    SHGetFolderPathA(NULL, CSIDL_PROGRAMS,         NULL, 0, g_user_programs);
 
     if (!read_uninst_data()) {
         MessageBoxA(NULL,
