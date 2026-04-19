@@ -82,6 +82,7 @@ static int         g_num_installed_comps         = 0;
 static HKEY        g_arp_hive                    = NULL;
 static char        g_arp_key_path[512]           = {0};
 static int         g_uninst_done                 = 0;
+static int         g_relocated                   = 0;
 
 static HWND   g_hwnd              = NULL;
 static HWND   g_hwnd_progress     = NULL;
@@ -346,23 +347,72 @@ static void prune_empty_dirs(const char *dir)
 /* Self-delete via temp batch script                                     */
 /* ==================================================================== */
 
-static void self_delete(void)
+
+/* ==================================================================== */
+/* Self-relocation                                                       */
+/* ==================================================================== */
+
+/* Copy own exe to %TEMP% and relaunch with --relocated.
+   If successful, never returns (calls ExitProcess).
+   If copy or launch fails, returns so we run in place as a fallback. */
+static void relocate_and_relaunch(void)
 {
     char temp_dir[MAX_PATH];
     GetTempPathA(MAX_PATH, temp_dir);
+    int tlen = (int)strlen(temp_dir);
+    if (tlen > 0 && temp_dir[tlen - 1] == '\\') temp_dir[--tlen] = '\0';
+
+    char temp_path[MAX_PATH];
+    snprintf(temp_path, sizeof(temp_path),
+             "%s\\pf_uninst_%08lx.exe", temp_dir, (unsigned long)GetTickCount());
+
+    if (!CopyFileA(g_own_path, temp_path, FALSE)) return;
+
+    char cmd_line[MAX_PATH + 32];
+    snprintf(cmd_line, sizeof(cmd_line), "\"%s\" --relocated", temp_path);
+
+    STARTUPINFOA si = {0}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {0};
+    if (CreateProcessA(NULL, cmd_line, NULL, NULL, FALSE, 0,
+                       NULL, NULL, &si, &pi)) {
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        ExitProcess(0);
+    }
+    /* Launch failed — delete temp copy and fall through to run in place. */
+    DeleteFileA(temp_path);
+}
+
+/* Delete the temp copy of ourselves after we exit. */
+static void cleanup_temp_self(void)
+{
+    char temp_dir[MAX_PATH];
+    GetTempPathA(MAX_PATH, temp_dir);
+    int tlen = (int)strlen(temp_dir);
+    if (tlen > 0 && temp_dir[tlen - 1] == '\\') temp_dir[--tlen] = '\0';
+
     char bat[MAX_PATH];
-    snprintf(bat, sizeof(bat), "%s~pf_uninst_del.bat", temp_dir);
+    snprintf(bat, sizeof(bat), "%s\\~pf_uninst_cleanup.bat", temp_dir);
+
     FILE *f = fopen(bat, "w");
     if (!f) return;
     fprintf(f,
         "@echo off\r\n"
-        "timeout /t 2 /nobreak >nul\r\n"
+        "ping -n 3 127.0.0.1 >nul\r\n"
         "del /f /q \"%s\"\r\n"
-        "rd /q \"%s\" 2>nul\r\n"
         "del /f /q \"%%~f0\"\r\n",
-        g_own_path, g_install_dir);
+        g_own_path);
     fclose(f);
-    ShellExecuteA(NULL, "open", bat, NULL, NULL, SW_HIDE);
+
+    char cmd_line[MAX_PATH + 64];
+    snprintf(cmd_line, sizeof(cmd_line), "cmd.exe /c \"\"%s\"\"", bat);
+
+    STARTUPINFOA si = {0}; si.cb = sizeof(si);
+    PROCESS_INFORMATION pi = {0};
+    CreateProcessA(NULL, cmd_line, NULL, NULL, FALSE,
+                   CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    if (pi.hProcess) CloseHandle(pi.hProcess);
+    if (pi.hThread)  CloseHandle(pi.hThread);
 }
 
 /* ==================================================================== */
@@ -431,6 +481,15 @@ static DWORD WINAPI uninstall_thread(LPVOID param)
     /* Delete A/RP entry */
     if (g_arp_hive && g_arp_key_path[0])
         RegDeleteKeyA(g_arp_hive, g_arp_key_path);
+
+    /* Running from %TEMP% — delete original uninstall.exe then the game dir.
+       Both should succeed: we're not in the game dir, nothing else is running. */
+    if (g_relocated) {
+        char uninst_path[MAX_PATH];
+        snprintf(uninst_path, MAX_PATH, "%s\\uninstall.exe", g_install_dir);
+        DeleteFileA(uninst_path);
+        RemoveDirectoryA(g_install_dir);
+    }
 
     res->ok = (res->num_errors == 0);
     PostMessageA(g_hwnd, WM_UNINST_DONE, (WPARAM)res->ok, (LPARAM)res);
@@ -560,7 +619,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_DESTROY:
-        if (g_uninst_done) self_delete();
+        if (g_uninst_done && g_relocated)
+            cleanup_temp_self();
         PostQuitMessage(0);
         break;
 
@@ -667,9 +727,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev,
                    LPSTR lpCmdLine, int nCmdShow)
 {
-    (void)hPrev; (void)lpCmdLine;
+    (void)hPrev;
 
     GetModuleFileNameA(NULL, g_own_path, MAX_PATH);
+    g_relocated = (strstr(lpCmdLine, "--relocated") != NULL);
 
     if (!read_uninst_data()) {
         MessageBoxA(NULL,
@@ -678,6 +739,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev,
             "Uninstaller Error", MB_OK | MB_ICONERROR);
         return 1;
     }
+
+    /* If running from the game directory, copy to %TEMP% and relaunch so we
+       can freely delete the game folder at the end of uninstallation. */
+    if (!g_relocated)
+        relocate_and_relaunch();  /* exits on success; falls through on failure */
 
     if (!read_arp_registry() || !g_install_dir[0]) {
         MessageBoxA(NULL,
