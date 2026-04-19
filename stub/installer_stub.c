@@ -869,11 +869,14 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                     int pct = (int)(files_done * 100 / total_to_install);
                     if (g_hwnd) {
                         PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
-                        char *log_msg = (char *)malloc(128);
-                        if (log_msg) {
-                            snprintf(log_msg, 128, "Extracting %u / %u: %s",
-                                     files_done, total_to_install, e->path);
-                            PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                        /* Log every 50th file and the last one to keep the log brief */
+                        if (files_done % 50 == 0 || files_done == total_to_install) {
+                            char *log_msg = (char *)malloc(128);
+                            if (log_msg) {
+                                snprintf(log_msg, 128, "Extracting %u / %u…",
+                                         files_done, total_to_install);
+                                PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                            }
                         }
                     }
                 }
@@ -1138,15 +1141,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ES_READONLY | WS_VSCROLL,
             20, 180 + vo + co, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        {
-            char _dbg[128];
-            snprintf(_dbg, sizeof(_dbg),
-                "[dbg] meta.verify_crc32=%d hwnd_chk_verify=%s vo=%d",
-                g_meta.verify_crc32,
-                g_hwnd_chk_verify ? "ok" : "null",
-                vo);
-            log_append(_dbg);
-        }
+        SendMessageA(g_hwnd_log, EM_SETLIMITTEXT, 0, 0);  /* remove default ~32K char cap */
 
         /* Progress bar */
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
@@ -1386,10 +1381,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     }
 
-    case WM_INSTALL_DONE: {
-        char _dbg2[64];
-        snprintf(_dbg2, sizeof(_dbg2), "[dbg] install_done wp=%d lp=%d", (int)wp, (int)lp);
-        log_append(_dbg2);
+    case WM_INSTALL_DONE:
         if (wp) {
             if (lp)
                 log_append("Integrity check passed.");
@@ -1417,7 +1409,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         EnableWindow(g_hwnd_btn_install, TRUE);
         break;
-    }
 
     case WM_TIMER:
         if (wp == TIMER_CLOSE) {
