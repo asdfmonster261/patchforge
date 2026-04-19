@@ -893,6 +893,14 @@ static int do_install(const char *install_dir, int low_load,
     free(outbuf);
     fclose(f);
 
+    if (g_verify_crc32 && success && g_hwnd) {
+        char *log_msg = (char *)malloc(64);
+        if (log_msg) {
+            snprintf(log_msg, 64, "Integrity verified: %u files OK.", files_done);
+            PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+        }
+    }
+
     /* Write game registry key */
     if (success && g_meta.install_registry_key[0]) {
         HKEY hkey = NULL;
