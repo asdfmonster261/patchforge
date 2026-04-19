@@ -1340,16 +1340,26 @@ class MainWindow(QMainWindow):
 
     def _on_progress(self, pct: int, msg: str):
         compressing = bool(msg and ": compressing " in msg and "done" not in msg)
+        # In parallel mode multiple streams run simultaneously — a "reading"
+        # update from stream N must not stop the sweep started by stream M.
+        # Only stop the sweep when we reach a terminal stage (≥95 % or
+        # "Archive complete"), not on every non-compressing message.
+        terminal = pct >= 95 or (msg and "Archive complete" in msg)
         running = self._sweep_anim.state() == QAbstractAnimation.State.Running
+
         if compressing:
             if not running:
                 self.progress_bar.setFormat("Compressing…")
                 self._sweep_anim.start()
-        else:
-            if running:
+        elif running:
+            if terminal:
                 self._sweep_anim.stop()
                 self.progress_bar.setFormat("%p%  %v / 100")
+                self.progress_bar.setValue(pct)
+            # else: keep sweeping — another stream is still compressing
+        else:
             self.progress_bar.setValue(pct)
+
         self.status_lbl.setText(msg)
         if msg and ": reading " not in msg and ": compressing " not in msg:
             self._log(msg)
