@@ -177,7 +177,7 @@ def build(
     components: Optional[list] = None,
     threads: int = 1,
     progress: Optional[Callable[[int, str], None]] = None,
-) -> tuple[bytes, int, int]:
+) -> tuple[bytes, int, int, list[dict]]:
     """
     Walk *game_dir* (and any optional component folders), compress into
     an XPACK01 blob.
@@ -187,7 +187,8 @@ def build(
                 >1 = xz CLI MT, plus stream-level ProcessPoolExecutor when
                 multiple streams exist).
 
-    Returns (xpack01_blob, total_files, total_uncompressed_bytes).
+    Returns (xpack01_blob, total_files, total_uncompressed_bytes, file_list).
+    file_list is [{"path": str, "component": int, "offset": int, "size": int}].
     progress(pct 0-100, message) is called throughout.
     """
     def _prog(pct: int, msg: str) -> None:
@@ -257,7 +258,7 @@ def build(
     blob = _encode(all_file_entries, streams_out)
     _prog(100, "Archive complete.")
 
-    return blob, total_files, total_uncompressed
+    return blob, total_files, total_uncompressed, all_file_entries
 
 
 # ---------------------------------------------------------------------------

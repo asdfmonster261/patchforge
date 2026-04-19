@@ -105,7 +105,7 @@ HDIFF_SRCS = \
     $(LZMA)/CpuArch.c \
     $(LZMA)/Alloc.c
 
-.PHONY: all win32 full full32 installer clean deps
+.PHONY: all win32 full full32 installer uninstaller clean deps
 
 all: $(OUT)/hdiffpatch_x64.exe $(OUT)/xdelta3_x64.exe $(OUT)/jojodiff_x64.exe
 	@echo "=== All x64 stubs built ==="
@@ -115,6 +115,9 @@ win32: $(OUT)/hdiffpatch_x86.exe $(OUT)/xdelta3_x86.exe $(OUT)/jojodiff_x86.exe
 
 installer: $(OUT)/installer_x64.exe $(OUT)/installer_x86.exe
 	@echo "=== Installer stubs built ==="
+
+uninstaller: $(OUT)/uninstaller_x64.exe $(OUT)/uninstaller_x86.exe
+	@echo "=== Uninstaller stubs built ==="
 
 # Full stubs with zlib+bzip2 support (requires build_deps.sh first)
 full: $(OUT)/hdiffpatch_full_x64.exe $(OUT)/xdelta3_x64.exe $(OUT)/jojodiff_x64.exe
@@ -219,6 +222,29 @@ $(OUT)/installer_x86.exe: installer_stub.c | $(OUT)
 	    installer_stub.c \
 	    -L$(XZ32)/lib -llzma \
 	    $(LIBS) \
+	    -o $@
+	$(STRIP32) $@
+	@echo "Built: $@  ($$(du -sh $@ | cut -f1))"
+
+# Uninstaller flags: no liblzma needed
+CFLAGS_UNINST64 = -O2 -Wall -mwindows -DNDEBUG
+CFLAGS_UNINST32 = -O2 -Wall -mwindows -DNDEBUG
+LIBS_UNINST = -ldwmapi -ladvapi32 -lshell32
+
+# Uninstaller stub x64
+$(OUT)/uninstaller_x64.exe: uninstaller_stub.c | $(OUT)
+	$(CC64) $(CFLAGS_UNINST64) \
+	    uninstaller_stub.c \
+	    $(LIBS_UNINST) \
+	    -o $@
+	$(STRIP64) $@
+	@echo "Built: $@  ($$(du -sh $@ | cut -f1))"
+
+# Uninstaller stub x86
+$(OUT)/uninstaller_x86.exe: uninstaller_stub.c | $(OUT)
+	$(CC32) $(CFLAGS_UNINST32) \
+	    uninstaller_stub.c \
+	    $(LIBS_UNINST) \
 	    -o $@
 	$(STRIP32) $@
 	@echo "Built: $@  ($$(du -sh $@ | cut -f1))"

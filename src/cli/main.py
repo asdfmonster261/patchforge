@@ -423,6 +423,10 @@ def _add_repack(sub):
                        'Example: \'{"label":"DLC","folder":"dlc/","default_checked":true,"group":""}\''
                    ))
 
+    # Uninstaller
+    p.add_argument("--no-uninstaller", action="store_true", dest="no_uninstaller",
+                   help="Omit the uninstaller and Add/Remove Programs registration")
+
     # Save project after build
     p.add_argument("--save-project", metavar="FILE",
                    help="Save resolved settings to a .xpr project file after building")
@@ -466,6 +470,7 @@ def _cmd_repack(args):
     if args.detect_running_exe:    settings.detect_running_exe    = args.detect_running_exe
     if args.close_delay is not None:           settings.close_delay           = args.close_delay
     if args.required_free_space_gb is not None: settings.required_free_space_gb = args.required_free_space_gb
+    if args.no_uninstaller:                    settings.include_uninstaller   = False
 
     # Parse --component flags
     if args.components_json:

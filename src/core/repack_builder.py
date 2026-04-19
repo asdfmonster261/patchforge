@@ -78,7 +78,7 @@ def build(
         _progress(10 + int(pct * 0.65), msg)
 
     try:
-        blob, total_files, uncompressed_size = build_archive(
+        blob, total_files, uncompressed_size, file_list = build_archive(
             game_dir,
             quality=settings.compression,
             components=settings.components or [],
@@ -113,6 +113,8 @@ def build(
         "detect_running_exe":      settings.detect_running_exe,
         "close_delay":             settings.close_delay,
         "required_free_space_gb":  settings.required_free_space_gb,
+        # Uninstaller
+        "include_uninstaller": settings.include_uninstaller,
         # Optional components metadata (installer renders checkboxes/radio buttons)
         "components": [
             {
@@ -155,10 +157,12 @@ def build(
         package_repack(
             arch=settings.arch,
             pack_blob=blob,
+            file_list=file_list,
             metadata=metadata,
             output_path=output_path,
             icon_path=icon,
             backdrop_data=backdrop_data,
+            include_uninstaller=settings.include_uninstaller,
         )
     except Exception as exc:
         return RepackResult(success=False, error=str(exc))
