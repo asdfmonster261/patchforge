@@ -1693,7 +1693,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ensure_dir(path);
 
             EnableWindow(g_hwnd_btn_install, FALSE);
-            set_status(repair_mode ? "Repairing\xe2\x80\xa6" : "Installing\xe2\x80\xa6", COL_TEXT);
+            set_status(repair_mode ? "Repairing..." : "Installing...", COL_TEXT);
 
             int low_load = (SendMessageA(g_hwnd_chk_lowload, BM_GETCHECK, 0, 0) == BST_CHECKED);
             int do_verify = g_meta.verify_crc32
@@ -1765,7 +1765,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (g_meta.close_delay > 0) {
                 g_close_countdown = g_meta.close_delay;
                 char buf[64];
-                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds\xe2\x80\xa6",
+                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds...",
                          g_close_countdown);
                 set_status(buf, COL_SUCCESS);
                 SetTimer(hwnd, TIMER_CLOSE, 1000, NULL);
@@ -1791,7 +1791,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 DestroyWindow(hwnd);
             } else {
                 char buf[64];
-                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds\xe2\x80\xa6",
+                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds...",
                          g_close_countdown);
                 set_status(buf, COL_SUCCESS);
             }
