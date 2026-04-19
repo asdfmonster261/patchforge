@@ -1170,11 +1170,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
              co = num_components * 24
              so = number of shortcut checkboxes * 24  */
         int co = g_num_components * 24;
-        int so = 0;
-        if (g_meta.shortcut_target[0]) {
-            if (g_meta.shortcut_create_startmenu) so += 24;
-            if (g_meta.shortcut_create_desktop)   so += 24;
-        }
+        /* so: 2 shortcut checkboxes (Start Menu + Desktop) if a target was configured */
+        int so = g_meta.shortcut_target[0] ? 48 : 0;
 
         /* Title */
         HWND lbl = CreateWindowExA(0, "STATIC",
@@ -1293,26 +1290,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             }
         }
 
-        /* Shortcut checkboxes (only shown when shortcut_target is configured) */
+        /* Shortcut checkboxes — shown whenever a target exe is configured.
+           Default checked state mirrors the Python GUI setting. */
         if (g_meta.shortcut_target[0]) {
             int sy = 154 + vo + co;
-            if (g_meta.shortcut_create_startmenu) {
-                g_hwnd_chk_sc_startmenu = CreateWindowExA(0, "BUTTON",
-                    "Create Start Menu shortcut",
-                    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                    20, sy, 460, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
-                SendMessageA(g_hwnd_chk_sc_startmenu, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-                SendMessageA(g_hwnd_chk_sc_startmenu, BM_SETCHECK, BST_CHECKED, 0);
-                sy += 24;
-            }
-            if (g_meta.shortcut_create_desktop) {
-                g_hwnd_chk_sc_desktop = CreateWindowExA(0, "BUTTON",
-                    "Create Desktop shortcut",
-                    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                    20, sy, 460, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
-                SendMessageA(g_hwnd_chk_sc_desktop, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-                SendMessageA(g_hwnd_chk_sc_desktop, BM_SETCHECK, BST_CHECKED, 0);
-            }
+            g_hwnd_chk_sc_startmenu = CreateWindowExA(0, "BUTTON",
+                "Create Start Menu shortcut",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                20, sy, 460, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
+            SendMessageA(g_hwnd_chk_sc_startmenu, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            SendMessageA(g_hwnd_chk_sc_startmenu, BM_SETCHECK,
+                         g_meta.shortcut_create_startmenu ? BST_CHECKED : BST_UNCHECKED, 0);
+            sy += 24;
+            g_hwnd_chk_sc_desktop = CreateWindowExA(0, "BUTTON",
+                "Create Desktop shortcut",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+                20, sy, 460, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
+            SendMessageA(g_hwnd_chk_sc_desktop, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            SendMessageA(g_hwnd_chk_sc_desktop, BM_SETCHECK,
+                         g_meta.shortcut_create_desktop ? BST_CHECKED : BST_UNCHECKED, 0);
         }
 
         /* Disk space label (shifts down when components/verify/shortcut checkboxes present) */
@@ -1828,11 +1824,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
        Each optional component adds 24 px to the client height. */
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     int verify_offset = g_meta.verify_crc32 ? 24 : 0;
-    int shortcut_offset = 0;
-    if (g_meta.shortcut_target[0]) {
-        if (g_meta.shortcut_create_startmenu) shortcut_offset += 24;
-        if (g_meta.shortcut_create_desktop)   shortcut_offset += 24;
-    }
+    int shortcut_offset = g_meta.shortcut_target[0] ? 48 : 0;
     RECT wr = {0, 0, 720, 412 + verify_offset + g_num_components * 24 + shortcut_offset};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
