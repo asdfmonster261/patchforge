@@ -869,14 +869,11 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                     int pct = (int)(files_done * 100 / total_to_install);
                     if (g_hwnd) {
                         PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
-                        /* Log every 50th file and the last one to keep the log brief */
-                        if (files_done % 50 == 0 || files_done == total_to_install) {
-                            char *log_msg = (char *)malloc(128);
-                            if (log_msg) {
-                                snprintf(log_msg, 128, "Extracting %u / %u…",
-                                         files_done, total_to_install);
-                                PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
-                            }
+                        char *log_msg = (char *)malloc(MAX_PATH + 32);
+                        if (log_msg) {
+                            snprintf(log_msg, MAX_PATH + 32, "Extracting %u / %u: %s",
+                                     files_done, total_to_install, e->path);
+                            PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
                         }
                     }
                 }
