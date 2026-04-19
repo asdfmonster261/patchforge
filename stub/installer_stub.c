@@ -57,6 +57,9 @@
 /* ---- Component limits ---- */
 #define MAX_COMPONENTS   16
 
+/* ---- Backdrop layout ---- */
+#define IMG_MAX_H  300   /* maximum backdrop image height in window (px) */
+
 /* ---- Thread messages ---- */
 #define WM_INSTALL_DONE  (WM_USER + 1)
 #define WM_INSTALL_PROG  (WM_USER + 2)
@@ -137,6 +140,10 @@ static int        g_silent            = 0;
 static char       g_silent_dir[MAX_PATH] = {0};
 static char       g_user_desktop[MAX_PATH]  = {0}; /* per-user Desktop, captured pre-elevation */
 static char       g_user_programs[MAX_PATH] = {0}; /* per-user Start Menu\Programs, same */
+static int        g_img_h             = 0;   /* rendered backdrop height in window */
+static int        g_foot_sep_y        = 0;   /* y of footer separator line */
+static HWND       g_hwnd_subtitle     = NULL; /* note/desc label (dim colour) */
+static HWND       g_hwnd_summary      = NULL; /* files·size label (dim colour) */
 
 /* ---- Optional components ---- */
 typedef struct {
@@ -1242,82 +1249,97 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_hwnd = hwnd;
         enable_dark_titlebar(hwnd);
 
-        /* Dynamic y-offsets below the low-load checkbox:
-             vo = 24 if verify checkbox shown, else 0
-             co = num_components * 24
-             so = number of shortcut checkboxes * 24  */
-        int co = g_num_components * 24;
-        /* so: 2 shortcut checkboxes (Start Menu + Desktop) if a target was configured */
-        int so = g_meta.shortcut_target[0] ? 48 : 0;
+        const int lx   = 20;    /* left margin */
+        const int crw  = 680;   /* control row width */
+        const int rmax = 700;   /* right edge (lx + crw) */
 
-        /* Title */
-        HWND lbl = CreateWindowExA(0, "STATIC",
+        /* cy: first pixel below the image separator */
+        int cy = g_img_h + 2;
+
+        /* ── Title + version ─────────────────────────────────────── */
+        int title_y = cy + 14;
+        HWND lbl_title = CreateWindowExA(0, "STATIC",
             g_meta.app_name[0] ? g_meta.app_name : "PatchForge Installer",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 16, 680, 30, hwnd, NULL, NULL, NULL);
-        SendMessageA(lbl, WM_SETFONT, (WPARAM)g_font_title, TRUE);
+            lx, title_y, 500, 28, hwnd, NULL, NULL, NULL);
+        SendMessageA(lbl_title, WM_SETFONT, (WPARAM)g_font_title, TRUE);
 
-        /* Change summary line: "X files · Y GB" */
+        if (g_meta.version[0]) {
+            char verbuf[80];
+            snprintf(verbuf, sizeof(verbuf), "v%s", g_meta.version);
+            HWND lbl_ver = CreateWindowExA(0, "STATIC", verbuf,
+                WS_CHILD | WS_VISIBLE | SS_RIGHT,
+                rmax - 150, title_y + 8, 150, 16, hwnd, NULL, NULL, NULL);
+            SendMessageA(lbl_ver, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        }
+
+        /* ── Subtitle: app_note > description (dim text) ─────────── */
+        int subtitle_h = 0;
         {
-            char cbuf[128] = {0};
-            if (g_meta.total_files > 0) {
-                double gb = (double)g_meta.total_uncompressed_size
-                            / (1024.0 * 1024.0 * 1024.0);
-                if (gb >= 1.0)
-                    snprintf(cbuf, sizeof(cbuf), "%d files  \xB7  %.1f GB installed",
-                             g_meta.total_files, gb);
-                else {
-                    double mb = (double)g_meta.total_uncompressed_size
-                                / (1024.0 * 1024.0);
-                    snprintf(cbuf, sizeof(cbuf), "%d files  \xB7  %.1f MB installed",
-                             g_meta.total_files, mb);
-                }
-                HWND clbl = CreateWindowExA(0, "STATIC", cbuf,
+            const char *sub = g_meta.app_note[0]    ? g_meta.app_note
+                            : g_meta.description[0] ? g_meta.description : NULL;
+            if (sub) {
+                g_hwnd_subtitle = CreateWindowExA(0, "STATIC", sub,
                     WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    20, 50, 680, 16, hwnd, NULL, NULL, NULL);
-                SendMessageA(clbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                    lx, title_y + 30, crw, 16, hwnd, NULL, NULL, NULL);
+                SendMessageA(g_hwnd_subtitle, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                subtitle_h = 18;
             }
         }
 
-        /* Description */
-        if (g_meta.description[0]) {
-            HWND dlbl = CreateWindowExA(0, "STATIC", g_meta.description,
+        /* ── Summary: "N files  ·  X GB installed" (dim text) ───── */
+        int summary_h = 0;
+        if (g_meta.total_files > 0) {
+            char cbuf[128] = {0};
+            double gb = (double)g_meta.total_uncompressed_size / (1024.0 * 1024.0 * 1024.0);
+            if (gb >= 1.0)
+                snprintf(cbuf, sizeof(cbuf), "%d files  \xB7  %.1f GB installed",
+                         g_meta.total_files, gb);
+            else {
+                double mb = (double)g_meta.total_uncompressed_size / (1024.0 * 1024.0);
+                snprintf(cbuf, sizeof(cbuf), "%d files  \xB7  %.0f MB installed",
+                         g_meta.total_files, mb);
+            }
+            g_hwnd_summary = CreateWindowExA(0, "STATIC", cbuf,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 68, 680, 16, hwnd, NULL, NULL, NULL);
-            SendMessageA(dlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+                lx, title_y + 30 + subtitle_h, crw, 16, hwnd, NULL, NULL, NULL);
+            SendMessageA(g_hwnd_summary, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            summary_h = 18;
         }
 
-        /* Install location label */
-        HWND flbl = CreateWindowExA(0, "STATIC", "Install location:",
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 102, 110, 18, hwnd, NULL, NULL, NULL);
-        SendMessageA(flbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        /* ── Install path ────────────────────────────────────────── */
+        int path_y = title_y + 30 + subtitle_h + summary_h + 12;
 
-        /* Install path edit */
-        g_hwnd_filepath = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+        HWND lbl_path = CreateWindowExA(0, "STATIC", "Install to:",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            lx, path_y, 100, 16, hwnd, NULL, NULL, NULL);
+        SendMessageA(lbl_path, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+
+        g_hwnd_filepath = CreateWindowExA(0, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            135, 100, 479, 22, hwnd, (HMENU)IDC_FILEPATH, NULL, NULL);
+            lx, path_y + 18, 568, 26, hwnd, (HMENU)IDC_FILEPATH, NULL, NULL);
         SendMessageA(g_hwnd_filepath, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
         CreateWindowExA(0, "BUTTON", "Browse...",
             WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            622, 100, 78, 22, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
+            lx + 572, path_y + 18, 108, 26, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
 
-        /* Reduce system load checkbox */
+        /* ── Options ─────────────────────────────────────────────── */
+        int opt_y = path_y + 18 + 26 + 10;
+
         g_hwnd_chk_lowload = CreateWindowExA(0, "BUTTON",
-            "Reduce system load during install (slower, uses less CPU)",
+            "Reduce system load during install (slower)",
             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            20, 130, 460, 20, hwnd, (HMENU)IDC_CHK_LOWLOAD, NULL, NULL);
+            lx, opt_y, crw, 20, hwnd, (HMENU)IDC_CHK_LOWLOAD, NULL, NULL);
         SendMessageA(g_hwnd_chk_lowload, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
-        /* Verify integrity checkbox — only shown when pack was built with CRC32 */
         int vo = 0;
         if (g_meta.verify_crc32) {
             vo = 24;
             g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON",
                 "Verify file integrity after installation",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                20, 154, 460, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
+                lx, opt_y + 24, crw, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
             SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
         }
@@ -1340,14 +1362,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 }
                 c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
                     btn_style,
-                    20, 154 + vo + ci * 24, 680, 22,
+                    lx, opt_y + 24 + vo + ci * 24, crw, 20,
                     hwnd, (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
                 SendMessageA(c->hwnd_ctrl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
 
-            /* Set initial checked states.  For radio groups, BM_SETCHECK does
-               not auto-uncheck siblings — only BN_CLICKED does.  Track which
-               groups already have a checked button so at most one is set. */
             char checked_groups[MAX_COMPONENTS][64];
             int  num_checked_groups = 0;
             for (int ci = 0; ci < g_num_components; ci++) {
@@ -1368,63 +1387,66 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         refresh_component_states();
 
-        /* Shortcut checkboxes — shown whenever a target exe is configured.
-           Default checked state mirrors the Python GUI setting. */
+        int co = g_num_components * 24;
+
+        /* Shortcut checkboxes */
+        int so = 0;
         if (g_meta.shortcut_target[0]) {
-            int sy = 154 + vo + co;
+            int sy = opt_y + 24 + vo + co;
             g_hwnd_chk_sc_startmenu = CreateWindowExA(0, "BUTTON",
                 "Create Start Menu shortcut",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                20, sy, 460, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
+                lx, sy, crw, 20, hwnd, (HMENU)IDC_CHK_SC_STARTMENU, NULL, NULL);
             SendMessageA(g_hwnd_chk_sc_startmenu, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             SendMessageA(g_hwnd_chk_sc_startmenu, BM_SETCHECK,
                          g_meta.shortcut_create_startmenu ? BST_CHECKED : BST_UNCHECKED, 0);
-            sy += 24;
             g_hwnd_chk_sc_desktop = CreateWindowExA(0, "BUTTON",
                 "Create Desktop shortcut",
                 WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                20, sy, 460, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
+                lx, sy + 24, crw, 20, hwnd, (HMENU)IDC_CHK_SC_DESKTOP, NULL, NULL);
             SendMessageA(g_hwnd_chk_sc_desktop, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             SendMessageA(g_hwnd_chk_sc_desktop, BM_SETCHECK,
                          g_meta.shortcut_create_desktop ? BST_CHECKED : BST_UNCHECKED, 0);
+            so = 48;
         }
 
-        /* Disk space label (shifts down when components/verify/shortcut checkboxes present) */
+        /* ── Disk space label ────────────────────────────────────── */
+        int space_y = opt_y + 24 + vo + co + so + 6;
         g_hwnd_space_lbl = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 154 + vo + co + so, 680, 16, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
+            lx, space_y, crw, 14, hwnd, (HMENU)IDC_SPACE_LBL, NULL, NULL);
         SendMessageA(g_hwnd_space_lbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
-        /* Log area */
-        g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+        /* ── Log area ────────────────────────────────────────────── */
+        int log_y = space_y + 16;
+        g_hwnd_log = CreateWindowExA(0, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            20, 180 + vo + co + so, 680, 122, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            lx, log_y, crw, 48, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        SendMessageA(g_hwnd_log, EM_SETLIMITTEXT, 0, 0);  /* remove default ~32K char cap */
+        SendMessageA(g_hwnd_log, EM_SETLIMITTEXT, 0, 0);
 
-        /* Progress bar */
+        /* ── Progress bar ────────────────────────────────────────── */
+        int prog_y = log_y + 52;
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 310 + vo + co + so, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+            lx, prog_y, crw, 10, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
         SetWindowLongA(g_hwnd_progress, GWLP_USERDATA, 0);
 
-        /* Status */
+        /* ── Status ──────────────────────────────────────────────── */
+        int stat_y = prog_y + 14;
         g_hwnd_status = CreateWindowExA(0, "STATIC",
             "Select an install folder and click Install.",
             WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 326 + vo + co + so, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+            lx, stat_y, 500, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
         SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
 
-        /* Install / Cancel buttons */
-        g_hwnd_btn_install = CreateWindowExA(0, "BUTTON", "Install",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            530, 354 + vo + co + so, 80, 28, hwnd, (HMENU)IDC_BTN_INSTALL, NULL, NULL);
-        CreateWindowExA(0, "BUTTON", "Cancel",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            620, 354 + vo + co + so, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+        /* ── Footer separator y (painted in WM_ERASEBKGND) ──────── */
+        g_foot_sep_y = stat_y + 20;
 
-        /* Bottom-left info: company · copyright · contact */
+        /* ── Footer: info left, Cancel + Install right ───────────── */
+        int foot_y = g_foot_sep_y + 8;
+
         {
             char info[512] = {0};
             int pos = 0;
@@ -1441,26 +1463,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (pos > 0) {
                 HWND infolbl = CreateWindowExA(0, "STATIC", info,
                     WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    20, 358 + vo + co + so, 500, 16, hwnd, NULL, NULL, NULL);
+                    lx, foot_y + 7, 400, 14, hwnd, NULL, NULL, NULL);
                 SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             }
         }
 
-        /* Version line */
-        if (g_meta.version[0]) {
-            char verbuf[80];
-            snprintf(verbuf, sizeof(verbuf), "Version %s", g_meta.version);
-            HWND verlbl = CreateWindowExA(0, "STATIC", verbuf,
-                WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 378 + vo + co + so, 500, 14, hwnd, NULL, NULL, NULL);
-            SendMessageA(verlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        }
+        g_hwnd_btn_install = CreateWindowExA(0, "BUTTON", "Install",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            rmax - 88, foot_y, 88, 28, hwnd, (HMENU)IDC_BTN_INSTALL, NULL, NULL);
+        CreateWindowExA(0, "BUTTON", "Cancel",
+            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+            rmax - 88 - 8 - 80, foot_y, 80, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
 
-        /* Backdrop */
-        g_backdrop_bmp = load_backdrop();
-
-        /* Pre-populate install path: argv[1] on elevated relaunch, otherwise
-           the directory containing the installer exe + install_subdir. */
+        /* ── Pre-populate install path ───────────────────────────── */
         {
             char default_path[MAX_PATH] = {0};
             int argc = 0;
@@ -1489,11 +1504,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CTLCOLORSTATIC: {
         HDC  dc  = (HDC)wp;
         HWND ctl = (HWND)lp;
-        SetTextColor(dc, COL_TEXT);
         if (ctl == g_hwnd_log) {
+            SetTextColor(dc, COL_TEXT_DIM);
             SetBkColor(dc, COL_LOG_BG);
             return (LRESULT)g_brush_log;
         }
+        if (ctl == g_hwnd_subtitle || ctl == g_hwnd_summary)
+            SetTextColor(dc, COL_TEXT_DIM);
+        else
+            SetTextColor(dc, COL_TEXT);
         SetBkColor(dc, COL_BG);
         return (LRESULT)g_brush_bg;
     }
@@ -1515,23 +1534,60 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         HDC dc = (HDC)wp;
         RECT r; GetClientRect(hwnd, &r);
         FillRect(dc, &r, g_brush_bg);
-        if (g_backdrop_bmp) {
+        if (g_backdrop_bmp && g_img_h > 0) {
             HDC mdc = CreateCompatibleDC(dc);
             SelectObject(mdc, g_backdrop_bmp);
             BITMAP bm = {0};
             GetObjectA(g_backdrop_bmp, sizeof(bm), &bm);
+            /* Center-crop source vertically to preserve aspect ratio */
+            int src_h_shown = (r.right > 0 && bm.bmWidth > 0)
+                ? (int)((int64_t)bm.bmWidth * g_img_h / r.right)
+                : bm.bmHeight;
+            int src_y = 0, src_h = bm.bmHeight;
+            if (src_h_shown < src_h) {
+                src_y = (src_h - src_h_shown) / 2;
+                src_h = src_h_shown;
+            }
             SetStretchBltMode(dc, HALFTONE);
-            StretchBlt(dc, 0, 0, r.right, r.bottom,
-                       mdc, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+            SetBrushOrgEx(dc, 0, 0, NULL);
+            StretchBlt(dc, 0, 0, r.right, g_img_h,
+                       mdc, 0, src_y, bm.bmWidth, src_h, SRCCOPY);
             DeleteDC(mdc);
+            /* 2 px accent separator between image and controls */
+            HBRUSH sep = CreateSolidBrush(COL_ACCENT);
+            RECT   sep_r = {0, g_img_h, r.right, g_img_h + 2};
+            FillRect(dc, &sep_r, sep);
+            DeleteObject(sep);
+        }
+        /* Footer separator */
+        if (g_foot_sep_y > 0) {
+            HBRUSH fsep = CreateSolidBrush(COL_BORDER);
+            RECT   fsep_r = {20, g_foot_sep_y, r.right - 20, g_foot_sep_y + 1};
+            FillRect(dc, &fsep_r, fsep);
+            DeleteObject(fsep);
         }
         return 1;
     }
 
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT *)lp;
-        COLORREF bg = (dis->CtlID == IDC_BTN_INSTALL) ? COL_ACCENT : COL_BG_LIGHT;
-        paint_button(dis, bg, COL_TEXT);
+        if (dis->CtlID == IDC_PROGRESS) {
+            int pct = (int)GetWindowLongA(dis->hwndItem, GWLP_USERDATA);
+            RECT r = dis->rcItem;
+            HBRUSH bg = CreateSolidBrush(COL_PROGRESS_BG);
+            FillRect(dis->hDC, &r, bg);
+            DeleteObject(bg);
+            if (pct > 0) {
+                RECT fill = r;
+                fill.right = r.left + (r.right - r.left) * pct / 100;
+                HBRUSH fg = CreateSolidBrush(COL_ACCENT);
+                FillRect(dis->hDC, &fill, fg);
+                DeleteObject(fg);
+            }
+        } else {
+            COLORREF bg = (dis->CtlID == IDC_BTN_INSTALL) ? COL_ACCENT : COL_BG_LIGHT;
+            paint_button(dis, bg, COL_TEXT);
+        }
         return TRUE;
     }
 
@@ -1755,26 +1811,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     }
 
-    /* Custom progress bar drawing */
-    if (msg == WM_DRAWITEM) {
-        DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT *)lp;
-        if (dis->CtlID == IDC_PROGRESS) {
-            int pct = (int)GetWindowLongA(dis->hwndItem, GWLP_USERDATA);
-            RECT r = dis->rcItem;
-            HBRUSH bg = CreateSolidBrush(COL_PROGRESS_BG);
-            FillRect(dis->hDC, &r, bg);
-            DeleteObject(bg);
-            if (pct > 0) {
-                RECT fill = r;
-                fill.right = r.left + (r.right - r.left) * pct / 100;
-                HBRUSH fg = CreateSolidBrush(COL_ACCENT);
-                FillRect(dis->hDC, &fill, fg);
-                DeleteObject(fg);
-            }
-            return TRUE;
-        }
-    }
-
     return DefWindowProcA(hwnd, msg, wp, lp);
 }
 
@@ -1897,6 +1933,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                                 CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                 DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
 
+    /* Pre-load backdrop so we know the image height before sizing the window */
+    g_backdrop_bmp = load_backdrop();
+    if (g_backdrop_bmp) {
+        BITMAP bm = {0};
+        GetObjectA(g_backdrop_bmp, sizeof(bm), &bm);
+        if (bm.bmWidth > 0 && bm.bmHeight > 0) {
+            g_img_h = (int)((int64_t)720 * bm.bmHeight / bm.bmWidth);
+            if (g_img_h > IMG_MAX_H) g_img_h = IMG_MAX_H;
+            if (g_img_h < 60)        g_img_h = 60;
+        }
+    }
+
     /* Window class */
     WNDCLASSEXA wc = {0};
     wc.cbSize        = sizeof(wc);
@@ -1912,13 +1960,18 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                       : g_meta.app_name[0]      ? g_meta.app_name
                       : "PatchForge Installer";
 
-    /* Compute outer window size from desired client area so the non-client
-       frame (title bar + borders) never clips controls at the bottom.
-       Each optional component adds 24 px to the client height. */
+    /* Compute client height from layout constants (mirrors WM_CREATE positions).
+       Base 300 px covers: separator + header + path row + low-load chk +
+       space label + log + progress + status + footer separator + footer + padding.
+       Each optional element adds its own height. */
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    int verify_offset = g_meta.verify_crc32 ? 24 : 0;
+    int verify_offset   = g_meta.verify_crc32       ? 24 : 0;
     int shortcut_offset = g_meta.shortcut_target[0] ? 48 : 0;
-    RECT wr = {0, 0, 720, 412 + verify_offset + g_num_components * 24 + shortcut_offset};
+    int hdr_extra       = (g_meta.app_note[0] || g_meta.description[0]) ? 18 : 0;
+    int sum_extra       = (g_meta.total_files > 0)  ? 18 : 0;
+    int client_h = g_img_h + 300 + hdr_extra + sum_extra
+                 + verify_offset + g_num_components * 24 + shortcut_offset;
+    RECT wr = {0, 0, 720, client_h};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
         0, "PFGInstaller", title, wstyle,
