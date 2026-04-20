@@ -55,10 +55,14 @@ def build(
     if settings.arch not in ("x64", "x86"):
         return RepackResult(success=False,
                             error=f"Invalid architecture: {settings.arch!r} (must be x64 or x86)")
-    from .xpack_archive import _QUALITY_MAP
-    if settings.compression not in _QUALITY_MAP:
+    if settings.codec not in ("lzma", "zstd"):
         return RepackResult(success=False,
-                            error=f"Unknown compression quality: {settings.compression!r}")
+                            error=f"Unknown codec: {settings.codec!r} (must be lzma or zstd)")
+    from .xpack_archive import _QUALITY_MAP, _ZSTD_LEVEL_MAP
+    valid_qualities = _ZSTD_LEVEL_MAP if settings.codec == "zstd" else _QUALITY_MAP
+    if settings.compression not in valid_qualities:
+        return RepackResult(success=False,
+                            error=f"Unknown compression quality for {settings.codec}: {settings.compression!r}")
 
     for i, c in enumerate(settings.components or []):
         cf = Path(c.get("folder", ""))
@@ -83,6 +87,7 @@ def build(
             quality=settings.compression,
             components=settings.components or [],
             threads=settings.threads,
+            codec=settings.codec,
             progress=_archive_prog,
         )
     except Exception as exc:
@@ -116,6 +121,7 @@ def build(
         # Uninstaller
         "include_uninstaller": settings.include_uninstaller,
         # Integrity
+        "codec":        settings.codec,
         "verify_crc32": settings.verify_crc32,
         # Shortcuts
         "shortcut_target":           settings.shortcut_target,

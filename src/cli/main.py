@@ -390,10 +390,13 @@ def _add_repack(sub):
                    help="Informational version string for the exe (e.g. 1.0.0.0)")
 
     # Compression
-    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra64"],
-                   help="Compression quality (default: max)")
+    p.add_argument("--codec", choices=["lzma", "zstd"], default=None,
+                   help="Compression codec: lzma (XZ/LZMA2) or zstd (default: lzma)")
+    p.add_argument("--compression",
+                   choices=["fast", "normal", "max", "ultra64", "ultra"],
+                   help="Quality preset (lzma: fast/normal/max/ultra64; zstd: fast/normal/max/ultra; default: max)")
     p.add_argument("--threads", metavar="N", type=int,
-                   help="Compression threads: 1 = stdlib lzma; >1 = xz CLI MT (default: 1)")
+                   help="Compression threads (default: 1)")
     p.add_argument("--arch", choices=["x64", "x86"],
                    help="Output exe architecture (default: x64)")
 
@@ -483,6 +486,7 @@ def _cmd_repack(args):
     if args.window_title:          settings.window_title          = args.window_title
     if args.installer_exe_name:    settings.installer_exe_name    = args.installer_exe_name
     if args.installer_exe_version: settings.installer_exe_version = args.installer_exe_version
+    if args.codec:                 settings.codec                 = args.codec
     if args.compression:           settings.compression           = args.compression
     if args.threads:               settings.threads               = args.threads
     if args.arch:                  settings.arch                  = args.arch
@@ -570,7 +574,8 @@ def _add_new_repack_project(sub):
     p.add_argument("--installer-exe-version", metavar="VER",  dest="installer_exe_version")
     p.add_argument("--game-dir",    metavar="DIR",  dest="game_dir")
     p.add_argument("--output-dir",  metavar="DIR",  dest="output_dir")
-    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra64"])
+    p.add_argument("--codec", choices=["lzma", "zstd"])
+    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra64", "ultra"])
     p.add_argument("--threads",     metavar="N",    type=int)
     p.add_argument("--arch",        choices=["x64", "x86"])
     p.add_argument("--icon-path",   metavar="FILE", dest="icon_path")
@@ -612,6 +617,7 @@ def _cmd_new_repack_project(args):
     if args.installer_exe_version: s.installer_exe_version = args.installer_exe_version
     if args.game_dir:             s.game_dir             = args.game_dir
     if args.output_dir:           s.output_dir           = args.output_dir
+    if args.codec:                s.codec                = args.codec
     if args.compression:          s.compression          = args.compression
     if args.threads:              s.threads              = args.threads
     if args.arch:                 s.arch                 = args.arch

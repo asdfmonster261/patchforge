@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <lzma.h>
+#include "third_party/zstd/zstddeclib.c"
 
 /* ---- Colours (dark theme, same palette as patcher stubs) ---- */
 #define COL_BG          RGB(0x12, 0x12, 0x18)
@@ -101,6 +102,7 @@ typedef struct {
     char    shortcut_name[256];
     int     shortcut_create_desktop;
     int     shortcut_create_startmenu;
+    char    codec[16];   /* "lzma" (default) or "zstd" */
 } InstallMeta;
 
 /* ---- Per-file table entry ---- */
@@ -387,6 +389,8 @@ static int read_install_meta(void)
     g_meta.shortcut_create_desktop   = json_get_bool(buf, "shortcut_create_desktop",   0);
     g_meta.shortcut_create_startmenu = json_get_bool(buf, "shortcut_create_startmenu", 0);
     json_get_str(buf, "arp_subkey", g_meta.arp_subkey, sizeof(g_meta.arp_subkey));
+    json_get_str(buf, "codec",     g_meta.codec,      sizeof(g_meta.codec));
+    if (!g_meta.codec[0]) strncpy(g_meta.codec, "lzma", sizeof(g_meta.codec) - 1);
 
     json_parse_components(buf);
 
@@ -889,6 +893,106 @@ struct InstallResult {
     uint32_t files_replaced;  /* files actually written */
 };
 
+/* ---- Shared file-dispatch state (used by both LZMA and zstd branches) ---- */
+typedef struct {
+    const char  *install_dir;
+    int          repair_mode;
+    int          verify_crc32;
+    int          low_load;
+    uint32_t     first_entry;
+    uint32_t     last_entry;
+    uint32_t     total_to_install;
+    /* mutable */
+    int         *success;
+    uint32_t    *files_done;
+    uint32_t    *files_skipped;
+    uint32_t    *files_written;
+    /* per-file state */
+    uint32_t     cur_file;
+    uint64_t     cur_file_written;
+    uint32_t     cur_crc32;
+    int          skip_cur;
+    HANDLE       hf;
+} DispatchState;
+
+/* Consume up to `len` bytes from `ptr`, writing them to the current file.
+ * Advances ds->cur_file when a file is complete.  Returns 0 on hard error. */
+static int dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
+{
+    while (len > 0 && ds->cur_file < ds->last_entry) {
+        PackEntry *e  = &g_entries[ds->cur_file];
+        uint64_t need = e->size - ds->cur_file_written;
+        size_t write  = (size_t)(len < need ? len : need);
+
+        if (ds->hf == INVALID_HANDLE_VALUE && !ds->skip_cur && e->size > 0) {
+            char fpath[MAX_PATH];
+            snprintf(fpath, MAX_PATH, "%s\\%s", ds->install_dir, e->path);
+            for (char *fp = fpath; *fp; fp++) if (*fp == '/') *fp = '\\';
+            if (ds->repair_mode && e->crc32 && file_crc32_matches(fpath, e->crc32)) {
+                ds->skip_cur = 1;
+            } else {
+                ensure_dir_for_file(fpath);
+                ds->hf = CreateFileA(fpath, GENERIC_WRITE, 0, NULL,
+                                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            }
+        }
+
+        if (ds->hf != INVALID_HANDLE_VALUE && write > 0) {
+            DWORD written = 0;
+            if (!WriteFile(ds->hf, ptr, (DWORD)write, &written, NULL))
+                *ds->success = 0;
+            ds->cur_crc32 = crc32_update(ds->cur_crc32, ptr, write);
+        }
+
+        ptr                  += write;
+        len                  -= write;
+        ds->cur_file_written += write;
+
+        if (ds->cur_file_written >= e->size || e->size == 0) {
+            if (ds->hf != INVALID_HANDLE_VALUE) {
+                CloseHandle(ds->hf);
+                ds->hf = INVALID_HANDLE_VALUE;
+            }
+            if (!ds->skip_cur && ds->verify_crc32 && e->crc32
+                && ds->cur_crc32 != e->crc32) {
+                *ds->success = 0;
+                if (g_hwnd) {
+                    char *log_msg = (char *)malloc(MAX_PATH);
+                    if (log_msg) {
+                        snprintf(log_msg, MAX_PATH, "CRC32 MISMATCH: %s", e->path);
+                        PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                    }
+                }
+            }
+            int was_skipped   = ds->skip_cur;
+            ds->skip_cur      = 0;
+            ds->cur_crc32     = 0;
+            ds->cur_file_written = 0;
+            ds->cur_file++;
+            (*ds->files_done)++;
+            if (was_skipped) (*ds->files_skipped)++;
+            else             (*ds->files_written)++;
+
+            int pct = (int)(*ds->files_done * 100 / ds->total_to_install);
+            if (g_hwnd) {
+                PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
+                if (!was_skipped) {
+                    char *log_msg = (char *)malloc(MAX_PATH + 32);
+                    if (log_msg) {
+                        snprintf(log_msg, MAX_PATH + 32,
+                                 ds->repair_mode ? "Repairing %u / %u: %s"
+                                                 : "Extracting %u / %u: %s",
+                                 *ds->files_done, ds->total_to_install, e->path);
+                        PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                    }
+                }
+            }
+            if (ds->low_load) Sleep(1);
+        }
+    }
+    return 1;
+}
+
 static int do_install(const char *install_dir, int low_load, int verify_crc32,
                       int repair_mode, const int *selected_comps, int num_components,
                       int shortcut_desktop, int shortcut_startmenu,
@@ -966,125 +1070,97 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             continue;
         }
 
-        /* Decompress stream and extract files */
-        lzma_stream strm = LZMA_STREAM_INIT;
-        if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK) {
-            success = 0;
-            break;
-        }
+        /* Build shared dispatch state for this stream */
+        DispatchState ds = {
+            .install_dir     = install_dir,
+            .repair_mode     = repair_mode,
+            .verify_crc32    = verify_crc32,
+            .low_load        = low_load,
+            .first_entry     = first_entry,
+            .last_entry      = last_entry,
+            .total_to_install= total_to_install,
+            .success         = &success,
+            .files_done      = &files_done,
+            .files_skipped   = &files_skipped,
+            .files_written   = &files_written,
+            .cur_file        = first_entry,
+            .cur_file_written= 0,
+            .cur_crc32       = 0,
+            .skip_cur        = 0,
+            .hf              = INVALID_HANDLE_VALUE,
+        };
 
-        uint64_t    total_read       = 0;
-        uint32_t    cur_file         = first_entry;
-        uint64_t    cur_file_written = 0;
-        uint32_t    cur_crc32        = 0;
-        int         skip_cur         = 0;   /* repair mode: skip this file */
-        HANDLE      hf               = INVALID_HANDLE_VALUE;
-        lzma_action action           = LZMA_RUN;
+        int use_zstd = (strcmp(g_meta.codec, "zstd") == 0);
 
-        strm.next_in  = NULL;
-        strm.avail_in = 0;
+        if (use_zstd) {
+            /* ---- zstd decompression ---- */
+            ZSTD_DStream *zds = ZSTD_createDStream();
+            if (!zds) { success = 0; break; }
+            ZSTD_initDStream(zds);
 
-        while (1) {
-            if (strm.avail_in == 0 && total_read < csize) {
+            uint64_t total_read = 0;
+            while (total_read < csize && success) {
                 size_t to_read = IN_SZ < (csize - total_read)
                                  ? IN_SZ : (size_t)(csize - total_read);
                 size_t got = fread(inbuf, 1, to_read, f);
-                strm.next_in  = inbuf;
-                strm.avail_in = (uint32_t)got;
-                total_read   += got;
-                if (total_read >= csize) action = LZMA_FINISH;
+                if (got == 0) break;
+                total_read += got;
+
+                ZSTD_inBuffer  zin  = { inbuf, got, 0 };
+                while (zin.pos < zin.size && success) {
+                    ZSTD_outBuffer zout = { outbuf, OUT_SZ, 0 };
+                    size_t ret = ZSTD_decompressStream(zds, &zout, &zin);
+                    if (ZSTD_isError(ret)) { success = 0; break; }
+                    if (zout.pos > 0)
+                        dispatch_chunk(&ds, (const uint8_t *)outbuf, zout.pos);
+                }
+                if (low_load) Sleep(1);
+            }
+            if (ds.hf != INVALID_HANDLE_VALUE) { CloseHandle(ds.hf); ds.hf = INVALID_HANDLE_VALUE; }
+            ZSTD_freeDStream(zds);
+        } else {
+            /* ---- LZMA decompression ---- */
+            lzma_stream strm = LZMA_STREAM_INIT;
+            if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK) {
+                success = 0;
+                break;
             }
 
-            strm.next_out  = outbuf;
-            strm.avail_out = (uint32_t)OUT_SZ;
+            uint64_t    total_read = 0;
+            lzma_action action     = LZMA_RUN;
 
-            lzma_ret ret = lzma_code(&strm, action);
-            size_t produced = OUT_SZ - strm.avail_out;
+            strm.next_in  = NULL;
+            strm.avail_in = 0;
 
-            uint8_t *ptr = outbuf;
-            size_t   rem = produced;
-
-            while (rem > 0 && cur_file < last_entry) {
-                PackEntry *e = &g_entries[cur_file];
-                uint64_t need  = e->size - cur_file_written;
-                size_t   write = (size_t)(rem < need ? rem : need);
-
-                if (hf == INVALID_HANDLE_VALUE && !skip_cur && e->size > 0) {
-                    char fpath[MAX_PATH];
-                    snprintf(fpath, MAX_PATH, "%s\\%s", install_dir, e->path);
-                    for (char *fp = fpath; *fp; fp++) if (*fp == '/') *fp = '\\';
-                    /* Repair mode: skip if on-disk CRC32 already matches stored value */
-                    if (repair_mode && e->crc32 && file_crc32_matches(fpath, e->crc32)) {
-                        skip_cur = 1;
-                    } else {
-                        ensure_dir_for_file(fpath);
-                        hf = CreateFileA(fpath, GENERIC_WRITE, 0, NULL,
-                                         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-                    }
+            while (1) {
+                if (strm.avail_in == 0 && total_read < csize) {
+                    size_t to_read = IN_SZ < (csize - total_read)
+                                     ? IN_SZ : (size_t)(csize - total_read);
+                    size_t got = fread(inbuf, 1, to_read, f);
+                    strm.next_in  = inbuf;
+                    strm.avail_in = (uint32_t)got;
+                    total_read   += got;
+                    if (total_read >= csize) action = LZMA_FINISH;
                 }
 
-                if (hf != INVALID_HANDLE_VALUE && write > 0) {
-                    DWORD written = 0;
-                    if (!WriteFile(hf, ptr, (DWORD)write, &written, NULL))
-                        success = 0;
-                    cur_crc32 = crc32_update(cur_crc32, ptr, write);
-                }
+                strm.next_out  = outbuf;
+                strm.avail_out = (uint32_t)OUT_SZ;
 
-                ptr              += write;
-                rem              -= write;
-                cur_file_written += write;
+                lzma_ret ret    = lzma_code(&strm, action);
+                size_t produced = OUT_SZ - strm.avail_out;
 
-                if (cur_file_written >= e->size || e->size == 0) {
-                    if (hf != INVALID_HANDLE_VALUE) {
-                        CloseHandle(hf);
-                        hf = INVALID_HANDLE_VALUE;
-                    }
-                    if (!skip_cur && verify_crc32 && e->crc32 && cur_crc32 != e->crc32) {
-                        success = 0;
-                        if (g_hwnd) {
-                            char *log_msg = (char *)malloc(MAX_PATH);
-                            if (log_msg) {
-                                snprintf(log_msg, MAX_PATH,
-                                         "CRC32 MISMATCH: %s", e->path);
-                                PostMessageA(g_hwnd, WM_LOG_MSG,
-                                             (WPARAM)log_msg, 0);
-                            }
-                        }
-                    }
-                    int was_skipped = skip_cur;
-                    skip_cur         = 0;
-                    cur_crc32        = 0;
-                    cur_file_written = 0;
-                    cur_file++;
-                    files_done++;
-                    if (was_skipped) files_skipped++;
-                    else             files_written++;
+                if (produced > 0)
+                    dispatch_chunk(&ds, outbuf, produced);
 
-                    int pct = (int)(files_done * 100 / total_to_install);
-                    if (g_hwnd) {
-                        PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
-                        if (!was_skipped) {
-                            char *log_msg = (char *)malloc(MAX_PATH + 32);
-                            if (log_msg) {
-                                snprintf(log_msg, MAX_PATH + 32,
-                                         repair_mode ? "Repairing %u / %u: %s"
-                                                     : "Extracting %u / %u: %s",
-                                         files_done, total_to_install, e->path);
-                                PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
-                            }
-                        }
-                    }
-                }
+                if (low_load) Sleep(1);
+
+                if (ret == LZMA_STREAM_END) break;
+                if (ret != LZMA_OK) { success = 0; break; }
             }
 
-            if (low_load) Sleep(1);
-
-            if (ret == LZMA_STREAM_END) break;
-            if (ret != LZMA_OK) { success = 0; break; }
+            if (ds.hf != INVALID_HANDLE_VALUE) { CloseHandle(ds.hf); ds.hf = INVALID_HANDLE_VALUE; }
+            lzma_end(&strm);
         }
-
-        if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
-        lzma_end(&strm);
     }
 
     free(inbuf);
