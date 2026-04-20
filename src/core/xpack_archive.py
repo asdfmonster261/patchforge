@@ -93,13 +93,20 @@ def _compress(data: bytes, quality: str, threads: int = 1, codec: str = "lzma") 
       threads == 1 uses stdlib lzma (single-threaded).
 
     codec == "zstd":
-      Uses the ``zstandard`` Python package (supports MT natively).
+      Delegates to the ``zstd`` CLI (avoids Python-binding version mismatches).
     """
     if codec == "zstd":
-        import zstandard
         level = _ZSTD_LEVEL_MAP.get(quality, 19)
-        cctx = zstandard.ZstdCompressor(level=level, threads=threads if threads > 1 else 1)
-        return cctx.compress(data)
+        cmd = ["zstd", f"-{level}", f"-T{threads}", "-c"]
+        if level == 22:
+            cmd = ["zstd", "--ultra", "-22", f"-T{threads}", "-c"]
+        result = subprocess.run(cmd, input=data, capture_output=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"zstd failed (level={level}, T={threads}): "
+                + result.stderr.decode("utf-8", errors="replace")[:300]
+            )
+        return result.stdout
 
     # --- LZMA path ---
     if not data:
