@@ -144,6 +144,7 @@ static char       g_user_programs[MAX_PATH] = {0}; /* per-user Start Menu\Progra
 static int        g_img_h             = 0;   /* rendered backdrop height in window */
 static int        g_foot_sep_y        = 0;   /* y of footer separator line */
 static HWND       g_hwnd_subtitle     = NULL; /* app_note label (dim colour) */
+static HWND       g_hwnd_desc        = NULL; /* description label (dim colour) */
 static HWND       g_hwnd_summary      = NULL; /* files·size label (dim colour) */
 static HWND       g_hwnd_sec_settings = NULL; /* "SETTINGS" section header (dim) */
 static HWND       g_hwnd_sec_comps    = NULL; /* "OPTIONAL COMPONENTS" section header (dim) */
@@ -1315,10 +1316,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         int desc_h = 0;
         if (g_meta.description[0]) {
-            HWND lbl_desc = CreateWindowExA(0, "STATIC", g_meta.description,
+            g_hwnd_desc = CreateWindowExA(0, "STATIC", g_meta.description,
                 WS_CHILD | WS_VISIBLE | SS_LEFT,
                 lx, title_y + 30 + subtitle_h, crw, 16, hwnd, NULL, NULL, NULL);
-            SendMessageA(lbl_desc, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            SendMessageA(g_hwnd_desc, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
             desc_h = 18;
         }
 
@@ -1587,7 +1588,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SetBkColor(dc, COL_LOG_BG);
             return (LRESULT)g_brush_log;
         }
-        if (ctl == g_hwnd_subtitle || ctl == g_hwnd_summary
+        if (ctl == g_hwnd_subtitle || ctl == g_hwnd_desc || ctl == g_hwnd_summary
                 || ctl == g_hwnd_sec_settings || ctl == g_hwnd_sec_comps)
             SetTextColor(dc, COL_TEXT_DIM);
         else
