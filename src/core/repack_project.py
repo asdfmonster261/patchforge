@@ -41,7 +41,8 @@ class RepackSettings:
     close_delay: int = 0             # seconds to auto-close after success (0 = stay open)
     required_free_space_gb: float = 0.0
 
-    # Compression threads (1 = single-threaded stdlib; >1 = xz CLI MT)
+    # Compression codec and threads
+    codec: str = "lzma"   # "lzma" | "zstd"
     threads: int = 1
 
     # Uninstaller

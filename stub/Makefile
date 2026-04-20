@@ -83,8 +83,10 @@ CFLAGS_XD3_32 = $(CFLAGS_XD3_BASE) \
 CFLAGS_JOJO = $(CFLAGS_COMMON)
 
 # Installer stub flags: only needs liblzma
-CFLAGS_INST64 = $(CFLAGS_COMMON) -I$(XZ64)/include
-CFLAGS_INST32 = $(CFLAGS_COMMON) -I$(XZ32)/include
+# Installer stub flags: liblzma + zstd (via amalgamation included directly in .c)
+ZSTD_INC = $(TP)/zstd
+CFLAGS_INST64 = $(CFLAGS_COMMON) -I$(XZ64)/include -I$(ZSTD_INC)
+CFLAGS_INST32 = $(CFLAGS_COMMON) -I$(XZ32)/include -I$(ZSTD_INC)
 
 LIBS     = -lcomdlg32 -lshell32 -ldwmapi -ladvapi32 -lole32 -luuid -lwindowscodecs
 LIBS_FULL64 = -L$(ZLIB64)/lib -L$(BZ2_64)/lib -lz -lbz2 $(LIBS)

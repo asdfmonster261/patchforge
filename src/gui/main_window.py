@@ -28,7 +28,11 @@ from ..core.project import ProjectSettings, save as save_project, load as load_p
 from ..core.patch_builder import build, BuildResult
 from ..core.repack_project import RepackSettings, save as save_repack, load as load_repack
 from ..core.repack_builder import build as build_repack, RepackResult
-from ..core.xpack_archive import QUALITY_LABELS as REPACK_QUALITY_LABELS, THREAD_OPTIONS as REPACK_THREAD_OPTIONS
+from ..core.xpack_archive import (
+    LZMA_QUALITY_LABELS as REPACK_LZMA_QUALITY_LABELS,
+    ZSTD_QUALITY_LABELS as REPACK_ZSTD_QUALITY_LABELS,
+    THREAD_OPTIONS as REPACK_THREAD_OPTIONS,
+)
 from ..core import verification
 from ..core import recent_files as _recent
 
@@ -831,16 +835,20 @@ class MainWindow(QMainWindow):
         cg.setColumnStretch(1, 1)
         cg.setColumnStretch(3, 1)
 
-        cg.addWidget(QLabel("Compression:"), 0, 0)
-        self.rp_comp_combo = QComboBox()
-        for key, label in REPACK_QUALITY_LABELS.items():
-            self.rp_comp_combo.addItem(label, userData=key)
-        # Default to "max"
-        for i in range(self.rp_comp_combo.count()):
-            if self.rp_comp_combo.itemData(i) == "max":
-                self.rp_comp_combo.setCurrentIndex(i)
-                break
-        cg.addWidget(self.rp_comp_combo, 0, 1)
+        cg.addWidget(QLabel("Codec:"), 0, 0)
+        rp_codec_w = QWidget()
+        rp_codec_l = QHBoxLayout(rp_codec_w)
+        rp_codec_l.setContentsMargins(0, 0, 0, 0)
+        self.rp_codec_lzma = QRadioButton("LZMA")
+        self.rp_codec_zstd = QRadioButton("Zstd")
+        self.rp_codec_lzma.setChecked(True)
+        self._rp_codec_group = QButtonGroup()
+        self._rp_codec_group.addButton(self.rp_codec_lzma)
+        self._rp_codec_group.addButton(self.rp_codec_zstd)
+        rp_codec_l.addWidget(self.rp_codec_lzma)
+        rp_codec_l.addWidget(self.rp_codec_zstd)
+        rp_codec_l.addStretch()
+        cg.addWidget(rp_codec_w, 0, 1)
 
         cg.addWidget(QLabel("Architecture:"), 0, 2)
         rp_arch_w = QWidget()
@@ -857,11 +865,15 @@ class MainWindow(QMainWindow):
         rp_arch_l.addStretch()
         cg.addWidget(rp_arch_w, 0, 3)
 
-        cg.addWidget(QLabel("Threads:"), 1, 0)
+        cg.addWidget(QLabel("Quality:"), 1, 0)
+        self.rp_comp_combo = QComboBox()
+        cg.addWidget(self.rp_comp_combo, 1, 1)
+
+        cg.addWidget(QLabel("Threads:"), 1, 2)
         self.rp_threads_combo = QComboBox()
         for t in REPACK_THREAD_OPTIONS:
             self.rp_threads_combo.addItem(str(t), userData=t)
-        cg.addWidget(self.rp_threads_combo, 1, 1)
+        cg.addWidget(self.rp_threads_combo, 1, 3)
 
         layout.addWidget(comp_grp)
 
@@ -1012,6 +1024,9 @@ class MainWindow(QMainWindow):
     def _connect_signals(self):
         self.engine_combo.currentIndexChanged.connect(self._on_engine_changed)
         self.comp_combo.currentIndexChanged.connect(self._on_compression_changed)
+        self.rp_codec_lzma.toggled.connect(self._on_rp_codec_changed)
+        self.rp_codec_zstd.toggled.connect(self._on_rp_codec_changed)
+        self._on_rp_codec_changed()  # populate quality combo on startup
 
         self.find_manual.toggled.connect(self._on_find_method_changed)
         self.find_registry.toggled.connect(self._on_find_method_changed)
@@ -1070,6 +1085,22 @@ class MainWindow(QMainWindow):
 
         self.comp_combo.blockSignals(False)
         self._on_compression_changed()
+
+    def _on_rp_codec_changed(self):
+        codec = "zstd" if self.rp_codec_zstd.isChecked() else "lzma"
+        quality_map = REPACK_ZSTD_QUALITY_LABELS if codec == "zstd" else REPACK_LZMA_QUALITY_LABELS
+        default_key = "max"
+        current = self.rp_comp_combo.currentData()
+        self.rp_comp_combo.blockSignals(True)
+        self.rp_comp_combo.clear()
+        for key, label in quality_map.items():
+            self.rp_comp_combo.addItem(label, userData=key)
+        restore = current if current in quality_map else default_key
+        for i in range(self.rp_comp_combo.count()):
+            if self.rp_comp_combo.itemData(i) == restore:
+                self.rp_comp_combo.setCurrentIndex(i)
+                break
+        self.rp_comp_combo.blockSignals(False)
 
     def _on_compression_changed(self):
         self.stub_warn_lbl.hide()
@@ -1531,6 +1562,7 @@ class MainWindow(QMainWindow):
             game_dir             = self.rp_game_picker.path,
             output_dir           = self.rp_out_picker.path,
             arch                 = "x64" if self.rp_arch_x64.isChecked() else "x86",
+            codec                = "zstd" if self.rp_codec_zstd.isChecked() else "lzma",
             compression          = self.rp_comp_combo.currentData() or "max",
             threads              = self.rp_threads_combo.currentData() or 1,
             icon_path            = self.rp_icon_edit.text().strip(),
@@ -1581,6 +1613,9 @@ class MainWindow(QMainWindow):
         self.rp_out_picker.path  = s.output_dir
         self.rp_arch_x64.setChecked(s.arch == "x64")
         self.rp_arch_x86.setChecked(s.arch == "x86")
+        self.rp_codec_lzma.setChecked(s.codec != "zstd")
+        self.rp_codec_zstd.setChecked(s.codec == "zstd")
+        self._on_rp_codec_changed()  # refresh quality combo for the loaded codec
         for i in range(self.rp_comp_combo.count()):
             if self.rp_comp_combo.itemData(i) == s.compression:
                 self.rp_comp_combo.setCurrentIndex(i)

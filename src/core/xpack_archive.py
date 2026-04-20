@@ -32,6 +32,8 @@ from typing import Callable, Optional
 
 MAGIC = b"XPACK01\x00"
 
+# ---- LZMA quality maps ----
+
 # quality key → (stdlib-lzma preset, optional dict_size override in bytes)
 _QUALITY_MAP: dict[str, tuple[int, Optional[int]]] = {
     "fast":    (1, None),
@@ -49,11 +51,30 @@ _XZ_PRESET: dict[str, int] = {
     "ultra64": 9,
 }
 
-QUALITY_LABELS: dict[str, str] = {
+LZMA_QUALITY_LABELS: dict[str, str] = {
     "fast":    "Fast (lzma2-1)",
     "normal":  "Normal (lzma2-6)",
     "max":     "Max (lzma2-9)",
     "ultra64": "Ultra64 (lzma2-9, 64 MB dict)",
+}
+
+# Back-compat alias
+QUALITY_LABELS = LZMA_QUALITY_LABELS
+
+# ---- Zstd quality maps ----
+
+_ZSTD_LEVEL_MAP: dict[str, int] = {
+    "fast":   1,
+    "normal": 9,
+    "max":    19,
+    "ultra":  22,
+}
+
+ZSTD_QUALITY_LABELS: dict[str, str] = {
+    "fast":   "Fast (zstd-1)",
+    "normal": "Normal (zstd-9)",
+    "max":    "Max (zstd-19)",
+    "ultra":  "Ultra (zstd-22)",
 }
 
 THREAD_OPTIONS = [1, 2, 4, 8, 16, 32]
@@ -63,17 +84,24 @@ THREAD_OPTIONS = [1, 2, 4, 8, 16, 32]
 # Compression helpers
 # ---------------------------------------------------------------------------
 
-def _compress(data: bytes, quality: str, threads: int = 1) -> bytes:
+def _compress(data: bytes, quality: str, threads: int = 1, codec: str = "lzma") -> bytes:
     """
-    Compress *data* to XZ format.
+    Compress *data* using the selected codec.
 
-    threads > 1: delegates to the ``xz`` CLI which uses liblzma's native
-    multi-threaded encoder (lzma_stream_encoder_mt).  Output is a single
-    valid XZ stream with multiple internal blocks — fully compatible with
-    the installer's lzma_stream_decoder.
+    codec == "lzma":
+      threads > 1 delegates to the ``xz`` CLI (multi-threaded XZ stream).
+      threads == 1 uses stdlib lzma (single-threaded).
 
-    threads == 1: falls back to stdlib lzma (single-threaded).
+    codec == "zstd":
+      Uses the ``zstandard`` Python package (supports MT natively).
     """
+    if codec == "zstd":
+        import zstandard
+        level = _ZSTD_LEVEL_MAP.get(quality, 19)
+        cctx = zstandard.ZstdCompressor(level=level, threads=threads if threads > 1 else 1)
+        return cctx.compress(data)
+
+    # --- LZMA path ---
     if not data:
         return lzma.compress(b"", format=lzma.FORMAT_XZ)
 
@@ -109,6 +137,7 @@ def build(
     quality: str = "max",
     components: Optional[list] = None,
     threads: int = 1,
+    codec: str = "lzma",
     progress: Optional[Callable[[int, str], None]] = None,
 ) -> tuple[bytes, int, int, list[dict]]:
     """
@@ -116,8 +145,9 @@ def build(
     an XPACK01 blob.
 
     components: list of {"label": str, "folder": str, ...}
-    threads:    xz thread count per stream (1 = single-threaded stdlib lzma;
-                >1 = xz CLI MT). Streams are always compressed sequentially.
+    codec:      "lzma" (XZ/LZMA2) or "zstd"
+    threads:    thread count per stream (1 = single-threaded; >1 = MT).
+                Streams are always compressed sequentially.
 
     Returns (xpack01_blob, total_files, total_uncompressed_bytes, file_list).
     file_list is [{"path": str, "component": int, "offset": int, "size": int}].
@@ -167,7 +197,7 @@ def build(
     streams_out: list[tuple[int, bytes]] = []  # (comp_idx, compressed_bytes), ordered
 
     _compress_sequential(
-        stream_specs, quality, threads,
+        stream_specs, quality, threads, codec,
         total_estimated, all_file_entries, streams_out, _prog,
     )
 
@@ -188,6 +218,7 @@ def _compress_sequential(
     stream_specs: list,
     quality: str,
     threads: int,
+    codec: str,
     total_estimated: int,
     all_file_entries: list,
     streams_out: list,
@@ -234,7 +265,7 @@ def _compress_sequential(
         _prog(5 + int((s_start + 0.4 * s_range) * 88),
               f"{label}: compressing {_fmt_size(len(raw))}…")
 
-        compressed = _compress(raw, quality, threads)
+        compressed = _compress(raw, quality, threads, codec)
         del raw
 
         all_file_entries.extend(file_entries)
