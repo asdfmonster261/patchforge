@@ -26,9 +26,9 @@ A video game binary patch and installer generator that produces self-contained W
 ### Repack mode
 
 - **Solid LZMA2 archive** — entire game directory compressed into an XPACK01 blob using XZ/LZMA2
-- **Multi-threaded compression** — xz CLI MT encoder (liblzma native); up to 32 threads; stream-level parallelism when multiple components are present
+- **Multi-threaded compression** — xz CLI MT encoder (liblzma native); up to 32 threads; all threads applied to each stream sequentially
 - **Four quality presets** — Fast (lzma2-1), Normal (lzma2-6), Max (lzma2-9), Ultra64 (lzma2-9, 64 MB dict)
-- **Optional components** — extra folders offered as checkboxes during install; components in the same named group become mutually exclusive radio buttons
+- **Optional components** — extra folders offered as checkboxes or radio-button groups during install; each group has an enable/disable toggle so the user can opt out of the whole group
 - **Repack project files** — save and reload all settings as `.xpr` JSON files
 
 ### Shared
@@ -39,7 +39,7 @@ A video game binary patch and installer generator that produces self-contained W
 - **Metadata fields** — app note, copyright, contact, company info, custom window title, custom output exe name/version
 - **Drag-and-drop** — drop folders and files directly onto path fields in the GUI
 - **x64 and x86 stubs** — target both 32-bit and 64-bit Windows installs
-- **GUI + CLI** — dark-themed PySide6 GUI when run with no arguments; full CLI for patch mode
+- **GUI + CLI** — dark-themed PySide6 GUI when run with no arguments; full CLI for both patch and repack modes
 
 ---
 
@@ -119,7 +119,7 @@ patchforge repack --game-dir game/ --app-name "My Game" \
   --component '{"label":"Japanese voices","folder":"voices_jp/","default_checked":false,"group":"voices"}'
 ```
 
-Each `--component` is a JSON object with `label`, `folder`, `default_checked` (bool), and `group` (string; empty = checkbox, shared name = mutually exclusive radio buttons). The flag is repeatable.
+Each `--component` is a JSON object with `label`, `folder`, `default_checked` (bool), `group` (string; empty = standalone checkbox, shared name = radio-button group), and optionally `shortcut_target` (overrides the main shortcut target when this component is selected). The flag is repeatable.
 
 Load a `.xpr` project file and override individual fields:
 
@@ -154,7 +154,13 @@ patchforge repack --project installer.xpr --threads 16 --output-dir dist/
 | `--detect-running EXE` | — | Warn if this process is running before install |
 | `--close-delay N` | `0` | Seconds before auto-closing after success (0 = stay open) |
 | `--required-free-space GB` | `0` | Warn if disk space is below this threshold in GB (0 = disabled) |
+| `--no-verify-crc32` | — | Skip CRC32 integrity check after installation (default: enabled) |
+| `--shortcut-target REL_PATH` | — | Relative path to the exe for shortcuts (e.g. `Bin\Game.exe`) |
+| `--shortcut-name NAME` | — | Shortcut display name (default: app name) |
+| `--shortcut-desktop` / `--no-shortcut-desktop` | off | Create a Desktop shortcut |
+| `--shortcut-startmenu` / `--no-shortcut-startmenu` | on | Create a Start Menu shortcut |
 | `--component JSON` | — | Add an optional component (repeatable; see above) |
+| `--no-uninstaller` | — | Omit the uninstaller and Add/Remove Programs registration |
 | `--save-project FILE` | — | Save resolved settings to a `.xpr` after building |
 
 #### Repack project commands
@@ -279,14 +285,14 @@ Repack compresses a complete game directory into a standalone installer exe. The
 Thread count (1, 2, 4, 8, 16, 32) controls parallelism:
 
 - **1 thread** — stdlib lzma (no external dependencies)
-- **>1 threads** — delegates to the `xz` CLI which uses `lzma_stream_encoder_mt` (native liblzma multi-threaded encoder). Output is a single valid XZ stream, fully compatible with the installer's decoder. When multiple component streams exist, they are compressed in parallel using separate processes.
+- **>1 threads** — delegates to the `xz` CLI which uses `lzma_stream_encoder_mt` (native liblzma multi-threaded encoder). Output is a single valid XZ stream, fully compatible with the installer's decoder. Streams are always compressed sequentially — all threads are given to each stream in turn.
 
 ### Optional Components
 
 Each component is a folder of files merged on top of the base game during install. Components are shown to the user as:
 
 - **Checkboxes** — when the group field is blank (independent, togglable)
-- **Radio buttons** — when two or more components share the same group name (mutually exclusive)
+- **Group header + radio buttons** — when two or more components share the same group name; the group header is a checkbox that enables or disables the whole group, and the radio buttons beneath it are mutually exclusive within the group
 
 Up to 16 components are supported.
 
@@ -318,24 +324,33 @@ All repack settings are saved as a JSON file. Example:
   "detect_running_exe": "MyGame.exe",
   "close_delay": 0,
   "required_free_space_gb": 0.0,
+  "include_uninstaller": true,
+  "verify_crc32": true,
+  "shortcut_target": "Bin\\MyGame.exe",
+  "shortcut_name": "My Game",
+  "shortcut_create_desktop": false,
+  "shortcut_create_startmenu": true,
   "components": [
     {
       "label": "High-res textures",
       "folder": "/path/to/hires_textures",
       "default_checked": false,
-      "group": ""
+      "group": "",
+      "shortcut_target": ""
     },
     {
       "label": "English voices",
       "folder": "/path/to/voices_en",
       "default_checked": true,
-      "group": "voices"
+      "group": "voices",
+      "shortcut_target": ""
     },
     {
       "label": "Japanese voices",
       "folder": "/path/to/voices_jp",
       "default_checked": false,
-      "group": "voices"
+      "group": "voices",
+      "shortcut_target": ""
     }
   ]
 }
@@ -403,6 +418,7 @@ All patch mode settings can be saved and reloaded as a JSON project file. Exampl
 ```
 [ installer_stub EXE bytes      ]
 [ XPACK01 blob                  ]  ← see format below
+[ backdrop image bytes          ]  (zero bytes if none)
 [ JSON metadata (UTF-8)         ]
 [ metadata length   4 bytes LE  ]
 [ magic "XPACK01\0" 8 bytes     ]  ← end of file
@@ -418,6 +434,7 @@ All patch mode settings can be saved and reloaded as a JSON project file. Exampl
     [ 8B LE: offset within stream ]
     [ 8B LE: uncompressed size  ]
     [ 4B LE: component_index    ]  0 = base game; 1..N = optional components
+    [ 4B LE: CRC32              ]  IEEE 802.3 checksum of uncompressed file data
 [ 4B LE: num_streams            ]
   Per stream:
     [ 4B LE: component_index    ]
