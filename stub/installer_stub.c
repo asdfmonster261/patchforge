@@ -1046,16 +1046,16 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
     /* Seek past the file table */
     _fseeki64(f, g_meta.pack_data_offset, SEEK_SET);
     uint32_t n = 0;
-    fread(&n, 4, 1, f);
+    if (fread(&n, 4, 1, f) != 1) { fclose(f); return 0; }
     for (uint32_t i = 0; i < n; i++) {
         uint16_t plen = 0;
-        fread(&plen, 2, 1, f);
+        if (fread(&plen, 2, 1, f) != 1) { fclose(f); return 0; }
         _fseeki64(f, (int64_t)(plen + 8 + 8 + 4 + 4), SEEK_CUR);
     }
 
     /* Read number of compressed streams */
     uint32_t num_streams = 0;
-    fread(&num_streams, 4, 1, f);
+    if (fread(&num_streams, 4, 1, f) != 1) { fclose(f); return 0; }
 
     /* Count how many files will actually be installed (for progress %) */
     uint32_t total_to_install = 0;
@@ -1138,7 +1138,9 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             /* ---- zstd decompression ---- */
             ZSTD_DStream *zds = ZSTD_createDStream();
             if (!zds) { success = 0; break; }
-            ZSTD_initDStream(zds);
+            if (ZSTD_isError(ZSTD_initDStream(zds))) {
+                ZSTD_freeDStream(zds); success = 0; break;
+            }
 
             uint64_t total_read = 0;
             while (total_read < csize && success) {
