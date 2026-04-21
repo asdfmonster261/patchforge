@@ -197,7 +197,7 @@ static void init_crc32_table(void)
     }
 }
 
-/* Feed bytes into a running CRC32. Call with crc=0 to start.
+/* Feed bytes into a running CRC32. Call with crc=0xFFFFFFFF to start (matches zlib.crc32).
  * XOR with 0xFFFFFFFF to finalize: final = crc32_update(running, ...) ^ 0xFFFFFFFFu */
 static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
 {
@@ -907,7 +907,7 @@ static int file_crc32_matches(const char *path, uint32_t expected)
     if (!expected) return 0;
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
-    uint32_t crc = 0;
+    uint32_t crc = 0xFFFFFFFF;
     uint8_t buf[65536];
     size_t n;
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
@@ -1015,7 +1015,7 @@ static void dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
             }
             int was_skipped   = ds->skip_cur;
             ds->skip_cur      = 0;
-            ds->cur_crc32     = 0;
+            ds->cur_crc32     = 0xFFFFFFFF;
             ds->cur_file_written = 0;
             ds->cur_file++;
             (*ds->files_done)++;
@@ -1133,7 +1133,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             .files_written   = &files_written,
             .cur_file        = first_entry,
             .cur_file_written= 0,
-            .cur_crc32       = 0,
+            .cur_crc32       = 0xFFFFFFFF,
             .skip_cur        = 0,
             .hf              = INVALID_HANDLE_VALUE,
         };
