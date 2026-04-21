@@ -443,10 +443,18 @@ static void cleanup_temp_self(void)
 }
 
 /* ==================================================================== */
-/* Shortcut deletion (COM / IShellLink)                                  */
+/* Uninstall result (declared here so delete_shortcuts can reference it) */
 /* ==================================================================== */
 
-struct UninstResult;  /* forward declaration — defined in worker section */
+struct UninstResult {
+    int  ok;
+    char errors[MAX_ERRORS][MAX_PATH + 32];
+    int  num_errors;
+};
+
+/* ==================================================================== */
+/* Shortcut deletion (COM / IShellLink)                                  */
+/* ==================================================================== */
 
 static void delete_shortcuts(struct UninstResult *res)
 {
@@ -479,12 +487,6 @@ static void delete_shortcuts(struct UninstResult *res)
 /* ==================================================================== */
 /* Uninstall worker thread                                               */
 /* ==================================================================== */
-
-struct UninstResult {
-    int  ok;
-    char errors[MAX_ERRORS][MAX_PATH + 32];
-    int  num_errors;
-};
 
 static DWORD WINAPI uninstall_thread(LPVOID param)
 {
