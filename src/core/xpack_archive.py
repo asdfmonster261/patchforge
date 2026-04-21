@@ -36,26 +36,21 @@ MAGIC = b"XPACK01\x00"
 
 # quality key → (stdlib-lzma preset, optional dict_size override in bytes)
 _QUALITY_MAP: dict[str, tuple[int, Optional[int]]] = {
-    "fast":    (1, None),
-    "normal":  (6, None),
-    "max":     (9, None),
-    "ultra64": (9, 64 * 1024 * 1024),
+    "fast":   (1, None),
+    "normal": (6, None),
+    "max":    (9, None),
 }
 
-# xz CLI preset for each quality key.
-# ultra64 maps to the same -9 as max; -9 already uses a 64 MB dict.
 _XZ_PRESET: dict[str, int] = {
-    "fast":    1,
-    "normal":  6,
-    "max":     9,
-    "ultra64": 9,
+    "fast":   1,
+    "normal": 6,
+    "max":    9,
 }
 
 LZMA_QUALITY_LABELS: dict[str, str] = {
-    "fast":    "Fast (lzma2-1)",
-    "normal":  "Normal (lzma2-6)",
-    "max":     "Max (lzma2-9)",
-    "ultra64": "Ultra64 (lzma2-9, 64 MB dict)",
+    "fast":   "Fast (lzma2-1)",
+    "normal": "Normal (lzma2-6)",
+    "max":    "Max (lzma2-9)",
 }
 
 # Back-compat alias

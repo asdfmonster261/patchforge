@@ -31,10 +31,9 @@ THREAD_OPTIONS = [1, 2, 4, 8, 16, 32]
 # Quality options per compressor family.
 # Each entry: key → (display label, hdiffz -c flag)
 LZMA2_QUALITIES: dict[str, tuple[str, str]] = {
-    "fast":    ("Fast (lzma2-1)",            "-c-lzma2-1"),
-    "normal":  ("Normal (lzma2-6)",          "-c-lzma2-6"),
-    "max":     ("Max (lzma2-9)",             "-c-lzma2-9"),
-    "ultra64": ("Ultra64 (lzma2-9, 64M dict)", "-c-lzma2-9-64m"),
+    "fast":   ("Fast (lzma2-1)",   "-c-lzma2-1"),
+    "normal": ("Normal (lzma2-6)", "-c-lzma2-6"),
+    "max":    ("Max (lzma2-9)",    "-c-lzma2-9"),
 }
 BZIP2_QUALITIES: dict[str, tuple[str, str]] = {
     "fast":   ("Fast (bzip2-1)",   "-c-bzip2-1"),
@@ -107,9 +106,7 @@ class HDiffPatchEngine(PatchEngine):
     ) -> EngineResult:
         _label, stream_flags = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])
 
-        # Resolve quality flag for the active compressor family.
         qualities = self.qualities_for_preset(compression)
-        # ultra64 doesn't exist in bzip2; fall back to max.
         _qlabel, quality_flag = qualities.get(
             compressor_quality, qualities[DEFAULT_QUALITY]
         )

@@ -25,8 +25,7 @@ class RepackSettings:
     game_dir: str = ""    # source game folder to repack
     output_dir: str = ""  # where to write the output .exe
 
-    # Compression — same quality keys as patch mode LZMA2
-    # "fast" | "normal" | "max" | "ultra64"
+    # Compression quality keys: lzma: "fast"|"normal"|"max"; zstd: "fast"|"normal"|"max"|"ultra"
     arch: str = "x64"
     compression: str = "max"
 
