@@ -61,7 +61,9 @@
 #define MAX_COMPONENTS   16
 
 /* ---- Backdrop layout ---- */
-#define IMG_MAX_H  300   /* maximum backdrop image height in window (px) */
+#define BACKDROP_ASPECT_W  616   /* reference aspect ratio width  */
+#define BACKDROP_ASPECT_H  353   /* reference aspect ratio height */
+#define IMG_MAX_H          480   /* hard ceiling (px) */
 
 /* ---- Thread messages ---- */
 #define WM_INSTALL_DONE  (WM_USER + 1)
@@ -1777,19 +1779,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             SelectObject(mdc, g_backdrop_bmp);
             BITMAP bm = {0};
             GetObjectA(g_backdrop_bmp, sizeof(bm), &bm);
-            /* Center-crop source vertically to preserve aspect ratio */
-            int src_h_shown = (r.right > 0 && bm.bmWidth > 0)
-                ? (int)((int64_t)bm.bmWidth * g_img_h / r.right)
-                : bm.bmHeight;
-            int src_y = 0, src_h = bm.bmHeight;
-            if (src_h_shown < src_h) {
-                src_y = (src_h - src_h_shown) / 2;
-                src_h = src_h_shown;
-            }
             SetStretchBltMode(dc, HALFTONE);
             SetBrushOrgEx(dc, 0, 0, NULL);
             StretchBlt(dc, 0, 0, r.right, g_img_h,
-                       mdc, 0, src_y, bm.bmWidth, src_h, SRCCOPY);
+                       mdc, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
             DeleteDC(mdc);
             /* 2 px accent separator between image and controls */
             HBRUSH sep = CreateSolidBrush(COL_ACCENT);
@@ -2189,13 +2182,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
     /* Pre-load backdrop so we know the image height before sizing the window */
     g_backdrop_bmp = load_backdrop();
     if (g_backdrop_bmp) {
-        BITMAP bm = {0};
-        GetObjectA(g_backdrop_bmp, sizeof(bm), &bm);
-        if (bm.bmWidth > 0 && bm.bmHeight > 0) {
-            g_img_h = (int)((int64_t)720 * bm.bmHeight / bm.bmWidth);
-            if (g_img_h > IMG_MAX_H) g_img_h = IMG_MAX_H;
-            if (g_img_h < 60)        g_img_h = 60;
-        }
+        /* Fix display height to the 616:353 reference aspect ratio at window width 720,
+         * using rounded integer arithmetic to avoid off-by-one clipping. */
+        g_img_h = (int)((720 * BACKDROP_ASPECT_H + BACKDROP_ASPECT_W / 2) / BACKDROP_ASPECT_W);
+        if (g_img_h > IMG_MAX_H) g_img_h = IMG_MAX_H;
+        if (g_img_h < 60)        g_img_h = 60;
     }
 
     /* Window class */
