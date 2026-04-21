@@ -417,18 +417,20 @@ static int read_pack_entries(void)
     if (!g_entries) { fclose(f); return 0; }
     g_num_entries = n;
 
+#define READ_PACK_FAIL { free(g_entries); g_entries = NULL; g_num_entries = 0; fclose(f); return 0; }
     for (uint32_t i = 0; i < n; i++) {
         uint16_t plen = 0;
-        if (fread(&plen, 2, 1, f) != 1) { fclose(f); return 0; }
+        if (fread(&plen, 2, 1, f) != 1) READ_PACK_FAIL
         if (plen >= (uint16_t)sizeof(g_entries[i].path))
             plen = (uint16_t)(sizeof(g_entries[i].path) - 1);
-        if (fread(g_entries[i].path, 1, plen, f) != plen) { fclose(f); return 0; }
+        if (fread(g_entries[i].path, 1, plen, f) != plen) READ_PACK_FAIL
         g_entries[i].path[plen] = '\0';
-        if (fread(&g_entries[i].offset,    8, 1, f) != 1) { fclose(f); return 0; }
-        if (fread(&g_entries[i].size,      8, 1, f) != 1) { fclose(f); return 0; }
-        if (fread(&g_entries[i].component, 4, 1, f) != 1) { fclose(f); return 0; }
-        if (fread(&g_entries[i].crc32,     4, 1, f) != 1) { fclose(f); return 0; }
+        if (fread(&g_entries[i].offset,    8, 1, f) != 1) READ_PACK_FAIL
+        if (fread(&g_entries[i].size,      8, 1, f) != 1) READ_PACK_FAIL
+        if (fread(&g_entries[i].component, 4, 1, f) != 1) READ_PACK_FAIL
+        if (fread(&g_entries[i].crc32,     4, 1, f) != 1) READ_PACK_FAIL
     }
+#undef READ_PACK_FAIL
 
     fclose(f);
     return 1;
@@ -634,10 +636,15 @@ static HBITMAP load_backdrop(void)
     CoInitialize(NULL);
     if (FAILED(CoCreateInstance(&CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
                                 &IID_IWICImagingFactory, (void **)&wic))) {
+        CoUninitialize();
         free(raw); return NULL;
     }
     IWICStream *stream = NULL;
-    wic->lpVtbl->CreateStream(wic, &stream);
+    if (FAILED(wic->lpVtbl->CreateStream(wic, &stream)) || !stream) {
+        wic->lpVtbl->Release(wic);
+        CoUninitialize();
+        free(raw); return NULL;
+    }
     stream->lpVtbl->InitializeFromMemory(stream, raw, (DWORD)g_meta.backdrop_size);
     IWICBitmapDecoder *dec = NULL;
     wic->lpVtbl->CreateDecoderFromStream(wic, (IStream *)stream, NULL,
@@ -666,8 +673,8 @@ static HBITMAP load_backdrop(void)
         HDC dc = GetDC(NULL);
         hbm = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
         ReleaseDC(NULL, dc);
-        if (hbm && bits) {
-            UINT stride = w * 4;
+        if (hbm && bits && w <= 65535 && h <= 65535) {
+            UINT stride = w * 4;  /* safe: w <= 65535, so w*4 <= 262140 */
             ((IWICBitmapSource *)conv)->lpVtbl->CopyPixels(
                 (IWICBitmapSource *)conv, NULL, stride, stride * h, (BYTE *)bits);
         }
@@ -677,6 +684,7 @@ static HBITMAP load_backdrop(void)
     if (dec)   dec->lpVtbl->Release(dec);
     if (stream) stream->lpVtbl->Release(stream);
     wic->lpVtbl->Release(wic);
+    CoUninitialize();
     free(raw);
     return hbm;
 }
@@ -793,8 +801,12 @@ static void create_shortcuts(const char *install_dir, int do_desktop, int do_sta
         return;
     }
 
-    psl->lpVtbl->SetPath(psl, target);
-    psl->lpVtbl->SetWorkingDirectory(psl, install_dir);
+    if (FAILED(psl->lpVtbl->SetPath(psl, target)) ||
+        FAILED(psl->lpVtbl->SetWorkingDirectory(psl, install_dir))) {
+        psl->lpVtbl->Release(psl);
+        CoUninitialize();
+        return;
+    }
 
     /* Prefer the uninstaller exe as icon source — it has the custom icon
        PE-injected from the Python GUI. Fall back to the target exe. */

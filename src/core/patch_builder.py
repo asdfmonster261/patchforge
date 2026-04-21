@@ -88,11 +88,10 @@ def build(
         dest = ef.get("dest", "")
         if not dest:
             return BuildResult(success=False, error=f"Extra file entry missing 'dest': {ef}")
-        dest_norm = dest.replace("\\", "/")
-        # Block Unix absolute paths, Windows absolute paths (drive letter or UNC),
-        # and any path component that is a traversal sequence.
+        # Check UNC on original before normalization (\\server\share)
+        has_unc    = dest.startswith("\\\\") or dest.startswith("//")
+        dest_norm  = dest.replace("\\", "/")
         has_drive  = len(dest_norm) >= 2 and dest_norm[1] == ":"
-        has_unc    = dest_norm.startswith("//")
         has_abs    = dest_norm.startswith("/")
         has_dotdot = any(part == ".." for part in dest_norm.split("/"))
         if has_drive or has_unc or has_abs or has_dotdot:
