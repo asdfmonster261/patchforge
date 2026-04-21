@@ -140,6 +140,7 @@ def build(
                 "default_checked":  bool(c.get("default_checked", True)),
                 "requires":         [int(r) for r in c.get("requires", [])],
                 "shortcut_target":  c.get("shortcut_target", ""),
+                "sac_warning":      bool(c.get("sac_warning", False)),
             }
             for i, c in enumerate(settings.components or [])
         ],
