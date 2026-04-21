@@ -59,8 +59,9 @@
 #define WM_UNINST_PROG (WM_USER + 2)
 #define WM_LOG_MSG     (WM_USER + 3)
 
-/* ---- File list entry ---- */
-#define MAX_ERRORS 200
+/* ---- Limits ---- */
+#define MAX_ERRORS          200
+#define MAX_INSTALLED_COMPS  64   /* matches installer MAX_COMPONENTS with headroom */
 
 typedef struct {
     char path[512];
@@ -82,7 +83,7 @@ static char       g_user_desktop[MAX_PATH]       = {0};
 static char       g_user_programs[MAX_PATH]      = {0};
 static UninstFile *g_files                       = NULL;
 static int         g_num_files                   = 0;
-static int         g_installed_comps[32]         = {0};
+static int         g_installed_comps[MAX_INSTALLED_COMPS] = {0};
 static int         g_num_installed_comps         = 0;
 static HKEY        g_arp_hive                    = NULL;
 static char        g_arp_key_path[512]           = {0};
@@ -253,9 +254,10 @@ static int read_arp_registry(void)
 {
     if (!g_arp_subkey[0]) return 0;
 
-    snprintf(g_arp_key_path, sizeof(g_arp_key_path),
+    int klen = snprintf(g_arp_key_path, sizeof(g_arp_key_path),
         "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\%s",
         g_arp_subkey);
+    if (klen < 0 || klen >= (int)sizeof(g_arp_key_path)) return 0;
 
     HKEY hives[2] = {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER};
     for (int i = 0; i < 2; i++) {
@@ -277,8 +279,12 @@ static int read_arp_registry(void)
         g_num_installed_comps = 0;
         char *ctx = NULL;
         char *tok = strtok_s(comp_str, ",", &ctx);
-        while (tok && g_num_installed_comps < 32) {
-            g_installed_comps[g_num_installed_comps++] = atoi(tok);
+        while (tok && g_num_installed_comps < MAX_INSTALLED_COMPS) {
+            /* skip empty tokens and non-numeric garbage */
+            char *end = tok;
+            while (*end == ' ') end++;
+            if (*end >= '0' && *end <= '9')
+                g_installed_comps[g_num_installed_comps++] = atoi(end);
             tok = strtok_s(NULL, ",", &ctx);
         }
 
