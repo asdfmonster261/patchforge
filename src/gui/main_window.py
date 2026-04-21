@@ -1334,6 +1334,8 @@ class MainWindow(QMainWindow):
         self.log.clear()
         self._log("Starting patch build…")
 
+        if self._thread:
+            self._thread.deleteLater()
         self._thread = QThread()
         self._worker = BuildWorker(settings)
         self._worker.moveToThread(self._thread)
@@ -1354,6 +1356,8 @@ class MainWindow(QMainWindow):
         self.log.clear()
         self._log("Starting repack build…")
 
+        if self._thread:
+            self._thread.deleteLater()
         self._thread = QThread()
         self._repack_worker = RepackWorker(settings)
         self._repack_worker.moveToThread(self._thread)
@@ -1424,6 +1428,12 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Repack failed")
             self.status_lbl.setText("Failed")
             self.open_folder_btn.setVisible(False)
+
+    def closeEvent(self, event):
+        if self._thread and self._thread.isRunning():
+            self._thread.quit()
+            self._thread.wait(3000)
+        event.accept()
 
     def _on_thread_done(self):
         self.progress_bar.setRange(0, 100)
