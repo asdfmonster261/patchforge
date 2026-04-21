@@ -218,8 +218,12 @@ static const char *json_get_str(const char *json, const char *key,
     if (*p != '"') return NULL;
     p++;
     int i = 0;
-    while (*p && *p != '"' && i < out_len - 1) {
-        if (*p == '\\' && *(p + 1)) { p++; }
+    while (*p && i < out_len - 1) {
+        if (*p == '\\' && *(p + 1)) {
+            p++;                   /* skip backslash, copy escaped char */
+        } else if (*p == '"') {
+            break;                 /* unescaped quote = end of string */
+        }
         out[i++] = *p++;
     }
     out[i] = '\0';
@@ -949,6 +953,9 @@ static void dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
 
         if (ds->hf == INVALID_HANDLE_VALUE && !ds->skip_cur && e->size > 0) {
             if (!archive_path_is_safe(e->path)) { *ds->success = 0; break; }
+            /* Reject if the combined path would overflow MAX_PATH */
+            if (strlen(ds->install_dir) + 1 + strlen(e->path) >= MAX_PATH)
+                { *ds->success = 0; break; }
             char fpath[MAX_PATH];
             snprintf(fpath, MAX_PATH, "%s\\%s", ds->install_dir, e->path);
             for (char *fp = fpath; *fp; fp++) if (*fp == '/') *fp = '\\';
