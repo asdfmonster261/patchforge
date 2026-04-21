@@ -11,7 +11,6 @@ LEVELS = [
     "lzma/fast",
     "lzma/normal",
     "lzma/ultra",
-    "lzma/ultra64",
 ]
 
 # Levels that require the full stub (zlib/bzip2 deps) on the Windows side
@@ -20,7 +19,7 @@ STUB_FULL_REQUIRED = {"zip/1", "zip/9", "bzip/5", "bzip/9"}
 # Levels not supported by JojoDiff (which has no built-in compression)
 JOJODIFF_UNSUPPORTED = {
     "zip/1", "zip/9", "bzip/5", "bzip/9",
-    "lzma/fast", "lzma/normal", "lzma/ultra", "lzma/ultra64",
+    "lzma/fast", "lzma/normal", "lzma/ultra",
 }
 
 
@@ -36,9 +35,8 @@ def label_for(compression: str) -> str:
         "zip/9":        "zlib — level 9 (best)",
         "bzip/5":       "bzip2 — level 5",
         "bzip/9":       "bzip2 — level 9",
-        "lzma/fast":    "LZMA — fast",
-        "lzma/normal":  "LZMA — normal",
-        "lzma/ultra":   "LZMA — ultra",
-        "lzma/ultra64": "LZMA — ultra64 (slow, smallest)",
+        "lzma/fast":   "LZMA — fast",
+        "lzma/normal": "LZMA — normal",
+        "lzma/ultra":  "LZMA — ultra",
     }
     return labels.get(compression, compression)

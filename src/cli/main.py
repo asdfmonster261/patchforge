@@ -114,9 +114,8 @@ def _add_build(sub):
     p.add_argument("--threads", metavar="N", type=int,
                    help="Worker threads for patch generation (default: 1)")
     p.add_argument("--quality", metavar="LEVEL", dest="compressor_quality",
-                   choices=["fast", "normal", "max", "ultra64"],
-                   help="HDiffPatch compressor quality: fast/normal/max/ultra64 "
-                        "for lzma2 presets; fast/normal/max for bzip2 (default: max)")
+                   choices=["fast", "normal", "max"],
+                   help="HDiffPatch compressor quality: fast/normal/max (default: max)")
 
     # Verification
     p.add_argument("--verify", choices=["crc32c", "md5", "filesize"],
@@ -274,7 +273,7 @@ def _add_new_project(sub):
     p.add_argument("--compression", metavar="PRESET")
     p.add_argument("--threads",     metavar="N", type=int)
     p.add_argument("--quality",     metavar="LEVEL", dest="compressor_quality",
-                   choices=["fast", "normal", "max", "ultra64"])
+                   choices=["fast", "normal", "max"])
     p.add_argument("--verify",      choices=["crc32c", "md5", "filesize"],
                    dest="verify_method")
     p.add_argument("--arch",        choices=["x64", "x86"])
@@ -393,8 +392,8 @@ def _add_repack(sub):
     p.add_argument("--codec", choices=["lzma", "zstd"], default=None,
                    help="Compression codec: lzma (XZ/LZMA2) or zstd (default: lzma)")
     p.add_argument("--compression",
-                   choices=["fast", "normal", "max", "ultra64", "ultra"],
-                   help="Quality preset (lzma: fast/normal/max/ultra64; zstd: fast/normal/max/ultra; default: max)")
+                   choices=["fast", "normal", "max", "ultra"],
+                   help="Quality preset (lzma: fast/normal/max; zstd: fast/normal/max/ultra; default: max)")
     p.add_argument("--threads", metavar="N", type=int,
                    help="Compression threads (default: 1)")
     p.add_argument("--arch", choices=["x64", "x86"],
@@ -575,7 +574,7 @@ def _add_new_repack_project(sub):
     p.add_argument("--game-dir",    metavar="DIR",  dest="game_dir")
     p.add_argument("--output-dir",  metavar="DIR",  dest="output_dir")
     p.add_argument("--codec", choices=["lzma", "zstd"])
-    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra64", "ultra"])
+    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra"])
     p.add_argument("--threads",     metavar="N",    type=int)
     p.add_argument("--arch",        choices=["x64", "x86"])
     p.add_argument("--icon-path",   metavar="FILE", dest="icon_path")
