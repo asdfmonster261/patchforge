@@ -10,6 +10,7 @@ All sets use stream mode; block size decreases for finer matching:
   Set1 64k → Set2 16k → Set3 4k → Set4 1k → Set5 640b → Set6 64b
 """
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -26,7 +27,18 @@ _SET_CONFIGS = [
     (6, "-s-64",   "64b"),
 ]
 
-THREAD_OPTIONS = [1, 2, 4, 8, 16, 32]
+def _build_thread_options() -> list[int]:
+    cores = os.cpu_count() or 1
+    opts: list[int] = []
+    p = 1
+    while p <= cores:
+        opts.append(p)
+        p *= 2
+    if opts[-1] != cores:
+        opts.append(cores)
+    return opts
+
+THREAD_OPTIONS = _build_thread_options()
 
 # Quality options per compressor family.
 # Each entry: key → (display label, hdiffz -c flag)
