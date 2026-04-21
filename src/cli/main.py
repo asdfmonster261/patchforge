@@ -393,7 +393,7 @@ def _add_repack(sub):
                    help="Compression codec: lzma (XZ/LZMA2) or zstd (default: lzma)")
     p.add_argument("--compression",
                    choices=["fast", "normal", "max", "ultra"],
-                   help="Quality preset (lzma: fast/normal/max; zstd: fast/normal/max/ultra; default: max)")
+                   help="Quality preset — lzma: fast/normal/max  |  zstd: fast/normal/max/ultra  (default: max)")
     p.add_argument("--threads", metavar="N", type=int,
                    help="Compression threads (default: 1)")
     p.add_argument("--arch", choices=["x64", "x86"],
@@ -574,7 +574,9 @@ def _add_new_repack_project(sub):
     p.add_argument("--game-dir",    metavar="DIR",  dest="game_dir")
     p.add_argument("--output-dir",  metavar="DIR",  dest="output_dir")
     p.add_argument("--codec", choices=["lzma", "zstd"])
-    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra"])
+    p.add_argument("--compression", choices=["fast", "normal", "max", "ultra"],
+                   metavar="PRESET",
+                   help="lzma: fast/normal/max  |  zstd: fast/normal/max/ultra")
     p.add_argument("--threads",     metavar="N",    type=int)
     p.add_argument("--arch",        choices=["x64", "x86"])
     p.add_argument("--icon-path",   metavar="FILE", dest="icon_path")
