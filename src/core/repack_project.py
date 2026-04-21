@@ -59,7 +59,8 @@ class RepackSettings:
     # Optional components — list of dicts with keys:
     #   label: str, folder: str, default_checked: bool, group: str,
     #   requires: list[int] (1-based indices of required components),
-    #   shortcut_target: str (overrides top-level shortcut_target if set)
+    #   shortcut_target: str (overrides top-level shortcut_target if set),
+    #   sac_warning: bool (show AV/Smart App Control warning when selected)
     # index 0 = base game (always installed); components here start at index 1.
     components: list = field(default_factory=list)
 
