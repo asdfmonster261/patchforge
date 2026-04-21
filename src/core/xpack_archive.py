@@ -25,6 +25,7 @@ The EXE layout produced by exe_packager.package_repack():
 """
 
 import lzma
+import os
 import struct
 import subprocess
 import zlib
@@ -73,7 +74,18 @@ ZSTD_QUALITY_LABELS: dict[str, str] = {
     "ultra":  "Ultra (zstd-22)",
 }
 
-THREAD_OPTIONS = [1, 2, 4, 8, 16, 32]
+def _build_thread_options() -> list[int]:
+    cores = os.cpu_count() or 1
+    opts: list[int] = []
+    p = 1
+    while p <= cores:
+        opts.append(p)
+        p *= 2
+    if opts[-1] != cores:
+        opts.append(cores)
+    return opts
+
+THREAD_OPTIONS = _build_thread_options()
 
 
 # ---------------------------------------------------------------------------
