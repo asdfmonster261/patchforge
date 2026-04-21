@@ -9,6 +9,7 @@ Binary layout of an XPACK01 blob:
     [8B LE:  decompressed_offset]  — offset within *this component's* stream
     [8B LE:  uncompressed_size]
     [4B LE:  component_index]      — 0 = base game; 1..N = optional components
+    [4B LE:  crc32]                — IEEE 802.3 CRC32 of uncompressed file data
   [4B LE:  num_streams]
   Per stream:
     [4B LE:  component_index]
