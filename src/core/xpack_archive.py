@@ -96,7 +96,10 @@ def _compress(data: bytes, quality: str, threads: int = 1, codec: str = "lzma") 
         cmd = ["zstd", f"-{level}", f"-T{threads}", "-c"]
         if level == 22:
             cmd = ["zstd", "--ultra", "-22", f"-T{threads}", "-c"]
-        result = subprocess.run(cmd, input=data, capture_output=True)
+        try:
+            result = subprocess.run(cmd, input=data, capture_output=True)
+        except FileNotFoundError:
+            raise RuntimeError("zstd not found — install zstd and ensure it is on PATH")
         if result.returncode != 0:
             raise RuntimeError(
                 f"zstd failed (level={level}, T={threads}): "
@@ -115,7 +118,10 @@ def _compress(data: bytes, quality: str, threads: int = 1, codec: str = "lzma") 
         # Force 64 MB blocks so MT kicks in on any input larger than ~128 MB.
         if preset >= 9:
             cmd.insert(-1, "--block-size=64MiB")
-        result = subprocess.run(cmd, input=data, capture_output=True)
+        try:
+            result = subprocess.run(cmd, input=data, capture_output=True)
+        except FileNotFoundError:
+            raise RuntimeError("xz not found — install xz-utils and ensure it is on PATH")
         if result.returncode != 0:
             raise RuntimeError(
                 f"xz failed (preset={preset}, T={threads}): "

@@ -446,7 +446,9 @@ static void cleanup_temp_self(void)
 /* Shortcut deletion (COM / IShellLink)                                  */
 /* ==================================================================== */
 
-static void delete_shortcuts(void)
+struct UninstResult;  /* forward declaration — defined in worker section */
+
+static void delete_shortcuts(struct UninstResult *res)
 {
     if (!g_shortcut_create_desktop && !g_shortcut_create_startmenu) return;
 
@@ -459,14 +461,18 @@ static void delete_shortcuts(void)
         snprintf(subdir, MAX_PATH, "%s\\%s", g_user_programs, folder);
         char lnk[MAX_PATH];
         snprintf(lnk, MAX_PATH, "%s\\%s.lnk", subdir, sname);
-        DeleteFileA(lnk);
-        RemoveDirectoryA(subdir);
+        if (!DeleteFileA(lnk) && GetLastError() != ERROR_FILE_NOT_FOUND
+                && res->num_errors < MAX_ERRORS)
+            snprintf(res->errors[res->num_errors++], MAX_PATH + 32, "%s", lnk);
+        RemoveDirectoryA(subdir);  /* best-effort: may fail if non-empty */
     }
 
     if (g_shortcut_create_desktop && g_user_desktop[0]) {
         char lnk[MAX_PATH];
         snprintf(lnk, MAX_PATH, "%s\\%s.lnk", g_user_desktop, sname);
-        DeleteFileA(lnk);
+        if (!DeleteFileA(lnk) && GetLastError() != ERROR_FILE_NOT_FOUND
+                && res->num_errors < MAX_ERRORS)
+            snprintf(res->errors[res->num_errors++], MAX_PATH + 32, "%s", lnk);
     }
 }
 
@@ -538,7 +544,7 @@ static DWORD WINAPI uninstall_thread(LPVOID param)
         RegDeleteKeyA(g_arp_hive, g_arp_key_path);
 
     /* Delete shortcuts */
-    delete_shortcuts();
+    delete_shortcuts(res);
 
     /* Running from %TEMP% — delete original uninstall.exe then the game dir.
        Both should succeed: we're not in the game dir, nothing else is running. */
