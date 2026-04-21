@@ -55,6 +55,9 @@ def build(
     if settings.arch not in ("x64", "x86"):
         return RepackResult(success=False,
                             error=f"Invalid architecture: {settings.arch!r} (must be x64 or x86)")
+    if settings.threads < 1 or settings.threads > 256:
+        return RepackResult(success=False,
+                            error=f"Invalid thread count: {settings.threads} (must be 1–256)")
     if settings.codec not in ("lzma", "zstd"):
         return RepackResult(success=False,
                             error=f"Unknown codec: {settings.codec!r} (must be lzma or zstd)")

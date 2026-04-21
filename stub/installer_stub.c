@@ -194,11 +194,12 @@ static void init_crc32_table(void)
     }
 }
 
+/* Feed bytes into a running CRC32. Call with crc=0 to start.
+ * XOR with 0xFFFFFFFF to finalize: final = crc32_update(running, ...) ^ 0xFFFFFFFFu */
 static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
 {
-    crc ^= 0xFFFFFFFFu;
     while (len--) crc = g_crc32_table[(crc ^ *buf++) & 0xFF] ^ (crc >> 8);
-    return crc ^ 0xFFFFFFFFu;
+    return crc;
 }
 
 /* ==================================================================== */
@@ -351,7 +352,7 @@ static int read_install_meta(void)
         return 0;
     }
 
-    _fseeki64(f, -(int64_t)(12 + meta_len), SEEK_END);
+    _fseeki64(f, -((int64_t)12 + (int64_t)meta_len), SEEK_END);
     char *buf = (char *)malloc(meta_len + 1);
     if (!buf) { fclose(f); return 0; }
     fread(buf, 1, meta_len, f);
@@ -406,7 +407,7 @@ static int read_pack_entries(void)
 
     _fseeki64(f, g_meta.pack_data_offset, SEEK_SET);
     uint32_t n = 0;
-    fread(&n, 4, 1, f);
+    if (fread(&n, 4, 1, f) != 1) { fclose(f); return 0; }
 
     g_entries = (PackEntry *)malloc(n * sizeof(PackEntry));
     if (!g_entries) { fclose(f); return 0; }
@@ -414,15 +415,15 @@ static int read_pack_entries(void)
 
     for (uint32_t i = 0; i < n; i++) {
         uint16_t plen = 0;
-        fread(&plen, 2, 1, f);
+        if (fread(&plen, 2, 1, f) != 1) { fclose(f); return 0; }
         if (plen >= (uint16_t)sizeof(g_entries[i].path))
             plen = (uint16_t)(sizeof(g_entries[i].path) - 1);
-        fread(g_entries[i].path, 1, plen, f);
+        if (fread(g_entries[i].path, 1, plen, f) != plen) { fclose(f); return 0; }
         g_entries[i].path[plen] = '\0';
-        fread(&g_entries[i].offset,    8, 1, f);
-        fread(&g_entries[i].size,      8, 1, f);
-        fread(&g_entries[i].component, 4, 1, f);
-        fread(&g_entries[i].crc32,     4, 1, f);
+        if (fread(&g_entries[i].offset,    8, 1, f) != 1) { fclose(f); return 0; }
+        if (fread(&g_entries[i].size,      8, 1, f) != 1) { fclose(f); return 0; }
+        if (fread(&g_entries[i].component, 4, 1, f) != 1) { fclose(f); return 0; }
+        if (fread(&g_entries[i].crc32,     4, 1, f) != 1) { fclose(f); return 0; }
     }
 
     fclose(f);
@@ -856,6 +857,28 @@ static int detect_existing_install(const char *install_dir)
     return found;
 }
 
+/* Reject archive paths that could escape the install directory.
+ * Returns 1 if the path is safe (relative, no .. components, no drive spec). */
+static int archive_path_is_safe(const char *path)
+{
+    if (!path || !path[0]) return 0;
+    /* Reject absolute paths (leading slash, backslash, or drive letter) */
+    if (path[0] == '/' || path[0] == '\\') return 0;
+    if (path[1] == ':') return 0;
+    /* Reject UNC paths */
+    if (path[0] == '\\' && path[1] == '\\') return 0;
+    /* Reject any .. component */
+    const char *p = path;
+    while (*p) {
+        if (p[0] == '.' && p[1] == '.' &&
+            (p[2] == '\0' || p[2] == '/' || p[2] == '\\'))
+            return 0;
+        while (*p && *p != '/' && *p != '\\') p++;
+        if (*p) p++;
+    }
+    return 1;
+}
+
 /* CRC32 of a file already on disk (for repair-mode skip check) */
 static int file_crc32_matches(const char *path, uint32_t expected)
 {
@@ -868,7 +891,7 @@ static int file_crc32_matches(const char *path, uint32_t expected)
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
         crc = crc32_update(crc, buf, n);
     fclose(f);
-    return crc == expected;
+    return (crc ^ 0xFFFFFFFFu) == expected;
 }
 
 /* ==================================================================== */
@@ -916,8 +939,8 @@ typedef struct {
 } DispatchState;
 
 /* Consume up to `len` bytes from `ptr`, writing them to the current file.
- * Advances ds->cur_file when a file is complete.  Returns 0 on hard error. */
-static int dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
+ * Sets *ds->success = 0 on error. */
+static void dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
 {
     while (len > 0 && ds->cur_file < ds->last_entry) {
         PackEntry *e  = &g_entries[ds->cur_file];
@@ -925,6 +948,7 @@ static int dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
         size_t write  = (size_t)(len < need ? len : need);
 
         if (ds->hf == INVALID_HANDLE_VALUE && !ds->skip_cur && e->size > 0) {
+            if (!archive_path_is_safe(e->path)) { *ds->success = 0; break; }
             char fpath[MAX_PATH];
             snprintf(fpath, MAX_PATH, "%s\\%s", ds->install_dir, e->path);
             for (char *fp = fpath; *fp; fp++) if (*fp == '/') *fp = '\\';
@@ -954,7 +978,7 @@ static int dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
                 ds->hf = INVALID_HANDLE_VALUE;
             }
             if (!ds->skip_cur && ds->verify_crc32 && e->crc32
-                && ds->cur_crc32 != e->crc32) {
+                && (ds->cur_crc32 ^ 0xFFFFFFFFu) != e->crc32) {
                 *ds->success = 0;
                 if (g_hwnd) {
                     char *log_msg = (char *)malloc(MAX_PATH);
@@ -990,7 +1014,6 @@ static int dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
             if (ds->low_load) Sleep(1);
         }
     }
-    return 1;
 }
 
 static int do_install(const char *install_dir, int low_load, int verify_crc32,
@@ -1123,7 +1146,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             lzma_stream strm = LZMA_STREAM_INIT;
             if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK) {
                 success = 0;
-                break;
+                break; /* strm uninitialised — lzma_end() not needed */
             }
 
             uint64_t    total_read = 0;
