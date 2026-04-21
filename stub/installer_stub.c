@@ -629,7 +629,9 @@ static HBITMAP load_backdrop(void)
     _fseeki64(f, g_meta.backdrop_offset, SEEK_SET);
     BYTE *raw = (BYTE *)malloc((size_t)g_meta.backdrop_size);
     if (!raw) { fclose(f); return NULL; }
-    fread(raw, 1, (size_t)g_meta.backdrop_size, f);
+    if (fread(raw, 1, (size_t)g_meta.backdrop_size, f) != (size_t)g_meta.backdrop_size) {
+        fclose(f); free(raw); return NULL;
+    }
     fclose(f);
 
     IWICImagingFactory *wic = NULL;
@@ -1736,6 +1738,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         FillRect(dc, &r, g_brush_bg);
         if (g_backdrop_bmp && g_img_h > 0) {
             HDC mdc = CreateCompatibleDC(dc);
+            if (!mdc) break;
             SelectObject(mdc, g_backdrop_bmp);
             BITMAP bm = {0};
             GetObjectA(g_backdrop_bmp, sizeof(bm), &bm);
