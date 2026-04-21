@@ -1204,6 +1204,10 @@ class MainWindow(QMainWindow):
         )
         form.addRow("Shortcut target:", shortcut_target_edit)
 
+        sac_warn_chk = QCheckBox("Show antivirus / Smart App Control warning when selected")
+        sac_warn_chk.setChecked(bool(data.get("sac_warning", False)) if data else False)
+        form.addRow("", sac_warn_chk)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -1227,6 +1231,7 @@ class MainWindow(QMainWindow):
             "group":            group_edit.text().strip(),
             "requires":         requires,
             "shortcut_target":  shortcut_target_edit.text().strip(),
+            "sac_warning":      sac_warn_chk.isChecked(),
         }
 
     @staticmethod
@@ -1237,7 +1242,8 @@ class MainWindow(QMainWindow):
         req_str = f"  [requires: {', '.join(str(r) for r in req)}]" if req else ""
         folder_name = Path(c["folder"]).name if c.get("folder") else ""
         sc = f"  [→ {c['shortcut_target']}]" if c.get("shortcut_target") else ""
-        return f"[{chk}]  {c['label']}  ({folder_name}){grp}{req_str}{sc}"
+        sac = "  [! SAC warning]" if c.get("sac_warning") else ""
+        return f"[{chk}]  {c['label']}  ({folder_name}){grp}{req_str}{sc}{sac}"
 
     def _on_rp_comp_add(self):
         comp = self._component_dialog("Add Optional Component")

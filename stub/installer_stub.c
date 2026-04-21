@@ -39,6 +39,7 @@
 #define COL_ERROR       RGB(0xe6, 0x46, 0x46)
 #define COL_BORDER      RGB(0x2a, 0x2a, 0x3a)
 #define COL_PROGRESS_BG RGB(0x1a, 0x1a, 0x24)
+#define COL_WARN        RGB(0xe8, 0xa0, 0x30)
 
 /* ---- Control IDs ---- */
 #define IDC_STATUS       1001
@@ -150,6 +151,7 @@ static HWND       g_hwnd_desc        = NULL; /* description label (dim colour) *
 static HWND       g_hwnd_summary      = NULL; /* files·size label (dim colour) */
 static HWND       g_hwnd_sec_settings = NULL; /* "SETTINGS" section header (dim) */
 static HWND       g_hwnd_sec_comps    = NULL; /* "OPTIONAL COMPONENTS" section header (dim) */
+static HWND       g_hwnd_sac_warn     = NULL; /* SAC/AV warning label (hidden when irrelevant) */
 
 /* ---- Optional components ---- */
 typedef struct {
@@ -160,6 +162,7 @@ typedef struct {
     int  requires[MAX_COMPONENTS];  /* 1-based indices of components this one depends on */
     int  num_requires;
     char shortcut_target[512];      /* overrides g_meta.shortcut_target if non-empty */
+    int  sac_warning;               /* show SAC/AV warning when this component is checked */
     HWND hwnd_ctrl;
 } ComponentInfo;
 
@@ -326,6 +329,7 @@ static void json_parse_components(const char *json)
         c->num_requires    = json_parse_int_array(tmp, "requires",
                                                   c->requires, MAX_COMPONENTS);
         json_get_str(tmp, "shortcut_target", c->shortcut_target, sizeof(c->shortcut_target));
+        c->sac_warning     = json_get_bool(tmp, "sac_warning", 0);
         free(tmp);
 
         if (c->index > 0 && c->label[0])
@@ -1389,6 +1393,17 @@ static void refresh_component_states(void)
             EnableWindow(cj->hwnd_ctrl, TRUE);
         }
     }
+
+    /* Show SAC warning if any flagged component is currently checked */
+    if (g_hwnd_sac_warn) {
+        int show = 0;
+        for (int j = 0; j < g_num_components && !show; j++) {
+            if (g_components[j].sac_warning && g_components[j].hwnd_ctrl &&
+                SendMessageA(g_components[j].hwnd_ctrl, BM_GETCHECK, 0, 0) == BST_CHECKED)
+                show = 1;
+        }
+        ShowWindow(g_hwnd_sac_warn, show ? SW_SHOW : SW_HIDE);
+    }
 }
 
 /* ==================================================================== */
@@ -1609,6 +1624,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 SendMessageA(c->hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
             }
         }
+
+        /* SAC warning label — only created when at least one component carries the flag */
+        int any_sac = 0;
+        for (int ci = 0; ci < g_num_components; ci++)
+            if (g_components[ci].sac_warning) { any_sac = 1; break; }
+        if (any_sac) {
+            g_hwnd_sac_warn = CreateWindowExA(0, "STATIC",
+                "! One or more selected components may be flagged by Windows Defender "
+                "or Smart App Control.",
+                WS_CHILD | SS_LEFT,
+                col2_x, right_y, col2_w, 28, hwnd, NULL, NULL, NULL);
+            SendMessageA(g_hwnd_sac_warn, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            right_y += 32;
+        }
+
         refresh_component_states();
 
         /* ── Disk space label (below whichever column is taller) ──── */
@@ -1705,6 +1735,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CTLCOLORSTATIC: {
         HDC  dc  = (HDC)wp;
         HWND ctl = (HWND)lp;
+        if (ctl == g_hwnd_sac_warn) {
+            SetTextColor(dc, COL_WARN);
+            SetBkColor(dc, COL_BG);
+            return (LRESULT)g_brush_bg;
+        }
         if (ctl == g_hwnd_log) {
             SetTextColor(dc, COL_TEXT_DIM);
             SetBkColor(dc, COL_LOG_BG);
