@@ -1171,11 +1171,21 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             if (ds.hf != INVALID_HANDLE_VALUE) { CloseHandle(ds.hf); ds.hf = INVALID_HANDLE_VALUE; }
             ZSTD_freeDStream(zds);
         } else {
-            /* ---- LZMA decompression ---- */
+            /* ---- LZMA decompression (multi-threaded when low_load is off) ---- */
             lzma_stream strm = LZMA_STREAM_INIT;
-            if (lzma_stream_decoder(&strm, UINT64_MAX, 0) != LZMA_OK) {
-                success = 0;
-                break; /* strm uninitialised — lzma_end() not needed */
+            {
+                SYSTEM_INFO si = {0};
+                GetSystemInfo(&si);
+                uint32_t nthreads = low_load ? 1 : (uint32_t)si.dwNumberOfProcessors;
+                if (nthreads < 1) nthreads = 1;
+                lzma_mt mt_opts = {0};
+                mt_opts.threads            = nthreads;
+                mt_opts.memlimit_threading = UINT64_MAX;
+                mt_opts.memlimit_stop      = UINT64_MAX;
+                if (lzma_stream_decoder_mt(&strm, &mt_opts) != LZMA_OK) {
+                    success = 0;
+                    break; /* strm uninitialised — lzma_end() not needed */
+                }
             }
 
             uint64_t    total_read = 0;
