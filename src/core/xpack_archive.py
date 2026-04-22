@@ -115,6 +115,7 @@ def _compress_stream_to_tmpfile(
     codec: str,
     file_entries_out: list,
     prog_callback: Optional[Callable[[int, int], None]] = None,
+    tmp_dir: Optional[Path] = None,
 ) -> Path:
     """
     Stream all files in *specs* through the compressor, writing compressed
@@ -123,7 +124,7 @@ def _compress_stream_to_tmpfile(
     Populates *file_entries_out* with one dict per file.
     The caller must delete the returned Path when done.
     """
-    fd, tmp_name = tempfile.mkstemp(suffix=".xpk_stream")
+    fd, tmp_name = tempfile.mkstemp(suffix=".xpk_stream", dir=tmp_dir)
     try:
         with os.fdopen(fd, "wb") as out_f:
             _do_compress_to_file(
@@ -296,6 +297,7 @@ def build(
     threads: int = 1,
     codec: str = "lzma",
     progress: Optional[Callable[[int, str], None]] = None,
+    tmp_dir: Optional[Path] = None,
 ) -> tuple[Path, int, int, list[dict]]:
     """
     Walk *game_dir* (and any optional component folders), compress into an
@@ -350,13 +352,13 @@ def build(
 
     _compress_sequential(
         stream_specs, quality, threads, codec,
-        all_file_entries, streams_out, _prog,
+        all_file_entries, streams_out, _prog, tmp_dir,
     )
 
     total_uncompressed = sum(e["size"] for e in all_file_entries)
 
     _prog(95, "Encoding archive…")
-    xpack_tmp = _assemble_xpack(all_file_entries, streams_out)
+    xpack_tmp = _assemble_xpack(all_file_entries, streams_out, tmp_dir)
     _prog(100, "Archive complete.")
 
     return xpack_tmp, total_files, total_uncompressed, all_file_entries
@@ -374,6 +376,7 @@ def _compress_sequential(
     all_file_entries: list,
     streams_out: list,
     _prog: Callable,
+    tmp_dir: Optional[Path] = None,
 ) -> None:
     """Compress each stream in turn, writing to temp files."""
     weights = [est for _, _, _, est in stream_specs]
@@ -400,7 +403,7 @@ def _compress_sequential(
 
         stream_tmp = _compress_stream_to_tmpfile(
             comp_idx, specs, quality, threads, codec,
-            file_entries, _file_prog,
+            file_entries, _file_prog, tmp_dir,
         )
 
         all_file_entries.extend(file_entries)
@@ -418,13 +421,14 @@ def _compress_sequential(
 def _assemble_xpack(
     files: list[dict],
     streams: list[tuple[int, Path, int]],  # (comp_idx, tmp_path, csize)
+    tmp_dir: Optional[Path] = None,
 ) -> Path:
     """
     Assemble the XPACK01 blob into a new temp file, streaming each compressed
     stream from its own temp file.  Cleans up the per-stream temp files.
     Returns a Path to the assembled XPACK01 temp file.
     """
-    fd, xpack_name = tempfile.mkstemp(suffix=".xpack01")
+    fd, xpack_name = tempfile.mkstemp(suffix=".xpack01", dir=tmp_dir)
     try:
         with os.fdopen(fd, "wb") as out:
             # File table
