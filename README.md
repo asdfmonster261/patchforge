@@ -25,16 +25,20 @@ A video game binary patch and installer generator that produces self-contained W
 
 ### Repack mode
 
-- **Solid LZMA2 archive** — entire game directory compressed into an XPACK01 blob using XZ/LZMA2
-- **Multi-threaded compression** — xz CLI MT encoder (liblzma native); up to 32 threads; all threads applied to each stream sequentially
-- **Four quality presets** — Fast (lzma2-1), Normal (lzma2-6), Max (lzma2-9), Ultra64 (lzma2-9, 64 MB dict)
-- **Optional components** — extra folders offered as checkboxes or radio-button groups during install; each group has an enable/disable toggle so the user can opt out of the whole group
+- **Solid archive** — entire game directory compressed into an XPACK01 blob using XZ/LZMA2 or Zstandard
+- **Two codecs** — LZMA (`lzma`) and Zstandard (`zstd`); selectable per project
+- **Multi-threaded compression** — MT encoder for both codecs; thread count derived automatically from CPU core count at runtime
+- **Optional components** — extra folders offered as checkboxes or radio-button groups during install; each group has an enable/disable toggle; components can declare dependencies on other components; a per-component flag shows an antivirus / Smart App Control warning when that component is selected
+- **Multi-threaded installation** — LZMA installer uses `lzma_stream_decoder_mt` to decompress across all available cores; respects the "Reduce system load" checkbox
+- **CRC32 integrity verification** — every file is checksummed at build time and verified on extraction
+- **Uninstaller** — optionally embeds a standalone uninstaller and registers the app in Add/Remove Programs
+- **Shortcuts** — Desktop and Start Menu shortcuts with configurable target and display name
 - **Repack project files** — save and reload all settings as `.xpr` JSON files
 
 ### Shared
 
 - **Icon injection** — embed a custom `.ico` into the output executable
-- **Backdrop image** — optional PNG/JPEG/BMP background drawn behind the UI
+- **Backdrop image** — optional PNG/JPEG/BMP background drawn behind the UI; displayed at fixed 616:353 aspect ratio
 - **Smart UAC elevation** — automatically relaunches as administrator if write access is denied
 - **Metadata fields** — app note, copyright, contact, company info, custom window title, custom output exe name/version
 - **Drag-and-drop** — drop folders and files directly onto path fields in the GUI
@@ -48,7 +52,8 @@ A video game binary patch and installer generator that produces self-contained W
 - Python 3.10+
 - PySide6 ≥ 6.5.0 (GUI only; CLI works without it)
 - Linux build host (outputs are Windows executables)
-- `xz` CLI (for multi-threaded repack compression; already present on most Linux distros)
+- `xz` CLI (for multi-threaded LZMA repack compression; already present on most Linux distros)
+- `zstd` CLI (for Zstandard repack compression)
 - MinGW-w64 cross-compiler (only needed to rebuild stubs from source)
 
 ## Installation
@@ -103,6 +108,7 @@ patchforge repack \
   --game-dir game/ \
   --output-dir dist/ \
   --app-name "My Game" \
+  --codec lzma \
   --compression max \
   --threads 8 \
   --arch x64
@@ -119,7 +125,19 @@ patchforge repack --game-dir game/ --app-name "My Game" \
   --component '{"label":"Japanese voices","folder":"voices_jp/","default_checked":false,"group":"voices"}'
 ```
 
-Each `--component` is a JSON object with `label`, `folder`, `default_checked` (bool), `group` (string; empty = standalone checkbox, shared name = radio-button group), and optionally `shortcut_target` (overrides the main shortcut target when this component is selected). The flag is repeatable.
+Each `--component` is a JSON object with:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `label` | string | Display name shown in the installer |
+| `folder` | string | Path to the folder of files for this component |
+| `default_checked` | bool | Whether the component is selected by default |
+| `group` | string | Empty = standalone checkbox; shared name = mutually exclusive radio-button group |
+| `requires` | int[] | 1-based indices of components that must be selected for this one to be enabled |
+| `shortcut_target` | string | Overrides the main shortcut target when this component is selected |
+| `sac_warning` | bool | Show an antivirus / Smart App Control warning when this component is selected |
+
+The flag is repeatable.
 
 Load a `.xpr` project file and override individual fields:
 
@@ -144,11 +162,12 @@ patchforge repack --project installer.xpr --threads 16 --output-dir dist/
 | `--window-title TEXT` | — | Installer title bar text (defaults to app name) |
 | `--installer-exe-name STEM` | — | Output exe filename stem (default: auto) |
 | `--installer-exe-version VER` | — | Informational version string for the exe |
-| `--compression QUALITY` | `max` | `fast` \| `normal` \| `max` \| `ultra64` |
-| `--threads N` | `1` | Compression threads (1 = stdlib lzma; >1 = xz CLI MT) |
+| `--codec CODEC` | `lzma` | `lzma` \| `zstd` |
+| `--compression QUALITY` | `max` | LZMA: `fast` \| `normal` \| `max` — Zstd: `fast` \| `normal` \| `max` \| `ultra` |
+| `--threads N` | `1` | Compression threads (auto-populated from CPU count in GUI) |
 | `--arch ARCH` | `x64` | `x64` \| `x86` |
 | `--icon-path FILE` | — | `.ico` file to embed as the installer's icon |
-| `--backdrop FILE` | — | Background image for the installer window (PNG/JPEG/BMP) |
+| `--backdrop FILE` | — | Background image (PNG/JPEG/BMP); displayed at 616:353 aspect ratio |
 | `--install-registry-key KEY` | — | Registry key written to HKCU after install |
 | `--run-after CMD` | — | Shell command to run after successful install |
 | `--detect-running EXE` | — | Warn if this process is running before install |
@@ -191,7 +210,7 @@ patchforge show-repack-project installer.xpr
 | `--engine ENGINE` | `hdiffpatch` | `hdiffpatch` \| `xdelta3` \| `jojodiff` |
 | `--compression PRESET` | engine default | Compression preset key (see below) |
 | `--threads N` | `1` | Worker threads for patch generation |
-| `--quality LEVEL` | `max` | HDiffPatch compressor quality: `fast` / `normal` / `max` / `ultra64` |
+| `--quality LEVEL` | `max` | HDiffPatch compressor quality: `fast` / `normal` / `max` |
 | `--verify METHOD` | `crc32c` | `crc32c` \| `md5` \| `filesize` |
 | `--find-method METHOD` | `manual` | `manual` \| `registry` \| `ini` |
 | `--registry-key KEY` | — | Windows registry key path |
@@ -236,7 +255,7 @@ patchforge show-project patch.xpm
 | **`set6_lzma2`** | **Set6 \| 64b + LZMA2 (default)** |
 | `set1_bzip2` … `set6_bzip2` | Same sets with PBZIP2 |
 
-Thread count (1, 2, 4, 8, 16, 32) is a separate setting passed as `-p-N` to `hdiffz`.
+Thread count is a separate setting passed as `-p-N` to `hdiffz`. The GUI populates the thread dropdown automatically from the system's CPU core count.
 
 ### xdelta3
 
@@ -262,7 +281,7 @@ Thread count (1, 2, 4, 8, 16, 32) is a separate setting passed as `-p-N` to `hdi
 |---|---|
 | General use (most games) | **HDiffPatch** `set6_lzma2` |
 | Games with many small files and no large ones | **JojoDiff** `optimal` |
-| Smallest possible patch, long diff time acceptable | HDiffPatch `set6_lzma2` with `ultra64` quality |
+| Smallest possible patch, long diff time acceptable | HDiffPatch `set6_lzma2` with `max` quality |
 | Quick test builds | xdelta3 `paul44` |
 
 xdelta3 is almost always the least efficient choice for binary game data.
@@ -275,17 +294,35 @@ Repack compresses a complete game directory into a standalone installer exe. The
 
 ### Compression
 
+Two codecs are available:
+
+**LZMA (`--codec lzma`, default)**
+
 | Quality key | Description |
 |------------|-------------|
 | `fast` | lzma2-1 — fastest, largest output |
 | `normal` | lzma2-6 — balanced |
 | **`max`** | **lzma2-9 — best compression (default)** |
-| `ultra64` | lzma2-9 with 64 MB dictionary — marginal gain over max |
 
-Thread count (1, 2, 4, 8, 16, 32) controls parallelism:
+- 1 thread: uses stdlib lzma (no external dependencies)
+- \>1 threads: delegates to the `xz` CLI with `--block-size=64MiB` so the installer can decompress each block independently across multiple cores
 
-- **1 thread** — stdlib lzma (no external dependencies)
-- **>1 threads** — delegates to the `xz` CLI which uses `lzma_stream_encoder_mt` (native liblzma multi-threaded encoder). Output is a single valid XZ stream, fully compatible with the installer's decoder. Streams are always compressed sequentially — all threads are given to each stream in turn.
+**Zstandard (`--codec zstd`)**
+
+| Quality key | Description |
+|------------|-------------|
+| `fast` | zstd-1 — fastest |
+| `normal` | zstd-9 — balanced |
+| `max` | zstd-19 — best compression |
+| `ultra` | zstd-22 — maximum compression |
+
+- Delegates to the `zstd` CLI for both single and multi-threaded compression
+
+### Installation performance
+
+The installer uses `lzma_stream_decoder_mt` (liblzma 5.3+) to decompress LZMA streams across all available CPU cores, taking advantage of the independent 64 MB blocks produced by the multi-threaded encoder. ZSTD decompression is single-threaded (ZSTD frames have inter-block dependencies that prevent parallel decoding).
+
+Checking **Reduce system load** in the installer UI drops the decoder to 1 thread, which is recommended for HDDs to avoid seek thrashing.
 
 ### Optional Components
 
@@ -293,6 +330,8 @@ Each component is a folder of files merged on top of the base game during instal
 
 - **Checkboxes** — when the group field is blank (independent, togglable)
 - **Group header + radio buttons** — when two or more components share the same group name; the group header is a checkbox that enables or disables the whole group, and the radio buttons beneath it are mutually exclusive within the group
+
+Components can declare `requires` dependencies on other components (by 1-based index); the installer auto-enables required components and greys out unavailable ones. Components with `sac_warning: true` display an amber warning banner in the installer when selected, useful for components that may trigger antivirus or Windows Smart App Control.
 
 Up to 16 components are supported.
 
@@ -315,6 +354,7 @@ All repack settings are saved as a JSON file. Example:
   "game_dir": "/path/to/game_files",
   "output_dir": "dist/",
   "arch": "x64",
+  "codec": "lzma",
   "compression": "max",
   "threads": 8,
   "icon_path": "assets/icon.ico",
@@ -336,21 +376,27 @@ All repack settings are saved as a JSON file. Example:
       "folder": "/path/to/hires_textures",
       "default_checked": false,
       "group": "",
-      "shortcut_target": ""
+      "requires": [],
+      "shortcut_target": "",
+      "sac_warning": false
     },
     {
       "label": "English voices",
       "folder": "/path/to/voices_en",
       "default_checked": true,
       "group": "voices",
-      "shortcut_target": ""
+      "requires": [],
+      "shortcut_target": "",
+      "sac_warning": false
     },
     {
       "label": "Japanese voices",
       "folder": "/path/to/voices_jp",
       "default_checked": false,
       "group": "voices",
-      "shortcut_target": ""
+      "requires": [],
+      "shortcut_target": "",
+      "sac_warning": false
     }
   ]
 }
@@ -439,10 +485,10 @@ All patch mode settings can be saved and reloaded as a JSON project file. Exampl
   Per stream:
     [ 4B LE: component_index    ]
     [ 8B LE: compressed size    ]
-    [ N bytes: XZ/LZMA2 stream  ]
+    [ N bytes: XZ/LZMA2 or Zstandard stream  ]
 ```
 
-Each optional component has its own compressed XZ stream. The installer decompresses only the streams corresponding to the user's selections. File offsets are relative to the start of their own stream's decompressed data.
+Each optional component has its own compressed stream. The installer decompresses only the streams corresponding to the user's selections. File offsets are relative to the start of their own stream's decompressed data. The codec (`lzma` or `zstd`) is recorded in the JSON metadata.
 
 The stub reads backwards from the end of its own file to locate and parse the embedded data. End-users just double-click the `.exe` — no installer or runtime required.
 
@@ -461,11 +507,12 @@ Pre-built stubs live in `stub/prebuilt/`. They are compiled C programs that prov
 | `xdelta3_x64.exe` / `_x86.exe` | xdelta3 stub (DJW + LZMA secondary) |
 | `jojodiff_x64.exe` / `_x86.exe` | JojoDiff stub |
 
-**Repack (installer) stubs:**
+**Repack stubs:**
 
 | File | Description |
 |------|-------------|
-| `installer_x64.exe` / `_x86.exe` | XPACK01 installer stub |
+| `installer_x64.exe` / `_x86.exe` | XPACK01 installer stub (LZMA2 + Zstandard) |
+| `uninstaller_x64.exe` / `_x86.exe` | Standalone uninstaller stub |
 
 ### Rebuilding stubs from source
 
@@ -473,12 +520,14 @@ Requires MinGW-w64 cross-compilers.
 
 ```bash
 cd stub
-make           # x64 stubs for all engines + installer
-make win32     # x86 stubs
-make full      # HDiffPatch full stubs (zlib + bzip2); run `make deps` first
-make full32    # HDiffPatch full stubs, x86
-make deps      # Cross-compile zlib and bzip2 static libs
-make clean     # Remove prebuilt stubs
+make                # x64 update-patch stubs (hdiffpatch, xdelta3, jojodiff)
+make win32          # x86 update-patch stubs
+make installer      # installer stubs (x64 + x86)
+make uninstaller    # uninstaller stubs (x64 + x86)
+make full           # HDiffPatch full stubs (zlib + bzip2); run `make deps` first
+make full32         # HDiffPatch full stubs, x86
+make deps           # Cross-compile zlib and bzip2 static libs
+make clean          # Remove all prebuilt stubs
 ```
 
 Full stubs are only needed when using `zip/*` or `bzip/*` compression in HDiffPatch. All other presets work with the standard stubs.
@@ -492,7 +541,7 @@ patchforge/
 ├── pyproject.toml
 ├── engines/linux-x64/           # Linux diff binaries (hdiffz, xdelta3, jdiff, …)
 ├── src/
-│   ├── cli/main.py              # CLI argument parser & commands (patch mode)
+│   ├── cli/main.py              # CLI argument parser & commands
 │   └── core/
 │       ├── project.py           # ProjectSettings dataclass, save/load (.xpm)
 │       ├── patch_builder.py     # Patch build orchestration
@@ -517,8 +566,8 @@ patchforge/
     ├── hdiffpatch_stub.c
     ├── xdelta3_stub.c
     ├── jojodiff_stub.c
-    ├── installer_stub.c         # XPACK01 installer stub
-    ├── dir_patch_format.h       # PFMD container parser (C)
+    ├── installer_stub.c         # XPACK01 installer stub (LZMA2 + Zstandard)
+    ├── uninstaller_stub.c       # Standalone uninstaller stub
     ├── prebuilt/                # Pre-compiled stub EXEs
-    └── third_party/             # liblzma, zlib, bzip2 headers + static libs
+    └── third_party/             # liblzma, zlib, bzip2, zstd headers + static libs
 ```
