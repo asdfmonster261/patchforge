@@ -22,6 +22,7 @@ The JSON metadata contains:
 
 import json
 import re
+import shutil
 import struct
 from pathlib import Path
 
@@ -204,7 +205,7 @@ def _build_uninstaller_blob(
 
 def package_repack(
     arch: str,
-    pack_blob: bytes,
+    pack_blob_path: Path,
     metadata: dict,
     output_path: Path,
     file_list: list[dict] | None = None,
@@ -214,6 +215,10 @@ def package_repack(
 ) -> Path:
     """
     Build a self-extracting installer .exe.
+
+    pack_blob_path is a Path to the XPACK01 temp file produced by
+    xpack_archive.build(); it is stream-copied into the output exe so the
+    compressed game data never needs to live in process memory.
 
     Output layout:
       [installer_stub.exe  ]
@@ -238,7 +243,7 @@ def package_repack(
         stub_bytes = pe_icon.inject(stub_bytes, Path(icon_path))
 
     pack_data_offset = len(stub_bytes)
-    pack_data_size   = len(pack_blob)
+    pack_data_size   = Path(pack_blob_path).stat().st_size
 
     # Build uninstaller blob (if requested)
     arp_subkey = _make_arp_subkey(metadata.get("app_name", ""))
@@ -269,7 +274,8 @@ def package_repack(
 
     with open(output_path, "wb") as f:
         f.write(stub_bytes)
-        f.write(pack_blob)
+        with open(pack_blob_path, "rb") as blob_f:
+            shutil.copyfileobj(blob_f, f)
         f.write(uninst_blob)
         if backdrop_data:
             f.write(backdrop_data)

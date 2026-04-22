@@ -22,12 +22,23 @@ The EXE layout produced by exe_packager.package_repack():
   [JSON metadata     ]
   [4B LE: meta_len   ]
   [8B magic: XPACK01\\x00]
+
+Memory model
+------------
+Files are piped one at a time through the compressor — the entire game is
+never loaded into RAM simultaneously.  Compressed output is written directly
+to a temp file on disk.  The caller receives a Path to that temp file and is
+responsible for deleting it after packaging.  Peak in-process memory is
+bounded by a single file read + the compressor's own internal buffers.
 """
 
 import lzma
 import os
+import shutil
 import struct
 import subprocess
+import tempfile
+import threading
 import zlib
 from pathlib import Path
 from typing import Callable, Optional
@@ -89,64 +100,171 @@ THREAD_OPTIONS = _build_thread_options()
 
 
 # ---------------------------------------------------------------------------
-# Compression helpers
+# Internal: compress one component's files directly to a temp file
 # ---------------------------------------------------------------------------
 
-def _compress(data: bytes, quality: str, threads: int = 1, codec: str = "lzma") -> bytes:
+def _compress_stream_to_tmpfile(
+    comp_idx: int,
+    specs: list[tuple[str, str]],
+    quality: str,
+    threads: int,
+    codec: str,
+    file_entries_out: list,
+    prog_callback: Optional[Callable[[int, int], None]] = None,
+) -> Path:
     """
-    Compress *data* using the selected codec.
+    Stream all files in *specs* through the compressor, writing compressed
+    output to a new temp file.  Returns the Path to that temp file.
 
-    codec == "lzma":
-      threads > 1 delegates to the ``xz`` CLI (multi-threaded XZ stream).
-      threads == 1 uses stdlib lzma (single-threaded).
-
-    codec == "zstd":
-      Delegates to the ``zstd`` CLI (avoids Python-binding version mismatches).
+    Populates *file_entries_out* with one dict per file.
+    The caller must delete the returned Path when done.
     """
-    if codec == "zstd":
-        level = _ZSTD_LEVEL_MAP.get(quality, 19)
-        cmd = ["zstd", f"-{level}", f"-T{threads}", "-c"]
-        if level == 22:
-            cmd = ["zstd", "--ultra", "-22", f"-T{threads}", "-c"]
-        try:
-            result = subprocess.run(cmd, input=data, capture_output=True)
-        except FileNotFoundError:
-            raise RuntimeError("zstd not found — install zstd and ensure it is on PATH")
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"zstd failed (level={level}, T={threads}): "
-                + result.stderr.decode("utf-8", errors="replace")[:300]
+    fd, tmp_name = tempfile.mkstemp(suffix=".xpk_stream")
+    try:
+        with os.fdopen(fd, "wb") as out_f:
+            _do_compress_to_file(
+                comp_idx, specs, quality, threads, codec,
+                file_entries_out, prog_callback, out_f,
             )
-        return result.stdout
-
-    # --- LZMA path ---
-    if not data:
-        return lzma.compress(b"", format=lzma.FORMAT_XZ)
-
-    if threads > 1:
-        preset = _XZ_PRESET.get(quality, 9)
-        cmd = ["xz", f"-T{threads}", f"-{preset}", "-c"]
-        # For preset 9, xz's auto block-size is 3 × 64 MB = 192 MB.
-        # Force 64 MB blocks so MT kicks in on any input larger than ~128 MB.
-        if preset >= 9:
-            cmd.insert(-1, "--block-size=64MiB")
+    except Exception:
         try:
-            result = subprocess.run(cmd, input=data, capture_output=True)
-        except FileNotFoundError:
-            raise RuntimeError("xz not found — install xz-utils and ensure it is on PATH")
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"xz failed (preset={preset}, T={threads}): "
-                + result.stderr.decode("utf-8", errors="replace")[:300]
-            )
-        return result.stdout
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    return Path(tmp_name)
 
-    # Single-threaded: stdlib lzma
-    preset, dict_size = _QUALITY_MAP.get(quality, (9, None))
-    if dict_size is not None:
-        filters = [{"id": lzma.FILTER_LZMA2, "dict_size": dict_size}]
-        return lzma.compress(data, format=lzma.FORMAT_XZ, filters=filters)
-    return lzma.compress(data, format=lzma.FORMAT_XZ, preset=preset)
+
+def _do_compress_to_file(
+    comp_idx: int,
+    specs: list[tuple[str, str]],
+    quality: str,
+    threads: int,
+    codec: str,
+    file_entries_out: list,
+    prog_callback: Optional[Callable[[int, int], None]],
+    out_f,
+) -> None:
+    """Write compressed stream for *specs* into *out_f*.  Never loads all
+    file data into memory at once: files are read and forwarded one at a time."""
+
+    if not specs:
+        # Produce a valid empty compressed stream so the reader doesn't choke.
+        if codec == "zstd":
+            try:
+                r = subprocess.run(["zstd", "-1", "-c"], input=b"", capture_output=True)
+                if r.returncode == 0:
+                    out_f.write(r.stdout)
+                    return
+            except FileNotFoundError:
+                pass
+        out_f.write(lzma.compress(b"", format=lzma.FORMAT_XZ))
+        return
+
+    use_cli = (codec == "zstd") or (threads > 1)
+
+    if use_cli:
+        if codec == "zstd":
+            level = _ZSTD_LEVEL_MAP.get(quality, 19)
+            if level == 22:
+                cmd = ["zstd", "--ultra", "-22", f"-T{threads}", "-c"]
+            else:
+                cmd = ["zstd", f"-{level}", f"-T{threads}", "-c"]
+        else:
+            preset = _XZ_PRESET.get(quality, 9)
+            cmd = ["xz", f"-T{threads}", f"-{preset}", "-c"]
+            if preset >= 9:
+                cmd.insert(-1, "--block-size=64MiB")
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            tool = "zstd" if codec == "zstd" else "xz"
+            raise RuntimeError(f"{tool} not found — install it and ensure it is on PATH")
+
+        write_error: list[Optional[Exception]] = [None]
+        stderr_buf: list[bytes] = []
+
+        def _write_stdin() -> None:
+            offset = 0
+            try:
+                for i, (rel, abs_path) in enumerate(specs):
+                    data = Path(abs_path).read_bytes()
+                    file_entries_out.append({
+                        "path":      rel,
+                        "offset":    offset,
+                        "size":      len(data),
+                        "component": comp_idx,
+                        "crc32":     zlib.crc32(data) & 0xFFFFFFFF,
+                    })
+                    offset += len(data)
+                    proc.stdin.write(data)
+                    del data   # release immediately — don't accumulate
+                    if prog_callback and ((i + 1) % 200 == 0 or i + 1 == len(specs)):
+                        prog_callback(i + 1, len(specs))
+            except Exception as exc:
+                write_error[0] = exc
+            finally:
+                try:
+                    proc.stdin.close()
+                except OSError:
+                    pass
+
+        def _read_stderr() -> None:
+            stderr_buf.append(proc.stderr.read())
+
+        writer = threading.Thread(target=_write_stdin, daemon=True)
+        stderr_reader = threading.Thread(target=_read_stderr, daemon=True)
+        writer.start()
+        stderr_reader.start()
+
+        # Stream compressor stdout directly to temp file — no in-memory buffer.
+        shutil.copyfileobj(proc.stdout, out_f)
+
+        writer.join()
+        stderr_reader.join()
+        proc.wait()
+
+        if write_error[0]:
+            raise write_error[0]
+        if proc.returncode != 0:
+            tool = "zstd" if codec == "zstd" else "xz"
+            err = b"".join(stderr_buf).decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"{tool} failed (returncode={proc.returncode}): {err}")
+
+    else:
+        # Single-threaded stdlib lzma — incremental compressor, one file at a time.
+        preset, dict_size = _QUALITY_MAP.get(quality, (9, None))
+        if dict_size is not None:
+            filters = [{"id": lzma.FILTER_LZMA2, "dict_size": dict_size}]
+            compressor = lzma.LZMACompressor(format=lzma.FORMAT_XZ, filters=filters)
+        else:
+            compressor = lzma.LZMACompressor(format=lzma.FORMAT_XZ, preset=preset)
+
+        offset = 0
+        for i, (rel, abs_path) in enumerate(specs):
+            data = Path(abs_path).read_bytes()
+            file_entries_out.append({
+                "path":      rel,
+                "offset":    offset,
+                "size":      len(data),
+                "component": comp_idx,
+                "crc32":     zlib.crc32(data) & 0xFFFFFFFF,
+            })
+            offset += len(data)
+            chunk = compressor.compress(data)
+            if chunk:
+                out_f.write(chunk)
+            del data
+            if prog_callback and ((i + 1) % 200 == 0 or i + 1 == len(specs)):
+                prog_callback(i + 1, len(specs))
+
+        out_f.write(compressor.flush())
 
 
 # ---------------------------------------------------------------------------
@@ -160,17 +278,14 @@ def build(
     threads: int = 1,
     codec: str = "lzma",
     progress: Optional[Callable[[int, str], None]] = None,
-) -> tuple[bytes, int, int, list[dict]]:
+) -> tuple[Path, int, int, list[dict]]:
     """
-    Walk *game_dir* (and any optional component folders), compress into
-    an XPACK01 blob.
+    Walk *game_dir* (and any optional component folders), compress into an
+    XPACK01 temp file, and return its path.
 
-    components: list of {"label": str, "folder": str, ...}
-    codec:      "lzma" (XZ/LZMA2) or "zstd"
-    threads:    thread count per stream (1 = single-threaded; >1 = MT).
-                Streams are always compressed sequentially.
+    Returns (xpack_tmp_path, total_files, total_uncompressed_bytes, file_list).
+    The caller is responsible for deleting *xpack_tmp_path* after use.
 
-    Returns (xpack01_blob, total_files, total_uncompressed_bytes, file_list).
     file_list is [{"path": str, "component": int, "offset": int, "size": int}].
     progress(pct 0-100, message) is called throughout.
     """
@@ -181,7 +296,6 @@ def build(
     game_dir = Path(game_dir)
     components = components or []
 
-    # Build ordered list of (comp_idx, label, folder)
     streams_info = [(0, "base game", game_dir)] + [
         (i + 1, c.get("label", f"component {i + 1}"), Path(c["folder"]))
         for i, c in enumerate(components)
@@ -189,7 +303,6 @@ def build(
 
     _prog(0, "Scanning directories…")
 
-    # Scan file paths and sizes (metadata only — no reading yet)
     stream_specs: list[tuple[int, str, list[tuple[str, str]], int]] = []
     for comp_idx, label, folder in streams_info:
         files = sorted(
@@ -204,7 +317,6 @@ def build(
         stream_specs.append((comp_idx, label, specs, max(estimated, 1)))
 
     total_files = sum(len(specs) for _, _, specs, _ in stream_specs)
-    total_estimated = sum(est for _, _, _, est in stream_specs)
 
     if total_files == 0:
         raise ValueError(f"No files found in: {game_dir}")
@@ -215,24 +327,25 @@ def build(
              f"Compressing with {threads} thread(s)…")
 
     all_file_entries: list[dict] = []
-    streams_out: list[tuple[int, bytes]] = []  # (comp_idx, compressed_bytes), ordered
+    # (comp_idx, stream_tmp_path, compressed_size)
+    streams_out: list[tuple[int, Path, int]] = []
 
     _compress_sequential(
         stream_specs, quality, threads, codec,
-        total_estimated, all_file_entries, streams_out, _prog,
+        all_file_entries, streams_out, _prog,
     )
 
     total_uncompressed = sum(e["size"] for e in all_file_entries)
 
     _prog(95, "Encoding archive…")
-    blob = _encode(all_file_entries, streams_out)
+    xpack_tmp = _assemble_xpack(all_file_entries, streams_out)
     _prog(100, "Archive complete.")
 
-    return blob, total_files, total_uncompressed, all_file_entries
+    return xpack_tmp, total_files, total_uncompressed, all_file_entries
 
 
 # ---------------------------------------------------------------------------
-# Sequential compression path  (num_processes == 1)
+# Sequential compression
 # ---------------------------------------------------------------------------
 
 def _compress_sequential(
@@ -240,13 +353,11 @@ def _compress_sequential(
     quality: str,
     threads: int,
     codec: str,
-    total_estimated: int,
     all_file_entries: list,
     streams_out: list,
     _prog: Callable,
 ) -> None:
-    """Read and compress each stream one at a time."""
-    # Cumulative weight boundaries so progress is proportional to stream size.
+    """Compress each stream in turn, writing to temp files."""
     weights = [est for _, _, _, est in stream_specs]
     total_w = max(sum(weights), 1)
     cum = [0.0]
@@ -254,75 +365,81 @@ def _compress_sequential(
         cum.append(cum[-1] + w / total_w)
 
     for stream_idx, (comp_idx, label, specs, _) in enumerate(stream_specs):
-        s_start = cum[stream_idx]       # fraction of total at stream start
-        s_end   = cum[stream_idx + 1]   # fraction of total at stream end
+        s_start = cum[stream_idx]
+        s_end   = cum[stream_idx + 1]
         s_range = s_end - s_start
-
-        pieces: list[bytes] = []
-        file_entries: list[dict] = []
-        offset = 0
         total = len(specs)
 
-        for i, (rel, abs_path) in enumerate(specs):
-            data = Path(abs_path).read_bytes()
-            file_entries.append({
-                "path":      rel,
-                "offset":    offset,
-                "size":      len(data),
-                "component": comp_idx,
-                "crc32":     zlib.crc32(data) & 0xFFFFFFFF,
-            })
-            pieces.append(data)
-            offset += len(data)
-            if (i + 1) % 200 == 0 or i == total - 1:
-                # Reading occupies 0→40 % of this stream's share
-                frac = (i + 1) / total * 0.4
-                pct = 5 + int((s_start + frac * s_range) * 88)
-                _prog(pct, f"{label}: reading ({i + 1}/{total} files)…")
+        _prog(5 + int(s_start * 88),
+              f"{label}: compressing {total} file(s)…")
 
-        raw = b"".join(pieces)
-        del pieces
+        file_entries: list[dict] = []
 
-        _prog(5 + int((s_start + 0.4 * s_range) * 88),
-              f"{label}: compressing {_fmt_size(len(raw))}…")
+        def _file_prog(done: int, tot: int,
+                       _lbl=label, _ss=s_start, _sr=s_range) -> None:
+            pct = 5 + int((_ss + done / tot * _sr) * 88)
+            _prog(pct, f"{_lbl}: {done}/{tot} files…")
 
-        compressed = _compress(raw, quality, threads, codec)
-        del raw
+        stream_tmp = _compress_stream_to_tmpfile(
+            comp_idx, specs, quality, threads, codec,
+            file_entries, _file_prog,
+        )
 
         all_file_entries.extend(file_entries)
-        streams_out.append((comp_idx, compressed))
+        csize = stream_tmp.stat().st_size
+        streams_out.append((comp_idx, stream_tmp, csize))
 
-        _prog(5 + int(s_end * 88), f"{label}: done — "
-              f"{_fmt_size(len(streams_out[-1][1]))} compressed")
+        _prog(5 + int(s_end * 88),
+              f"{label}: done — {_fmt_size(csize)} compressed")
 
 
 # ---------------------------------------------------------------------------
-# Archive encoding
+# XPACK01 assembly — stream temp files into the final blob temp file
 # ---------------------------------------------------------------------------
 
-def _encode(
+def _assemble_xpack(
     files: list[dict],
-    streams: list[tuple[int, bytes]],   # (comp_idx, compressed_bytes)
-) -> bytes:
-    """Pack file table + per-component compressed streams into an XPACK01 blob."""
-    buf = bytearray()
+    streams: list[tuple[int, Path, int]],  # (comp_idx, tmp_path, csize)
+) -> Path:
+    """
+    Assemble the XPACK01 blob into a new temp file, streaming each compressed
+    stream from its own temp file.  Cleans up the per-stream temp files.
+    Returns a Path to the assembled XPACK01 temp file.
+    """
+    fd, xpack_name = tempfile.mkstemp(suffix=".xpack01")
+    try:
+        with os.fdopen(fd, "wb") as out:
+            # File table
+            out.write(struct.pack("<I", len(files)))
+            for f in files:
+                path_b = f["path"].encode("utf-8")
+                out.write(struct.pack("<H", len(path_b)))
+                out.write(path_b)
+                out.write(struct.pack("<QQII",
+                                      f["offset"], f["size"],
+                                      f["component"], f["crc32"]))
 
-    # File table
-    buf += struct.pack("<I", len(files))
-    for f in files:
-        path_b = f["path"].encode("utf-8")
-        buf += struct.pack("<H", len(path_b))
-        buf += path_b
-        buf += struct.pack("<QQII", f["offset"], f["size"], f["component"], f["crc32"])
+            # Streams
+            out.write(struct.pack("<I", len(streams)))
+            for comp_idx, tmp_path, csize in streams:
+                out.write(struct.pack("<I", comp_idx))
+                out.write(struct.pack("<Q", csize))
+                with open(tmp_path, "rb") as sf:
+                    shutil.copyfileobj(sf, out)
+    except Exception:
+        try:
+            os.unlink(xpack_name)
+        except OSError:
+            pass
+        raise
+    finally:
+        for _, tmp_path, _ in streams:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
-    # Compressed streams
-    buf += struct.pack("<I", len(streams))
-    for comp_idx, compressed in streams:
-        buf += struct.pack("<I", comp_idx)
-        buf += struct.pack("<Q", len(compressed))
-        buf += compressed
-
-    return bytes(buf)
+    return Path(xpack_name)
 
 
 # ---------------------------------------------------------------------------
