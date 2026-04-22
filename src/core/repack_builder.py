@@ -15,12 +15,14 @@ from typing import Callable, Optional
 from .repack_project import RepackSettings
 from .xpack_archive import build as build_archive
 from .exe_packager import package_repack
+from .app_settings import load as load_app_settings
 
 
 @dataclass
 class RepackResult:
     success: bool
     output_path: Optional[Path] = None
+    bin_path: Optional[Path] = None
     total_files: int = 0
     uncompressed_size: int = 0
     output_size: int = 0
@@ -164,6 +166,11 @@ def build(
     # ------------------------------------------------------------------ #
     # 5. Package                                                           #
     # ------------------------------------------------------------------ #
+    # Determine whether to split pack data into a separate .bin file.
+    app_cfg   = load_app_settings()
+    threshold = app_cfg.bin_split_threshold_gb * 1024 ** 3
+    use_bin   = settings.split_bin or (blob_path.stat().st_size >= threshold)
+
     _progress(82, "Packaging installer exe…")
 
     if settings.installer_exe_name.strip():
@@ -177,7 +184,7 @@ def build(
 
     try:
         icon = Path(settings.icon_path) if settings.icon_path else None
-        package_repack(
+        output_path, bin_path = package_repack(
             arch=settings.arch,
             pack_blob_path=blob_path,
             file_list=file_list,
@@ -186,6 +193,7 @@ def build(
             icon_path=icon,
             backdrop_data=backdrop_data,
             include_uninstaller=settings.include_uninstaller,
+            split_bin=use_bin,
         )
     except Exception as exc:
         return RepackResult(success=False, error=str(exc))
@@ -200,6 +208,7 @@ def build(
     return RepackResult(
         success=True,
         output_path=output_path,
+        bin_path=bin_path,
         total_files=total_files,
         uncompressed_size=uncompressed_size,
         output_size=output_path.stat().st_size,

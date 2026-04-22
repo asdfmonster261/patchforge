@@ -203,6 +203,9 @@ def _build_uninstaller_blob(
     return stub + data_json + data_len + b"UNINST01"
 
 
+_BIN_FILENAME = "base_game.bin"
+
+
 def package_repack(
     arch: str,
     pack_blob_path: Path,
@@ -212,22 +215,29 @@ def package_repack(
     icon_path: Path | None = None,
     backdrop_data: bytes | None = None,
     include_uninstaller: bool = True,
-) -> Path:
+    split_bin: bool = False,
+) -> tuple[Path, Path | None]:
     """
     Build a self-extracting installer .exe.
 
     pack_blob_path is a Path to the XPACK01 temp file produced by
-    xpack_archive.build(); it is stream-copied into the output exe so the
-    compressed game data never needs to live in process memory.
+    xpack_archive.build(); it is stream-copied so the compressed game data
+    never needs to live in process memory.
 
-    Output layout:
+    Single-file layout (split_bin=False):
       [installer_stub.exe  ]
       [XPACK01 blob        ]
-      [uninstaller blob    ]  (zero bytes if include_uninstaller=False)
-      [backdrop bytes      ]  (zero bytes if no backdrop)
+      [uninstaller blob    ]
+      [backdrop bytes      ]
       [JSON metadata       ]
       [4B LE: meta_len     ]
       [8B magic XPACK01\\x00]
+
+    Split layout (split_bin=True):
+      exe: [installer_stub.exe][uninstaller blob][backdrop bytes][metadata][magic]
+      base_game.bin: [XPACK01 blob]
+
+    Returns (exe_path, bin_path) where bin_path is None in single-file mode.
     """
     stub_path = _installer_stub_path(arch)
     stub_bytes = stub_path.read_bytes()
@@ -242,45 +252,81 @@ def package_repack(
         from . import pe_icon
         stub_bytes = pe_icon.inject(stub_bytes, Path(icon_path))
 
-    pack_data_offset = len(stub_bytes)
-    pack_data_size   = Path(pack_blob_path).stat().st_size
+    pack_data_size = Path(pack_blob_path).stat().st_size
 
-    # Build uninstaller blob (if requested)
     arp_subkey = _make_arp_subkey(metadata.get("app_name", ""))
     uninst_blob = b""
     if include_uninstaller and file_list is not None:
         uninst_blob = _build_uninstaller_blob(arch, arp_subkey, metadata, file_list, icon_path)
-
-    uninst_offset = pack_data_offset + pack_data_size
-    uninst_size   = len(uninst_blob)
-
-    bd_offset = uninst_offset + uninst_size
-    bd_size   = len(backdrop_data) if backdrop_data else 0
-
-    meta = dict(metadata)
-    meta["pack_data_offset"]    = pack_data_offset
-    meta["pack_data_size"]      = pack_data_size
-    meta["uninstaller_offset"]  = uninst_offset
-    meta["uninstaller_size"]    = uninst_size
-    meta["arp_subkey"]          = arp_subkey
-    meta["backdrop_offset"]     = bd_offset
-    meta["backdrop_size"]       = bd_size
-
-    meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
-    meta_len  = struct.pack("<I", len(meta_json))
+    uninst_size = len(uninst_blob)
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, "wb") as f:
-        f.write(stub_bytes)
-        with open(pack_blob_path, "rb") as blob_f:
-            shutil.copyfileobj(blob_f, f)
-        f.write(uninst_blob)
-        if backdrop_data:
-            f.write(backdrop_data)
-        f.write(meta_json)
-        f.write(meta_len)
-        f.write(REPACK_MAGIC)
+    if split_bin:
+        # Pack data goes to a separate file; exe contains only stub + uninst + backdrop.
+        bin_path = output_path.parent / _BIN_FILENAME
+        with open(bin_path, "wb") as bf:
+            with open(pack_blob_path, "rb") as pf:
+                shutil.copyfileobj(pf, bf)
 
-    return output_path
+        pack_data_offset = 0           # offset within the bin file
+        uninst_offset    = len(stub_bytes)
+        bd_offset        = uninst_offset + uninst_size
+        bd_size          = len(backdrop_data) if backdrop_data else 0
+
+        meta = dict(metadata)
+        meta["bin_file"]            = _BIN_FILENAME
+        meta["pack_data_offset"]    = pack_data_offset
+        meta["pack_data_size"]      = pack_data_size
+        meta["uninstaller_offset"]  = uninst_offset
+        meta["uninstaller_size"]    = uninst_size
+        meta["arp_subkey"]          = arp_subkey
+        meta["backdrop_offset"]     = bd_offset
+        meta["backdrop_size"]       = bd_size
+
+        meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+        meta_len  = struct.pack("<I", len(meta_json))
+
+        with open(output_path, "wb") as f:
+            f.write(stub_bytes)
+            f.write(uninst_blob)
+            if backdrop_data:
+                f.write(backdrop_data)
+            f.write(meta_json)
+            f.write(meta_len)
+            f.write(REPACK_MAGIC)
+
+        return output_path, bin_path
+
+    else:
+        # Single-file: pack data embedded immediately after stub.
+        pack_data_offset = len(stub_bytes)
+        uninst_offset    = pack_data_offset + pack_data_size
+        bd_offset        = uninst_offset + uninst_size
+        bd_size          = len(backdrop_data) if backdrop_data else 0
+
+        meta = dict(metadata)
+        meta["pack_data_offset"]    = pack_data_offset
+        meta["pack_data_size"]      = pack_data_size
+        meta["uninstaller_offset"]  = uninst_offset
+        meta["uninstaller_size"]    = uninst_size
+        meta["arp_subkey"]          = arp_subkey
+        meta["backdrop_offset"]     = bd_offset
+        meta["backdrop_size"]       = bd_size
+
+        meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+        meta_len  = struct.pack("<I", len(meta_json))
+
+        with open(output_path, "wb") as f:
+            f.write(stub_bytes)
+            with open(pack_blob_path, "rb") as blob_f:
+                shutil.copyfileobj(blob_f, f)
+            f.write(uninst_blob)
+            if backdrop_data:
+                f.write(backdrop_data)
+            f.write(meta_json)
+            f.write(meta_len)
+            f.write(REPACK_MAGIC)
+
+        return output_path, None

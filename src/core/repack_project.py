@@ -56,6 +56,13 @@ class RepackSettings:
     shortcut_create_desktop: bool = False
     shortcut_create_startmenu: bool = True
 
+    # External data file: when True (or when pack data exceeds the global
+    # bin_split_threshold_gb), the builder writes compressed game data to
+    # base_game.bin instead of embedding it in the exe.  Both files must be
+    # distributed together; the installer looks for base_game.bin in the
+    # same folder as the exe.
+    split_bin: bool = False
+
     # Optional components — list of dicts with keys:
     #   label: str, folder: str, default_checked: bool, group: str,
     #   requires: list[int] (1-based indices of required components),

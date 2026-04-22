@@ -452,6 +452,11 @@ def _add_repack(sub):
     p.add_argument("--no-uninstaller", action="store_true", dest="no_uninstaller",
                    help="Omit the uninstaller and Add/Remove Programs registration")
 
+    # Data file split
+    p.add_argument("--split-bin", action="store_true", dest="split_bin",
+                   help="Write compressed game data to a separate base_game.bin file "
+                        "(required for games > 3.5 GB; applied automatically above that threshold)")
+
     # Save project after build
     p.add_argument("--save-project", metavar="FILE",
                    help="Save resolved settings to a .xpr project file after building")
@@ -498,6 +503,7 @@ def _cmd_repack(args):
     if args.required_free_space_gb is not None: settings.required_free_space_gb = args.required_free_space_gb
     if args.no_uninstaller:                     settings.include_uninstaller    = False
     if args.no_verify_crc32:                    settings.verify_crc32           = False
+    if args.split_bin:                          settings.split_bin              = True
     if args.shortcut_target:                    settings.shortcut_target        = args.shortcut_target
     if args.shortcut_name:                      settings.shortcut_name          = args.shortcut_name
     if args.shortcut_desktop is not None:       settings.shortcut_create_desktop   = args.shortcut_desktop
@@ -545,6 +551,8 @@ def _cmd_repack(args):
         _die(f"Repack failed: {result.error}")
 
     print(f"\nOutput:       {result.output_path}")
+    if result.bin_path:
+        print(f"Data file:    {result.bin_path}")
     print(f"Files packed: {result.total_files}")
     print(f"Game size:    {_fmt_size(result.uncompressed_size)}")
     print(f"Installer:    {_fmt_size(result.output_size)}")
