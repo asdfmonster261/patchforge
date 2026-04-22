@@ -45,6 +45,10 @@ from typing import Callable, Optional
 
 MAGIC = b"XPACK01\x00"
 
+# Read/write chunk size used when streaming files through the compressor.
+# 4 MB keeps per-file memory bounded regardless of individual file size.
+_COPY_CHUNK = 4 * 1024 * 1024
+
 # ---- LZMA quality maps ----
 
 # quality key → (stdlib-lzma preset, optional dict_size override in bytes)
@@ -191,20 +195,27 @@ def _do_compress_to_file(
         stderr_buf: list[bytes] = []
 
         def _write_stdin() -> None:
-            offset = 0
+            stream_offset = 0
             try:
                 for i, (rel, abs_path) in enumerate(specs):
-                    data = Path(abs_path).read_bytes()
+                    file_size = 0
+                    crc = 0
+                    with open(abs_path, "rb") as fh:
+                        while True:
+                            chunk = fh.read(_COPY_CHUNK)
+                            if not chunk:
+                                break
+                            crc = zlib.crc32(chunk, crc)
+                            file_size += len(chunk)
+                            proc.stdin.write(chunk)
                     file_entries_out.append({
                         "path":      rel,
-                        "offset":    offset,
-                        "size":      len(data),
+                        "offset":    stream_offset,
+                        "size":      file_size,
                         "component": comp_idx,
-                        "crc32":     zlib.crc32(data) & 0xFFFFFFFF,
+                        "crc32":     crc & 0xFFFFFFFF,
                     })
-                    offset += len(data)
-                    proc.stdin.write(data)
-                    del data   # release immediately — don't accumulate
+                    stream_offset += file_size
                     if prog_callback and ((i + 1) % 200 == 0 or i + 1 == len(specs)):
                         prog_callback(i + 1, len(specs))
             except Exception as exc:
@@ -246,21 +257,28 @@ def _do_compress_to_file(
         else:
             compressor = lzma.LZMACompressor(format=lzma.FORMAT_XZ, preset=preset)
 
-        offset = 0
+        stream_offset = 0
         for i, (rel, abs_path) in enumerate(specs):
-            data = Path(abs_path).read_bytes()
+            file_size = 0
+            crc = 0
+            with open(abs_path, "rb") as fh:
+                while True:
+                    chunk = fh.read(_COPY_CHUNK)
+                    if not chunk:
+                        break
+                    crc = zlib.crc32(chunk, crc)
+                    file_size += len(chunk)
+                    out_chunk = compressor.compress(chunk)
+                    if out_chunk:
+                        out_f.write(out_chunk)
             file_entries_out.append({
                 "path":      rel,
-                "offset":    offset,
-                "size":      len(data),
+                "offset":    stream_offset,
+                "size":      file_size,
                 "component": comp_idx,
-                "crc32":     zlib.crc32(data) & 0xFFFFFFFF,
+                "crc32":     crc & 0xFFFFFFFF,
             })
-            offset += len(data)
-            chunk = compressor.compress(data)
-            if chunk:
-                out_f.write(chunk)
-            del data
+            stream_offset += file_size
             if prog_callback and ((i + 1) % 200 == 0 or i + 1 == len(specs)):
                 prog_callback(i + 1, len(specs))
 
