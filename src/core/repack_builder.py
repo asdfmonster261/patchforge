@@ -80,6 +80,10 @@ def build(
     # ------------------------------------------------------------------ #
     # 2. Build XPACK01 archive                                            #
     # ------------------------------------------------------------------ #
+    # Resolve output dir early so temp files land there, not in /tmp.
+    output_dir = Path(settings.output_dir) if settings.output_dir else Path.cwd()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     def _archive_prog(pct: int, msg: str) -> None:
         # Map archive progress (0-100) to overall range 10-75
         _progress(10 + int(pct * 0.65), msg)
@@ -92,6 +96,7 @@ def build(
             threads=settings.threads,
             codec=settings.codec,
             progress=_archive_prog,
+            tmp_dir=output_dir,
         )
     except Exception as exc:
         return RepackResult(success=False, error=f"Compression failed: {exc}")
@@ -161,7 +166,6 @@ def build(
     # ------------------------------------------------------------------ #
     _progress(82, "Packaging installer exe…")
 
-    output_dir = Path(settings.output_dir) if settings.output_dir else Path.cwd()
     if settings.installer_exe_name.strip():
         safe = "".join(c if c.isalnum() or c in "-_." else "_"
                        for c in settings.installer_exe_name.strip())
