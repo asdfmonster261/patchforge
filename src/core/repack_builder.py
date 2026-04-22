@@ -85,7 +85,7 @@ def build(
         _progress(10 + int(pct * 0.65), msg)
 
     try:
-        blob, total_files, uncompressed_size, file_list = build_archive(
+        blob_path, total_files, uncompressed_size, file_list = build_archive(
             game_dir,
             quality=settings.compression,
             components=settings.components or [],
@@ -175,7 +175,7 @@ def build(
         icon = Path(settings.icon_path) if settings.icon_path else None
         package_repack(
             arch=settings.arch,
-            pack_blob=blob,
+            pack_blob_path=blob_path,
             file_list=file_list,
             metadata=metadata,
             output_path=output_path,
@@ -185,6 +185,11 @@ def build(
         )
     except Exception as exc:
         return RepackResult(success=False, error=str(exc))
+    finally:
+        try:
+            blob_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     _progress(100, "Done.")
 
