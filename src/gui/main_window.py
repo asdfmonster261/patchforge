@@ -938,24 +938,35 @@ class MainWindow(QMainWindow):
         self.rp_verify_crc32_chk.setChecked(True)
         pg.addWidget(self.rp_verify_crc32_chk, 6, 0, 1, 2)
 
-        pg.addWidget(QLabel("Shortcut target:"), 7, 0)
+        self.rp_split_bin_chk = QCheckBox(
+            "Write base game data to separate base_game.bin  (required for games > 3.5 GB; "
+            "both files must be distributed together)")
+        self.rp_split_bin_chk.setChecked(False)
+        self.rp_split_bin_chk.setToolTip(
+            "Forces the compressed game data into a base_game.bin sidecar file.\n"
+            "This is applied automatically when the data exceeds the threshold\n"
+            "set in ~/.config/patchforge/app_settings.json (default 3.5 GB)."
+        )
+        pg.addWidget(self.rp_split_bin_chk, 7, 0, 1, 2)
+
+        pg.addWidget(QLabel("Shortcut target:"), 8, 0)
         self.rp_shortcut_target_edit = QLineEdit()
         self.rp_shortcut_target_edit.setPlaceholderText(
             "Relative path to game exe within install dir  (e.g. Game.exe)")
-        pg.addWidget(self.rp_shortcut_target_edit, 7, 1)
+        pg.addWidget(self.rp_shortcut_target_edit, 8, 1)
 
-        pg.addWidget(QLabel("Shortcut name:"), 8, 0)
+        pg.addWidget(QLabel("Shortcut name:"), 9, 0)
         self.rp_shortcut_name_edit = QLineEdit()
         self.rp_shortcut_name_edit.setPlaceholderText("Display name  (blank = use App Name)")
-        pg.addWidget(self.rp_shortcut_name_edit, 8, 1)
+        pg.addWidget(self.rp_shortcut_name_edit, 9, 1)
 
         self.rp_shortcut_startmenu_chk = QCheckBox("Create Start Menu shortcut")
         self.rp_shortcut_startmenu_chk.setChecked(True)
-        pg.addWidget(self.rp_shortcut_startmenu_chk, 9, 0, 1, 2)
+        pg.addWidget(self.rp_shortcut_startmenu_chk, 10, 0, 1, 2)
 
         self.rp_shortcut_desktop_chk = QCheckBox("Create Desktop shortcut")
         self.rp_shortcut_desktop_chk.setChecked(False)
-        pg.addWidget(self.rp_shortcut_desktop_chk, 10, 0, 1, 2)
+        pg.addWidget(self.rp_shortcut_desktop_chk, 11, 0, 1, 2)
 
         layout.addWidget(post_grp)
         layout.addStretch()
@@ -1590,6 +1601,7 @@ class MainWindow(QMainWindow):
             close_delay          = self.rp_close_delay_spin.value(),
             include_uninstaller  = self.rp_include_uninstaller_chk.isChecked(),
             verify_crc32         = self.rp_verify_crc32_chk.isChecked(),
+            split_bin            = self.rp_split_bin_chk.isChecked(),
             shortcut_target           = self.rp_shortcut_target_edit.text().strip(),
             shortcut_name             = self.rp_shortcut_name_edit.text().strip(),
             shortcut_create_startmenu = self.rp_shortcut_startmenu_chk.isChecked(),
@@ -1649,6 +1661,7 @@ class MainWindow(QMainWindow):
         self.rp_close_delay_spin.setValue(s.close_delay)
         self.rp_include_uninstaller_chk.setChecked(s.include_uninstaller)
         self.rp_verify_crc32_chk.setChecked(s.verify_crc32)
+        self.rp_split_bin_chk.setChecked(s.split_bin)
         self.rp_shortcut_target_edit.setText(s.shortcut_target)
         self.rp_shortcut_name_edit.setText(s.shortcut_name)
         self.rp_shortcut_startmenu_chk.setChecked(s.shortcut_create_startmenu)

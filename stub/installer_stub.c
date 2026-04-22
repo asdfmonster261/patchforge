@@ -136,6 +136,7 @@ static HFONT      g_font_normal       = NULL;
 static HFONT      g_font_title        = NULL;
 static InstallMeta g_meta             = {0};
 static char       g_exe_path[MAX_PATH]= {0};
+static char       g_bin_path[MAX_PATH]= {0};  /* same as g_exe_path unless split_bin */
 static PackEntry *g_entries           = NULL;
 static uint32_t   g_num_entries       = 0;
 static int        g_close_countdown   = 0;
@@ -403,6 +404,22 @@ static int read_install_meta(void)
     json_get_str(buf, "codec",     g_meta.codec,      sizeof(g_meta.codec));
     if (!g_meta.codec[0]) strncpy(g_meta.codec, "lzma", sizeof(g_meta.codec) - 1);
 
+    /* Resolve path to pack data: either self (single-file) or base_game.bin. */
+    char bin_file[64] = {0};
+    json_get_str(buf, "bin_file", bin_file, sizeof(bin_file));
+    if (bin_file[0]) {
+        char exe_dir[MAX_PATH];
+        strncpy(exe_dir, g_exe_path, MAX_PATH - 1);
+        exe_dir[MAX_PATH - 1] = '\0';
+        char *last_sep = strrchr(exe_dir, '\\');
+        if (last_sep) *(last_sep + 1) = '\0';
+        else exe_dir[0] = '\0';
+        snprintf(g_bin_path, MAX_PATH, "%s%s", exe_dir, bin_file);
+    } else {
+        strncpy(g_bin_path, g_exe_path, MAX_PATH - 1);
+        g_bin_path[MAX_PATH - 1] = '\0';
+    }
+
     json_parse_components(buf);
 
     free(buf);
@@ -412,7 +429,7 @@ static int read_install_meta(void)
 /* Read the XPACK01 file table from the embedded blob. */
 static int read_pack_entries(void)
 {
-    FILE *f = fopen(g_exe_path, "rb");
+    FILE *f = fopen(g_bin_path, "rb");
     if (!f) return 0;
 
     _fseeki64(f, g_meta.pack_data_offset, SEEK_SET);
@@ -1048,7 +1065,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                       int shortcut_desktop, int shortcut_startmenu,
                       uint32_t *out_skipped, uint32_t *out_replaced)
 {
-    FILE *f = fopen(g_exe_path, "rb");
+    FILE *f = fopen(g_bin_path, "rb");
     if (!f) return 0;
 
     /* Seek past the file table */
@@ -2133,6 +2150,23 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
                 "Please re-download the installer.",
                 "PatchForge Installer", MB_OK | MB_ICONERROR);
         return 1;
+    }
+
+    /* When pack data lives in a separate file, verify it is present. */
+    if (strcmp(g_bin_path, g_exe_path) != 0) {
+        FILE *bf = fopen(g_bin_path, "rb");
+        if (!bf) {
+            if (!g_silent) {
+                char msg[MAX_PATH + 160];
+                snprintf(msg, sizeof(msg),
+                    "Cannot find the data file:\n  %s\n\n"
+                    "Place base_game.bin in the same folder as this installer and try again.",
+                    g_bin_path);
+                MessageBoxA(NULL, msg, "PatchForge Installer", MB_OK | MB_ICONERROR);
+            }
+            return 1;
+        }
+        fclose(bf);
     }
 
     if (!read_pack_entries()) {
