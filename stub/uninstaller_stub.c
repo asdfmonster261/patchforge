@@ -626,7 +626,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (LOWORD(wp) == IDC_BTN_UNINST) {
             EnableWindow(g_hwnd_btn_uninst, FALSE);
             EnableWindow(g_hwnd_btn_cancel, FALSE);
-            set_status("Uninstalling…");
+            set_status("Uninstalling...");
             set_progress(0);
 
             struct UninstResult *res = (struct UninstResult *)
@@ -674,7 +674,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (res->num_errors > 15) {
                 int rem = (int)sizeof(msg) - mlen - 4;
                 if (rem > 0)
-                    snprintf(msg + mlen, rem, "\n  … and %d more.",
+                    snprintf(msg + mlen, rem, "\n  ...and %d more.",
                              res->num_errors - 15);
             }
             MessageBoxA(hwnd, msg, "Uninstall Errors", MB_OK | MB_ICONWARNING);
