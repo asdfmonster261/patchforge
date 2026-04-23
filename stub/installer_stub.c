@@ -980,15 +980,60 @@ typedef struct {
 } DispatchState;
 
 /* Consume up to `len` bytes from `ptr`, writing them to the current file.
+ * Call with len=0 after a stream finishes to flush trailing zero-size entries.
  * Sets *ds->success = 0 on error. */
 static void dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
 {
-    while (len > 0 && ds->cur_file < ds->last_entry) {
-        PackEntry *e  = &g_entries[ds->cur_file];
+    while (ds->cur_file < ds->last_entry) {
+        PackEntry *e = &g_entries[ds->cur_file];
+
+        /* Zero-size files need no stream data — create them immediately so they
+         * are not silently dropped regardless of where they appear in the stream. */
+        if (e->size == 0) {
+            if (!ds->skip_cur) {
+                if (!archive_path_is_safe(e->path)) { *ds->success = 0; return; }
+                if (strlen(ds->install_dir) + 1 + strlen(e->path) >= MAX_PATH)
+                    { *ds->success = 0; return; }
+                char fpath[MAX_PATH];
+                snprintf(fpath, MAX_PATH, "%s\\%s", ds->install_dir, e->path);
+                for (char *fp = fpath; *fp; fp++) if (*fp == '/') *fp = '\\';
+                ensure_dir_for_file(fpath);
+                HANDLE hf = CreateFileA(fpath, GENERIC_WRITE, 0, NULL,
+                                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (hf != INVALID_HANDLE_VALUE) CloseHandle(hf);
+            }
+            int was_skipped      = ds->skip_cur;
+            ds->skip_cur         = 0;
+            ds->cur_crc32        = 0xFFFFFFFF;
+            ds->cur_file++;
+            (*ds->files_done)++;
+            if (was_skipped) (*ds->files_skipped)++;
+            else             (*ds->files_written)++;
+            int pct = (int)(*ds->files_done * 100 / ds->total_to_install);
+            if (g_hwnd) {
+                PostMessageA(g_hwnd, WM_INSTALL_PROG, (WPARAM)pct, 0);
+                if (!was_skipped) {
+                    char *log_msg = (char *)malloc(MAX_PATH + 32);
+                    if (log_msg) {
+                        snprintf(log_msg, MAX_PATH + 32,
+                                 ds->repair_mode ? "Repairing %u / %u: %s"
+                                                 : "Extracting %u / %u: %s",
+                                 *ds->files_done, ds->total_to_install, e->path);
+                        PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)log_msg, 0);
+                    }
+                }
+            }
+            if (ds->low_load) Sleep(1);
+            continue;
+        }
+
+        /* Non-zero files require decompressed stream data. */
+        if (len == 0) break;
+
         uint64_t need = e->size - ds->cur_file_written;
         size_t write  = (size_t)(len < need ? len : need);
 
-        if (ds->hf == INVALID_HANDLE_VALUE && !ds->skip_cur && e->size > 0) {
+        if (ds->hf == INVALID_HANDLE_VALUE && !ds->skip_cur) {
             if (!archive_path_is_safe(e->path)) { *ds->success = 0; break; }
             /* Reject if the combined path would overflow MAX_PATH */
             if (strlen(ds->install_dir) + 1 + strlen(e->path) >= MAX_PATH)
@@ -1016,7 +1061,7 @@ static void dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
         len                  -= write;
         ds->cur_file_written += write;
 
-        if (ds->cur_file_written >= e->size || e->size == 0) {
+        if (ds->cur_file_written >= e->size) {
             if (ds->hf != INVALID_HANDLE_VALUE) {
                 CloseHandle(ds->hf);
                 ds->hf = INVALID_HANDLE_VALUE;
@@ -1032,9 +1077,9 @@ static void dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
                     }
                 }
             }
-            int was_skipped   = ds->skip_cur;
-            ds->skip_cur      = 0;
-            ds->cur_crc32     = 0xFFFFFFFF;
+            int was_skipped      = ds->skip_cur;
+            ds->skip_cur         = 0;
+            ds->cur_crc32        = 0xFFFFFFFF;
             ds->cur_file_written = 0;
             ds->cur_file++;
             (*ds->files_done)++;
@@ -1185,6 +1230,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 }
                 if (low_load) Sleep(1);
             }
+            dispatch_chunk(&ds, NULL, 0); /* flush trailing zero-size entries */
             if (ds.hf != INVALID_HANDLE_VALUE) { CloseHandle(ds.hf); ds.hf = INVALID_HANDLE_VALUE; }
             ZSTD_freeDStream(zds);
         } else {
@@ -1237,6 +1283,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 if (ret != LZMA_OK) { success = 0; break; }
             }
 
+            dispatch_chunk(&ds, NULL, 0); /* flush trailing zero-size entries */
             if (ds.hf != INVALID_HANDLE_VALUE) { CloseHandle(ds.hf); ds.hf = INVALID_HANDLE_VALUE; }
             lzma_end(&strm);
         }
