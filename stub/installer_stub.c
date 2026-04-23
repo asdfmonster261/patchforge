@@ -1849,12 +1849,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_hwnd_log = CreateWindowExA(0, "EDIT", "",
             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
             ES_READONLY | WS_VSCROLL,
-            lx, log_y, crw, 48, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+            lx, log_y, crw, 120, hwnd, (HMENU)IDC_LOG, NULL, NULL);
         SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
         SendMessageA(g_hwnd_log, EM_SETLIMITTEXT, 0, 0);
 
         /* ── Progress bar ────────────────────────────────────────── */
-        int prog_y = log_y + 52;
+        int prog_y = log_y + 124;
         g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
             lx, prog_y, crw, 10, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
@@ -2447,7 +2447,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
         ? (20 + (g_num_components + num_distinct_groups) * 24) : 0;
     int two_col_h   = left_col_h > right_col_h ? left_col_h : right_col_h;
     /* base 300 already budgets one low-load row (24px); subtract to avoid double-counting */
-    int client_h = g_img_h + 300 + hdr_extra + sum_extra + (two_col_h - 24);
+    int client_h = g_img_h + 372 + hdr_extra + sum_extra + (two_col_h - 24);
     RECT wr = {0, 0, 720, client_h};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
