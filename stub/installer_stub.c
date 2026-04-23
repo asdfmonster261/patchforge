@@ -137,6 +137,9 @@ static HFONT      g_font_title        = NULL;
 static InstallMeta g_meta             = {0};
 static char       g_exe_path[MAX_PATH]= {0};
 static char       g_bin_path[MAX_PATH]= {0};  /* same as g_exe_path unless split_bin */
+/* External component sidecar filenames, indexed by component index (1-based).
+ * Non-empty means the stream lives in <exe_dir>/<name> instead of g_bin_path. */
+static char       g_ext_bin[MAX_COMPONENTS + 1][64] = {{0}};
 static PackEntry *g_entries           = NULL;
 static uint32_t   g_num_entries       = 0;
 static int        g_close_countdown   = 0;
@@ -342,6 +345,52 @@ static void json_parse_components(const char *json)
     }
 }
 
+/* Parse "external_components" JSON object {"1":"crack.bin","2":"dlc.bin",...}
+ * into g_ext_bin[comp_idx]. */
+static void json_parse_external_components(const char *json)
+{
+    memset(g_ext_bin, 0, sizeof(g_ext_bin));
+    const char *p = strstr(json, "\"external_components\"");
+    if (!p) return;
+    p = strchr(p, '{');
+    if (!p) return;
+    p++;
+    while (*p) {
+        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',') p++;
+        if (*p == '}' || !*p) break;
+        if (*p != '"') break;
+        p++;
+        int idx = 0;
+        while (*p >= '0' && *p <= '9') { idx = idx * 10 + (*p - '0'); p++; }
+        if (*p != '"') break;
+        p++;
+        while (*p == ' ' || *p == ':') p++;
+        if (*p != '"') break;
+        p++;
+        if (idx > 0 && idx <= MAX_COMPONENTS) {
+            int i = 0;
+            while (*p && *p != '"' && i < (int)sizeof(g_ext_bin[0]) - 1)
+                g_ext_bin[idx][i++] = *p++;
+            g_ext_bin[idx][i] = '\0';
+        } else {
+            while (*p && *p != '"') p++;
+        }
+        if (*p == '"') p++;
+    }
+}
+
+/* Build the full path to a sidecar file that lives next to the installer. */
+static void build_sidecar_path(const char *filename, char *out)
+{
+    char exe_dir[MAX_PATH];
+    strncpy(exe_dir, g_exe_path, MAX_PATH - 1);
+    exe_dir[MAX_PATH - 1] = '\0';
+    char *sep = strrchr(exe_dir, '\\');
+    if (sep) *(sep + 1) = '\0';
+    else     exe_dir[0] = '\0';
+    snprintf(out, MAX_PATH, "%s%s", exe_dir, filename);
+}
+
 /* ==================================================================== */
 /* Metadata reading                                                      */
 /* ==================================================================== */
@@ -421,6 +470,7 @@ static int read_install_meta(void)
     }
 
     json_parse_components(buf);
+    json_parse_external_components(buf);
 
     free(buf);
     return 1;
@@ -1159,13 +1209,20 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
         fread(&comp_idx, 4, 1, f);
         fread(&csize,    8, 1, f);
 
+        /* csize == 0 is the sentinel for an external-sidecar stream. */
+        int is_external = (csize == 0 &&
+                           comp_idx > 0 && comp_idx <= MAX_COMPONENTS &&
+                           g_ext_bin[comp_idx][0] != '\0');
+
         /* Decide whether to extract this stream */
         int install_this = (comp_idx == 0);
         if (!install_this && (int)comp_idx <= num_components)
             install_this = selected_comps[comp_idx - 1];
 
         if (!install_this) {
-            _fseeki64(f, (int64_t)csize, SEEK_CUR);
+            /* csize == 0 for external streams, so this seek is always a no-op;
+             * keep it for embedded streams that aren't selected. */
+            if (!is_external) _fseeki64(f, (int64_t)csize, SEEK_CUR);
             continue;
         }
 
@@ -1178,8 +1235,33 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             }
         }
         if (first_entry == g_num_entries) {
-            _fseeki64(f, (int64_t)csize, SEEK_CUR);
+            if (!is_external) _fseeki64(f, (int64_t)csize, SEEK_CUR);
             continue;
+        }
+
+        /* For external streams, open the sidecar .bin file. */
+        FILE   *src       = f;
+        uint64_t src_csize = csize;
+        int opened_sidecar = 0;
+
+        if (is_external) {
+            char sidecar_path[MAX_PATH];
+            build_sidecar_path(g_ext_bin[comp_idx], sidecar_path);
+            src = fopen(sidecar_path, "rb");
+            if (!src) {
+                if (g_hwnd) {
+                    char *msg = (char *)malloc(MAX_PATH + 80);
+                    if (msg) {
+                        snprintf(msg, MAX_PATH + 80,
+                                 "ERROR: cannot find %s — component skipped",
+                                 g_ext_bin[comp_idx]);
+                        PostMessageA(g_hwnd, WM_LOG_MSG, (WPARAM)msg, 0);
+                    }
+                }
+                continue;
+            }
+            src_csize      = UINT64_MAX; /* read until EOF / stream end */
+            opened_sidecar = 1;
         }
 
         /* Build shared dispatch state for this stream */
@@ -1207,16 +1289,19 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
         if (use_zstd) {
             /* ---- zstd decompression ---- */
             ZSTD_DStream *zds = ZSTD_createDStream();
-            if (!zds) { success = 0; break; }
+            if (!zds) {
+                success = 0; if (opened_sidecar) fclose(src); break;
+            }
             if (ZSTD_isError(ZSTD_initDStream(zds))) {
-                ZSTD_freeDStream(zds); success = 0; break;
+                ZSTD_freeDStream(zds); success = 0;
+                if (opened_sidecar) { fclose(src); } break;
             }
 
             uint64_t total_read = 0;
-            while (total_read < csize && success) {
-                size_t to_read = IN_SZ < (csize - total_read)
-                                 ? IN_SZ : (size_t)(csize - total_read);
-                size_t got = fread(inbuf, 1, to_read, f);
+            while (total_read < src_csize && success) {
+                size_t to_read = IN_SZ < (src_csize - total_read)
+                                 ? IN_SZ : (size_t)(src_csize - total_read);
+                size_t got = fread(inbuf, 1, to_read, src);
                 if (got == 0) break;
                 total_read += got;
 
@@ -1247,6 +1332,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 mt_opts.memlimit_stop      = UINT64_MAX;
                 if (lzma_stream_decoder_mt(&strm, &mt_opts) != LZMA_OK) {
                     success = 0;
+                    if (opened_sidecar) fclose(src);
                     break; /* strm uninitialised — lzma_end() not needed */
                 }
             }
@@ -1258,14 +1344,14 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             strm.avail_in = 0;
 
             while (1) {
-                if (strm.avail_in == 0 && total_read < csize) {
-                    size_t to_read = IN_SZ < (csize - total_read)
-                                     ? IN_SZ : (size_t)(csize - total_read);
-                    size_t got = fread(inbuf, 1, to_read, f);
+                if (strm.avail_in == 0 && total_read < src_csize) {
+                    size_t to_read = IN_SZ < (src_csize - total_read)
+                                     ? IN_SZ : (size_t)(src_csize - total_read);
+                    size_t got = fread(inbuf, 1, to_read, src);
                     strm.next_in  = inbuf;
                     strm.avail_in = (uint32_t)got;
                     total_read   += got;
-                    if (total_read >= csize) action = LZMA_FINISH;
+                    if (got == 0 || total_read >= src_csize) action = LZMA_FINISH;
                 }
 
                 strm.next_out  = outbuf;
@@ -1287,6 +1373,8 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             if (ds.hf != INVALID_HANDLE_VALUE) { CloseHandle(ds.hf); ds.hf = INVALID_HANDLE_VALUE; }
             lzma_end(&strm);
         }
+
+        if (opened_sidecar) { fclose(src); src = NULL; }
     }
 
     free(inbuf);

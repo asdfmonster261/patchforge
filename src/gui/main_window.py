@@ -1219,6 +1219,16 @@ class MainWindow(QMainWindow):
         sac_warn_chk.setChecked(bool(data.get("sac_warning", False)) if data else False)
         form.addRow("", sac_warn_chk)
 
+        ext_chk = QCheckBox(
+            "Store in separate .bin file  (both files must be distributed together)")
+        ext_chk.setChecked(bool(data.get("external", False)) if data else False)
+        ext_chk.setToolTip(
+            "When checked the compressed stream for this component is written to\n"
+            "<group_or_label>.bin alongside the installer instead of embedded inside it.\n"
+            "Useful for large or optional DLC that not all users need to download."
+        )
+        form.addRow("", ext_chk)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
@@ -1243,6 +1253,7 @@ class MainWindow(QMainWindow):
             "requires":         requires,
             "shortcut_target":  shortcut_target_edit.text().strip(),
             "sac_warning":      sac_warn_chk.isChecked(),
+            "external":         ext_chk.isChecked(),
         }
 
     @staticmethod
@@ -1254,7 +1265,8 @@ class MainWindow(QMainWindow):
         folder_name = Path(c["folder"]).name if c.get("folder") else ""
         sc = f"  [→ {c['shortcut_target']}]" if c.get("shortcut_target") else ""
         sac = "  [! SAC warning]" if c.get("sac_warning") else ""
-        return f"[{chk}]  {c['label']}  ({folder_name}){grp}{req_str}{sc}{sac}"
+        ext = "  [.bin]" if c.get("external") else ""
+        return f"[{chk}]  {c['label']}  ({folder_name}){grp}{req_str}{sc}{sac}{ext}"
 
     def _on_rp_comp_add(self):
         comp = self._component_dialog("Add Optional Component")

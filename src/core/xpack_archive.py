@@ -290,6 +290,17 @@ def _do_compress_to_file(
 # Main build entry point
 # ---------------------------------------------------------------------------
 
+def _ext_bin_filename(comp: dict, comp_idx: int, used: set[str]) -> str:
+    """Derive a safe .bin filename for an external component stream."""
+    raw = (comp.get("group", "").strip() or comp.get("label", "").strip()
+           or f"component_{comp_idx}")
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in raw).strip("_")
+    name = f"{safe or f'component_{comp_idx}'}.bin"
+    if name in used:
+        name = f"{safe}_{comp_idx}.bin"
+    return name
+
+
 def build(
     game_dir: Path,
     quality: str = "max",
@@ -298,13 +309,19 @@ def build(
     codec: str = "lzma",
     progress: Optional[Callable[[int, str], None]] = None,
     tmp_dir: Optional[Path] = None,
-) -> tuple[Path, int, int, list[dict]]:
+) -> tuple[Path, int, int, list[dict], dict[int, Path]]:
     """
     Walk *game_dir* (and any optional component folders), compress into an
     XPACK01 temp file, and return its path.
 
-    Returns (xpack_tmp_path, total_files, total_uncompressed_bytes, file_list).
-    The caller is responsible for deleting *xpack_tmp_path* after use.
+    Returns (xpack_tmp_path, total_files, total_uncompressed_bytes,
+             file_list, ext_bins).
+
+    ext_bins maps component index → Path of the written sidecar .bin file for
+    each component that has external=True.  Those streams are stored as a
+    csize=0 sentinel in the XPACK01 blob; the actual compressed data lives in
+    the sidecar.  The caller is responsible for deleting xpack_tmp_path after
+    use; the sidecar .bin files are permanent outputs.
 
     file_list is [{"path": str, "component": int, "offset": int, "size": int}].
     progress(pct 0-100, message) is called throughout.
@@ -320,6 +337,17 @@ def build(
         (i + 1, c.get("label", f"component {i + 1}"), Path(c["folder"]))
         for i, c in enumerate(components)
     ]
+
+    # Build external-component bin-file map: comp_idx → output Path
+    out_dir = tmp_dir or Path(".")
+    used_names: set[str] = set()
+    ext_bin_paths: dict[int, Path] = {}
+    for i, c in enumerate(components):
+        if c.get("external", False):
+            comp_idx = i + 1
+            name = _ext_bin_filename(c, comp_idx, used_names)
+            used_names.add(name)
+            ext_bin_paths[comp_idx] = out_dir / name
 
     _prog(0, "Scanning directories…")
 
@@ -347,7 +375,6 @@ def build(
              f"Compressing with {threads} thread(s)…")
 
     all_file_entries: list[dict] = []
-    # (comp_idx, stream_tmp_path, compressed_size)
     streams_out: list[tuple[int, Path, int]] = []
 
     _compress_sequential(
@@ -358,10 +385,10 @@ def build(
     total_uncompressed = sum(e["size"] for e in all_file_entries)
 
     _prog(95, "Encoding archive…")
-    xpack_tmp = _assemble_xpack(all_file_entries, streams_out, tmp_dir)
+    xpack_tmp = _assemble_xpack(all_file_entries, streams_out, tmp_dir, ext_bin_paths)
     _prog(100, "Archive complete.")
 
-    return xpack_tmp, total_files, total_uncompressed, all_file_entries
+    return xpack_tmp, total_files, total_uncompressed, all_file_entries, ext_bin_paths
 
 
 # ---------------------------------------------------------------------------
@@ -422,12 +449,19 @@ def _assemble_xpack(
     files: list[dict],
     streams: list[tuple[int, Path, int]],  # (comp_idx, tmp_path, csize)
     tmp_dir: Optional[Path] = None,
+    ext_bin_paths: dict[int, Path] | None = None,
 ) -> Path:
     """
     Assemble the XPACK01 blob into a new temp file, streaming each compressed
     stream from its own temp file.  Cleans up the per-stream temp files.
+
+    Streams whose comp_idx appears in ext_bin_paths are written to their
+    sidecar .bin file instead of embedded; a csize=0 sentinel is written in
+    the XPACK01 so the installer knows to look externally.
+
     Returns a Path to the assembled XPACK01 temp file.
     """
+    ext_bin_paths = ext_bin_paths or {}
     fd, xpack_name = tempfile.mkstemp(suffix=".xpack01", dir=tmp_dir)
     try:
         with os.fdopen(fd, "wb") as out:
@@ -444,10 +478,18 @@ def _assemble_xpack(
             # Streams
             out.write(struct.pack("<I", len(streams)))
             for comp_idx, tmp_path, csize in streams:
-                out.write(struct.pack("<I", comp_idx))
-                out.write(struct.pack("<Q", csize))
-                with open(tmp_path, "rb") as sf:
-                    shutil.copyfileobj(sf, out)
+                if comp_idx in ext_bin_paths:
+                    # External stream: write csize=0 sentinel; data goes to sidecar.
+                    out.write(struct.pack("<I", comp_idx))
+                    out.write(struct.pack("<Q", 0))
+                    with open(ext_bin_paths[comp_idx], "wb") as bf:
+                        with open(tmp_path, "rb") as sf:
+                            shutil.copyfileobj(sf, bf)
+                else:
+                    out.write(struct.pack("<I", comp_idx))
+                    out.write(struct.pack("<Q", csize))
+                    with open(tmp_path, "rb") as sf:
+                        shutil.copyfileobj(sf, out)
     except Exception:
         try:
             os.unlink(xpack_name)

@@ -91,7 +91,7 @@ def build(
         _progress(10 + int(pct * 0.65), msg)
 
     try:
-        blob_path, total_files, uncompressed_size, file_list = build_archive(
+        blob_path, total_files, uncompressed_size, file_list, ext_bins = build_archive(
             game_dir,
             quality=settings.compression,
             components=settings.components or [],
@@ -152,6 +152,13 @@ def build(
             for i, c in enumerate(settings.components or [])
         ],
     }
+
+    # External component sidecar files: {"comp_idx": "filename.bin"}
+    if ext_bins:
+        metadata["external_components"] = {
+            str(comp_idx): bin_path.name
+            for comp_idx, bin_path in ext_bins.items()
+        }
 
     # ------------------------------------------------------------------ #
     # 4. Load backdrop                                                     #
