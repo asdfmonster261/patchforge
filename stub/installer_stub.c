@@ -137,9 +137,11 @@ static HFONT      g_font_title        = NULL;
 static InstallMeta g_meta             = {0};
 static char       g_exe_path[MAX_PATH]= {0};
 static char       g_bin_path[MAX_PATH]= {0};  /* same as g_exe_path unless split_bin */
-/* External component sidecar filenames, indexed by component index (1-based).
- * Non-empty means the stream lives in <exe_dir>/<name> instead of g_bin_path. */
-static char       g_ext_bin[MAX_COMPONENTS + 1][64] = {{0}};
+/* External component sidecar data, indexed by component index (1-based).
+ * g_ext_bin[i] non-empty means the stream lives in <exe_dir>/<name>. */
+static char    g_ext_bin[MAX_COMPONENTS + 1][64]    = {{0}};
+static int64_t g_ext_offset[MAX_COMPONENTS + 1]     = {0};
+static int64_t g_ext_csize[MAX_COMPONENTS + 1]      = {0};
 static PackEntry *g_entries           = NULL;
 static uint32_t   g_num_entries       = 0;
 static int        g_close_countdown   = 0;
@@ -345,6 +347,33 @@ static void json_parse_components(const char *json)
     }
 }
 
+/* Parse a {"1": N, "2": M, ...} JSON object into an int64_t array. */
+static void json_parse_ext_int64s(const char *json, const char *key,
+                                   int64_t *arr, int max)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return;
+    p = strchr(p, '{');
+    if (!p) return;
+    p++;
+    while (*p) {
+        while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t' || *p == ',') p++;
+        if (*p == '}' || !*p) break;
+        if (*p != '"') break;
+        p++;
+        int idx = 0;
+        while (*p >= '0' && *p <= '9') { idx = idx * 10 + (*p - '0'); p++; }
+        if (*p != '"') break;
+        p++;
+        while (*p == ' ' || *p == ':') p++;
+        if (idx >= 0 && idx <= max)
+            arr[idx] = (int64_t)_atoi64(p);
+        while (*p && *p != ',' && *p != '}') p++;
+    }
+}
+
 /* Parse "external_components" JSON object {"1":"crack.bin","2":"dlc.bin",...}
  * into g_ext_bin[comp_idx]. */
 static void json_parse_external_components(const char *json)
@@ -471,6 +500,8 @@ static int read_install_meta(void)
 
     json_parse_components(buf);
     json_parse_external_components(buf);
+    json_parse_ext_int64s(buf, "external_offsets", g_ext_offset, MAX_COMPONENTS);
+    json_parse_ext_int64s(buf, "external_csizes",  g_ext_csize,  MAX_COMPONENTS);
 
     free(buf);
     return 1;
@@ -1260,7 +1291,8 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 }
                 continue;
             }
-            src_csize      = UINT64_MAX; /* read until EOF / stream end */
+            _fseeki64(src, g_ext_offset[comp_idx], SEEK_SET);
+            src_csize      = (uint64_t)g_ext_csize[comp_idx];
             opened_sidecar = 1;
         }
 
@@ -1351,7 +1383,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                     strm.next_in  = inbuf;
                     strm.avail_in = (uint32_t)got;
                     total_read   += got;
-                    if (got == 0 || total_read >= src_csize) action = LZMA_FINISH;
+                    if (total_read >= src_csize) action = LZMA_FINISH;
                 }
 
                 strm.next_out  = outbuf;

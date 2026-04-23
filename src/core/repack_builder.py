@@ -91,7 +91,7 @@ def build(
         _progress(10 + int(pct * 0.65), msg)
 
     try:
-        blob_path, total_files, uncompressed_size, file_list, ext_bins = build_archive(
+        blob_path, total_files, uncompressed_size, file_list, ext_info = build_archive(
             game_dir,
             quality=settings.compression,
             components=settings.components or [],
@@ -153,11 +153,16 @@ def build(
         ],
     }
 
-    # External component sidecar files: {"comp_idx": "filename.bin"}
-    if ext_bins:
+    # External component sidecar files
+    if ext_info:
         metadata["external_components"] = {
-            str(comp_idx): bin_path.name
-            for comp_idx, bin_path in ext_bins.items()
+            str(ci): info["path"].name for ci, info in ext_info.items()
+        }
+        metadata["external_offsets"] = {
+            str(ci): info["offset"] for ci, info in ext_info.items()
+        }
+        metadata["external_csizes"] = {
+            str(ci): info["csize"] for ci, info in ext_info.items()
         }
 
     # ------------------------------------------------------------------ #
@@ -212,11 +217,20 @@ def build(
 
     _progress(100, "Done.")
 
+    # Total compressed output: exe stub + base_game.bin (if split) + all sidecars
+    total_compressed = output_path.stat().st_size
+    if bin_path:
+        total_compressed += bin_path.stat().st_size
+    for info in ext_info.values():
+        p = info["path"]
+        if p.exists():
+            total_compressed += p.stat().st_size
+
     return RepackResult(
         success=True,
         output_path=output_path,
         bin_path=bin_path,
         total_files=total_files,
         uncompressed_size=uncompressed_size,
-        output_size=output_path.stat().st_size,
+        output_size=total_compressed,
     )
