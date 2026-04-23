@@ -151,10 +151,21 @@ def _add_build(sub):
     p.add_argument("--no-delete-extra-files", action="store_false",
                    dest="delete_extra_files",
                    help="Keep game files absent from the target version")
+    p.add_argument("--preserve-timestamps", action="store_true", default=False,
+                   dest="preserve_timestamps",
+                   help="Restore original file modification times after patching")
+    p.add_argument("--run-on-startup", metavar="CMD", dest="run_on_startup",
+                   help="Shell command to run when the patcher window opens")
     p.add_argument("--run-before", metavar="CMD", dest="run_before",
                    help="Shell command to run before patching starts")
     p.add_argument("--run-after",  metavar="CMD", dest="run_after",
                    help="Shell command to run after patching succeeds")
+    p.add_argument("--run-on-finish", metavar="CMD", dest="run_on_finish",
+                   help="Shell command to run after successful patch + close dialog")
+    p.add_argument("--extra-file", metavar="SRC[:DEST]", action="append",
+                   dest="extra_files",
+                   help="Embed an extra file in the patcher exe. DEST is the path the "
+                        "patcher writes it to; defaults to the basename of SRC. Repeatable.")
 
     # Feature: backup
     p.add_argument("--backup-at", choices=["disabled", "same_folder", "custom"],
@@ -216,12 +227,25 @@ def _cmd_build(args):
     if args.icon_path:      settings.icon_path     = args.icon_path
     if args.extra_diff_args:    settings.extra_diff_args    = args.extra_diff_args
     if args.delete_extra_files is not None:
-                            settings.delete_extra_files = args.delete_extra_files
-    if args.run_before:     settings.run_before    = args.run_before
-    if args.run_after:      settings.run_after     = args.run_after
-    if args.backup_at:      settings.backup_at     = args.backup_at
-    if args.backup_path:    settings.backup_path   = args.backup_path
-    if args.backdrop_path:  settings.backdrop_path = args.backdrop_path
+                            settings.delete_extra_files  = args.delete_extra_files
+    if args.preserve_timestamps:
+                            settings.preserve_timestamps = True
+    if args.run_on_startup: settings.run_on_startup = args.run_on_startup
+    if args.run_before:     settings.run_before     = args.run_before
+    if args.run_after:      settings.run_after      = args.run_after
+    if args.run_on_finish:  settings.run_on_finish  = args.run_on_finish
+    if args.backup_at:      settings.backup_at      = args.backup_at
+    if args.backup_path:    settings.backup_path    = args.backup_path
+    if args.backdrop_path:  settings.backdrop_path  = args.backdrop_path
+    if args.extra_files:
+        parsed = []
+        for entry in args.extra_files:
+            if ":" in entry:
+                src, dest = entry.split(":", 1)
+            else:
+                src, dest = entry, Path(entry).name
+            parsed.append({"src": src.strip(), "dest": dest.strip()})
+        settings.extra_files = parsed
 
     # Save project if requested
     if args.save_project:
