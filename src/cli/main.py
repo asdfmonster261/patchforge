@@ -444,8 +444,9 @@ def _add_repack(sub):
     p.add_argument("--component", metavar="JSON", action="append", dest="components_json",
                    help=(
                        "Add an optional component as a JSON object. Repeatable. "
-                       'Keys: label, folder, default_checked, group, shortcut_target. '
-                       'Example: \'{"label":"DLC","folder":"dlc/","default_checked":true,"group":""}\''
+                       'Keys: label, folder, default_checked, group, shortcut_target, '
+                       'external (bool — write stream to <group_or_label>.bin sidecar). '
+                       'Example: \'{"label":"Crack","folder":"crack/","external":true}\''
                    ))
 
     # Uninstaller
