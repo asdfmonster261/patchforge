@@ -330,3 +330,27 @@ def package_repack(
             f.write(REPACK_MAGIC)
 
         return output_path, None
+
+
+def patch_repack_metadata(exe_path: Path, extra_fields: dict) -> None:
+    """
+    Merge `extra_fields` into the JSON metadata embedded at the end of a
+    repack exe (XPACK01 format). Rewrites the trailing [metadata][meta_len]
+    [magic] region — the rest of the exe is untouched.
+
+    Used by the repack builder to inject bin_part_crcs after the split pass
+    (which is where they're computed) without needing an extra read of the
+    full blob before packaging.
+    """
+    exe_path = Path(exe_path)
+    data = bytearray(exe_path.read_bytes())
+    if data[-8:] != REPACK_MAGIC:
+        raise ValueError(f"Not an XPACK01 exe: {exe_path}")
+    old_meta_len = struct.unpack_from("<I", data, len(data) - 12)[0]
+    old_meta_start = len(data) - 12 - old_meta_len
+    old_meta = json.loads(data[old_meta_start:old_meta_start + old_meta_len])
+    old_meta.update(extra_fields)
+    new_meta = json.dumps(old_meta, separators=(",", ":")).encode("utf-8")
+    new_tail = new_meta + struct.pack("<I", len(new_meta)) + REPACK_MAGIC
+    # Rewrite: keep everything up to the old metadata, append new tail.
+    exe_path.write_bytes(bytes(data[:old_meta_start]) + new_tail)

@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from .repack_project import RepackSettings
 from .xpack_archive import build as build_archive
-from .exe_packager import package_repack
+from .exe_packager import package_repack, patch_repack_metadata
 from .app_settings import load as load_app_settings
 
 # Installer stub's hardcoded maximum bin_parts (see MAX_BIN_PARTS in
@@ -71,6 +71,9 @@ def build(
     if settings.codec not in ("lzma", "zstd"):
         return RepackResult(success=False,
                             error=f"Unknown codec: {settings.codec!r} (must be lzma or zstd)")
+    if settings.max_part_size_mb < 0:
+        return RepackResult(success=False,
+                            error=f"max_part_size_mb must be ≥ 0, got {settings.max_part_size_mb}")
     from .xpack_archive import _QUALITY_MAP, _ZSTD_LEVEL_MAP
     valid_qualities = _ZSTD_LEVEL_MAP if settings.codec == "zstd" else _QUALITY_MAP
     if settings.compression not in valid_qualities:
@@ -213,25 +216,9 @@ def build(
                 )
             metadata["bin_parts"] = bin_num_parts
             metadata["bin_part_size"] = bin_part_size
-
-            # Precompute CRC32 per future part so the installer can verify
-            # integrity before starting decompression. Adds one extra read
-            # pass of the blob but avoids cryptic mid-install failures.
-            _progress(80, f"Checksumming {bin_num_parts} part(s)…")
-            crcs: list[int] = []
-            CHUNK = 1024 * 1024
-            with open(blob_path, "rb") as bf:
-                for _ in range(bin_num_parts):
-                    remaining = bin_part_size
-                    crc = 0
-                    while remaining > 0:
-                        buf = bf.read(min(CHUNK, remaining))
-                        if not buf:
-                            break
-                        crc = zlib.crc32(buf, crc)
-                        remaining -= len(buf)
-                    crcs.append(crc & 0xFFFFFFFF)
-            metadata["bin_part_crcs"] = crcs
+            # bin_part_crcs are computed during the split pass below and
+            # patched into the exe's metadata after packaging — this avoids
+            # an extra full read of the blob upfront.
 
     # ------------------------------------------------------------------ #
     # 4. Load backdrop                                                     #
@@ -295,27 +282,34 @@ def build(
         cleanup_paths.append(bin_path)
 
     # Multi-part splitting of base_game.bin (after packaging, since parts
-    # are just raw byte chunks of the final sidecar).
+    # are just raw byte chunks of the final sidecar). CRC32 is computed in
+    # the same pass and patched into the exe metadata at the end.
     bin_part_paths: list[Path] = []
     if bin_path and bin_num_parts > 1:
         _progress(98, f"Splitting {bin_path.name} into {bin_num_parts} parts…")
         CHUNK = 1024 * 1024  # 1 MB copy buffer
+        crcs: list[int] = []
         try:
             with open(bin_path, "rb") as src:
                 for i in range(bin_num_parts):
                     part_path = bin_path.with_name(f"{bin_path.name}.{i + 1:03d}")
                     remaining = bin_part_size
+                    crc = 0
                     with open(part_path, "wb") as dst:
                         while remaining > 0:
                             buf = src.read(min(CHUNK, remaining))
                             if not buf:
                                 break
+                            crc = zlib.crc32(buf, crc)
                             dst.write(buf)
                             remaining -= len(buf)
+                    crcs.append(crc & 0xFFFFFFFF)
                     bin_part_paths.append(part_path)
                     cleanup_paths.append(part_path)
             bin_path.unlink()
             cleanup_paths.remove(bin_path)
+            # Patch the per-part CRCs into the exe's embedded metadata.
+            patch_repack_metadata(output_path, {"bin_part_crcs": crcs})
         except OSError as exc:
             _cleanup_on_failure()
             return RepackResult(success=False, error=f"Failed to split {bin_path.name}: {exc}")

@@ -185,6 +185,23 @@ def test_builder_refuses_over_999_parts(tmp_path):
     assert "max_part_size_mb" in result.error
 
 
+def test_negative_max_part_size_rejected(tmp_path):
+    """Negative max_part_size_mb should fail the build at validation."""
+    import os
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "data.bin").write_bytes(os.urandom(1024))
+    settings = RepackSettings(
+        game_dir=str(game), output_dir=str(tmp_path / "out"),
+        app_name="NegTest", version="1.0",
+        codec="zstd", compression="fast", threads=1,
+        max_part_size_mb=-1,
+    )
+    result = build_repack(settings)
+    assert not result.success
+    assert "max_part_size_mb" in result.error
+
+
 def test_cleanup_on_backdrop_failure(tmp_path):
     """A mid-build failure (backdrop missing) must not leave orphaned
     blob/sidecar/bin files in the output dir."""
