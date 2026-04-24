@@ -182,6 +182,26 @@ def build(
             metadata["bin_parts"] = bin_num_parts
             metadata["bin_part_size"] = bin_part_size
 
+            # Precompute CRC32 per future part so the installer can verify
+            # integrity before starting decompression. Adds one extra read
+            # pass of the blob but avoids cryptic mid-install failures.
+            import zlib
+            _progress(80, f"Checksumming {bin_num_parts} part(s)…")
+            crcs: list[int] = []
+            CHUNK = 1024 * 1024
+            with open(blob_path, "rb") as bf:
+                for _ in range(bin_num_parts):
+                    remaining = bin_part_size
+                    crc = 0
+                    while remaining > 0:
+                        buf = bf.read(min(CHUNK, remaining))
+                        if not buf:
+                            break
+                        crc = zlib.crc32(buf, crc)
+                        remaining -= len(buf)
+                    crcs.append(crc & 0xFFFFFFFF)
+            metadata["bin_part_crcs"] = crcs
+
     # ------------------------------------------------------------------ #
     # 4. Load backdrop                                                     #
     # ------------------------------------------------------------------ #
