@@ -8,6 +8,7 @@ Steps:
   4. Package installer_stub + XPACK01 blob + backdrop + metadata into output .exe
 """
 
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -16,6 +17,10 @@ from .repack_project import RepackSettings
 from .xpack_archive import build as build_archive
 from .exe_packager import package_repack
 from .app_settings import load as load_app_settings
+
+# Installer stub's hardcoded maximum bin_parts (see MAX_BIN_PARTS in
+# installer_stub.c). Builds exceeding this can't be installed.
+MAX_BIN_PARTS = 999
 
 
 @dataclass
@@ -93,6 +98,17 @@ def build(
         # Map archive progress (0-100) to overall range 10-75
         _progress(10 + int(pct * 0.65), msg)
 
+    # Track every on-disk artifact we create so we can delete them on failure.
+    # Populated as the build progresses; cleared on success.
+    cleanup_paths: list[Path] = []
+
+    def _cleanup_on_failure() -> None:
+        for p in cleanup_paths:
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     try:
         blob_path, total_files, uncompressed_size, file_list, ext_info = build_archive(
             game_dir,
@@ -106,6 +122,11 @@ def build(
         )
     except Exception as exc:
         return RepackResult(success=False, error=f"Compression failed: {exc}")
+
+    cleanup_paths.append(blob_path)
+    # External sidecar files are created by build_archive — track them too.
+    for info in ext_info.values():
+        cleanup_paths.append(info["path"])
 
     # ------------------------------------------------------------------ #
     # 3. Build metadata                                                    #
@@ -179,13 +200,23 @@ def build(
         blob_size = blob_path.stat().st_size
         if blob_size > bin_part_size:
             bin_num_parts = (blob_size + bin_part_size - 1) // bin_part_size
+            if bin_num_parts > MAX_BIN_PARTS:
+                _cleanup_on_failure()
+                return RepackResult(
+                    success=False,
+                    error=(
+                        f"max_part_size_mb={settings.max_part_size_mb} would produce "
+                        f"{bin_num_parts} parts, exceeding the installer stub's limit of "
+                        f"{MAX_BIN_PARTS}. Increase --max-part-size-mb to at least "
+                        f"{(blob_size + MAX_BIN_PARTS - 1) // MAX_BIN_PARTS // (1024 * 1024) + 1} MB."
+                    ),
+                )
             metadata["bin_parts"] = bin_num_parts
             metadata["bin_part_size"] = bin_part_size
 
             # Precompute CRC32 per future part so the installer can verify
             # integrity before starting decompression. Adds one extra read
             # pass of the blob but avoids cryptic mid-install failures.
-            import zlib
             _progress(80, f"Checksumming {bin_num_parts} part(s)…")
             crcs: list[int] = []
             CHUNK = 1024 * 1024
@@ -209,6 +240,7 @@ def build(
     if settings.backdrop_path:
         bp = Path(settings.backdrop_path)
         if not bp.exists():
+            _cleanup_on_failure()
             return RepackResult(success=False, error=f"Backdrop image not found: {bp}")
         backdrop_data = bp.read_bytes()
 
@@ -246,12 +278,21 @@ def build(
             split_bin=use_bin,
         )
     except Exception as exc:
+        _cleanup_on_failure()
         return RepackResult(success=False, error=str(exc))
     finally:
+        # blob_path is consumed by package_repack in every success path.
         try:
             blob_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+    # blob_path is gone; track the new artifacts package_repack produced so a
+    # later failure (e.g. split I/O error) cleans them up too.
+    cleanup_paths.remove(blob_path)
+    cleanup_paths.append(output_path)
+    if bin_path:
+        cleanup_paths.append(bin_path)
 
     # Multi-part splitting of base_game.bin (after packaging, since parts
     # are just raw byte chunks of the final sidecar).
@@ -259,19 +300,25 @@ def build(
     if bin_path and bin_num_parts > 1:
         _progress(98, f"Splitting {bin_path.name} into {bin_num_parts} parts…")
         CHUNK = 1024 * 1024  # 1 MB copy buffer
-        with open(bin_path, "rb") as src:
-            for i in range(bin_num_parts):
-                part_path = bin_path.with_name(f"{bin_path.name}.{i + 1:03d}")
-                remaining = bin_part_size
-                with open(part_path, "wb") as dst:
-                    while remaining > 0:
-                        buf = src.read(min(CHUNK, remaining))
-                        if not buf:
-                            break
-                        dst.write(buf)
-                        remaining -= len(buf)
-                bin_part_paths.append(part_path)
-        bin_path.unlink()
+        try:
+            with open(bin_path, "rb") as src:
+                for i in range(bin_num_parts):
+                    part_path = bin_path.with_name(f"{bin_path.name}.{i + 1:03d}")
+                    remaining = bin_part_size
+                    with open(part_path, "wb") as dst:
+                        while remaining > 0:
+                            buf = src.read(min(CHUNK, remaining))
+                            if not buf:
+                                break
+                            dst.write(buf)
+                            remaining -= len(buf)
+                    bin_part_paths.append(part_path)
+                    cleanup_paths.append(part_path)
+            bin_path.unlink()
+            cleanup_paths.remove(bin_path)
+        except OSError as exc:
+            _cleanup_on_failure()
+            return RepackResult(success=False, error=f"Failed to split {bin_path.name}: {exc}")
         # Return the first part as the "bin_path" in the result
         bin_path = bin_part_paths[0]
 
