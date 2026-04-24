@@ -144,6 +144,12 @@ static char       g_bin_path[MAX_PATH]= {0};  /* same as g_exe_path unless split
 static char    g_ext_bin[MAX_COMPONENTS + 1][64]    = {{0}};
 static int64_t g_ext_offset[MAX_COMPONENTS + 1]     = {0};
 static int64_t g_ext_csize[MAX_COMPONENTS + 1]      = {0};
+/* Expected CRC32 of each base_game.bin.NNN part, loaded from metadata.
+ * Indexed 0..bin_parts-1. Zero entries mean "no CRC available — skip check".
+ * Size matches MPF_MAX_PARTS defined with the multi-part file reader below. */
+#define BIN_PART_CRC_CAP 999
+static uint32_t g_bin_part_crcs[BIN_PART_CRC_CAP]   = {0};
+static int      g_num_bin_part_crcs                 = 0;
 static PackEntry *g_entries           = NULL;
 static uint32_t   g_num_entries       = 0;
 static int        g_close_countdown   = 0;
@@ -383,6 +389,31 @@ static int json_get_bool(const char *json, const char *key, int def)
     return def;
 }
 
+/* Parse a JSON integer array into uint32_t[] (full unsigned range).
+   Decimal only. json_parse_int_array casts to int and truncates values
+   above 0x7FFFFFFF — not safe for CRC32 values. */
+static int json_parse_u32_array(const char *json, const char *key, uint32_t *out, int max)
+{
+    char search[128];
+    snprintf(search, sizeof(search), "\"%s\"", key);
+    const char *p = strstr(json, search);
+    if (!p) return 0;
+    p += strlen(search);
+    while (*p == ' ' || *p == ':') p++;
+    if (*p != '[') return 0;
+    p++;
+    int count = 0;
+    while (count < max) {
+        while (*p == ' ' || *p == ',' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+        if (*p == ']' || !*p) break;
+        if (*p >= '0' && *p <= '9') {
+            out[count++] = (uint32_t)(_atoi64(p) & 0xFFFFFFFFu);
+        }
+        while (*p && *p != ',' && *p != ']') p++;
+    }
+    return count;
+}
+
 static int json_parse_int_array(const char *json, const char *key, int *out, int max)
 {
     char search[128];
@@ -591,6 +622,8 @@ static int read_install_meta(void)
     g_meta.bin_parts               = (int)json_get_int(buf, "bin_parts");
     if (g_meta.bin_parts < 1) g_meta.bin_parts = 1;
     g_meta.bin_part_size           = json_get_int(buf, "bin_part_size");
+    g_num_bin_part_crcs = json_parse_u32_array(buf, "bin_part_crcs",
+                                               g_bin_part_crcs, BIN_PART_CRC_CAP);
     if (!g_meta.codec[0]) strncpy(g_meta.codec, "lzma", sizeof(g_meta.codec) - 1);
 
     /* Resolve path to pack data: either self (single-file) or base_game.bin. */
@@ -1297,11 +1330,63 @@ static void dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
     }
 }
 
+/* Verify CRC32 of every base_game.bin.NNN part against expected values from
+   metadata. Returns 0 on success, or the 1-based index of the first bad part. */
+static int verify_bin_parts(void)
+{
+    if (g_num_bin_part_crcs <= 0 || g_meta.bin_parts <= 1) return 0;
+
+    const size_t IN_SZ = 1 << 20;  /* 1 MiB read buffer */
+    uint8_t *buf = (uint8_t *)malloc(IN_SZ);
+    if (!buf) return 0;  /* OOM: skip check rather than fail-closed */
+
+    int num = g_meta.bin_parts;
+    if (num > g_num_bin_part_crcs) num = g_num_bin_part_crcs;
+
+    for (int i = 0; i < num; i++) {
+        char path[MAX_PATH + 8];
+        snprintf(path, sizeof(path), "%s.%03d", g_bin_path, i + 1);
+        FILE *f = fopen(path, "rb");
+        if (!f) { free(buf); return i + 1; }
+
+        if (g_hwnd) {
+            char status[128];
+            snprintf(status, sizeof(status), "Verifying part %d of %d…", i + 1, num);
+            set_status(status, COL_TEXT_DIM);
+        }
+
+        uint32_t crc = 0xFFFFFFFFu;
+        size_t got;
+        while ((got = fread(buf, 1, IN_SZ, f)) > 0)
+            crc = crc32_update(crc, buf, got);
+        fclose(f);
+        crc ^= 0xFFFFFFFFu;
+
+        if (crc != g_bin_part_crcs[i]) { free(buf); return i + 1; }
+    }
+
+    free(buf);
+    return 0;
+}
+
 static int do_install(const char *install_dir, int low_load, int verify_crc32,
                       int repair_mode, const int *selected_comps, int num_components,
                       int shortcut_desktop, int shortcut_startmenu,
                       uint32_t *out_skipped, uint32_t *out_replaced)
 {
+    int bad_part = verify_bin_parts();
+    if (bad_part > 0) {
+        if (!g_silent) {
+            char msg[MAX_PATH + 200];
+            snprintf(msg, sizeof(msg),
+                "Data file part %d of %d is corrupted or could not be read:\n  %s.%03d\n\n"
+                "Re-download this part and try again.",
+                bad_part, g_meta.bin_parts, g_bin_path, bad_part);
+            MessageBoxA(g_hwnd, msg, "PatchForge Installer", MB_OK | MB_ICONERROR);
+        }
+        return 0;
+    }
+
     MPF base;
     if (!mpf_open(&base, g_bin_path, g_meta.bin_parts, g_meta.bin_part_size)) return 0;
 
