@@ -56,7 +56,7 @@ class BuildWorker(QObject):
 
 class RepackWorker(QObject):
     progress        = Signal(int, str)
-    stream_progress = Signal(int, int, str, int, int)  # idx, n, label, done, total
+    stream_progress = Signal(int, int, str, int, int, int)  # idx, n, label, done, total, file_size
     finished        = Signal(object)   # RepackResult
 
     def __init__(self, settings: RepackSettings):
@@ -1429,11 +1429,12 @@ class MainWindow(QMainWindow):
             self._log(msg)
 
     def _on_stream_progress(self, stream_idx: int, num_streams: int,
-                            label: str, done: int, total: int):
+                            label: str, done: int, total: int, file_size: int):
         self.stream_widget.setVisible(True)
+        size_str = f"  ({_fmt_size(file_size)})" if file_size else ""
         self.stream_label.setText(
             f"Stream {stream_idx + 1} / {num_streams}: {label} — "
-            f"{done:,} / {total:,} files"
+            f"{done:,} / {total:,} files{size_str}"
         )
         self.stream_bar.setValue(done * 100 // total if total else 0)
 
