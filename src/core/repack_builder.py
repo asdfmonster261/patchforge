@@ -8,6 +8,7 @@ Steps:
   4. Package installer_stub + XPACK01 blob + backdrop + metadata into output .exe
 """
 
+import json
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +19,8 @@ from .xpack_archive import build as build_archive
 from .exe_packager import package_repack, patch_repack_metadata
 from .app_settings import load as load_app_settings
 
-# Installer stub's hardcoded maximum bin_parts (see MAX_BIN_PARTS in
-# installer_stub.c). Builds exceeding this can't be installed.
+# Installer stub's hardcoded maximum bin_parts. Must stay in sync with
+# MAX_BIN_PARTS in stub/installer_stub.c — if either changes, update both.
 MAX_BIN_PARTS = 999
 
 
@@ -293,6 +294,9 @@ def build(
             with open(bin_path, "rb") as src:
                 for i in range(bin_num_parts):
                     part_path = bin_path.with_name(f"{bin_path.name}.{i + 1:03d}")
+                    # Track the path BEFORE opening for write so a mid-chunk
+                    # I/O error still leaves it eligible for cleanup.
+                    cleanup_paths.append(part_path)
                     remaining = bin_part_size
                     crc = 0
                     with open(part_path, "wb") as dst:
@@ -305,12 +309,11 @@ def build(
                             remaining -= len(buf)
                     crcs.append(crc & 0xFFFFFFFF)
                     bin_part_paths.append(part_path)
-                    cleanup_paths.append(part_path)
             bin_path.unlink()
             cleanup_paths.remove(bin_path)
             # Patch the per-part CRCs into the exe's embedded metadata.
             patch_repack_metadata(output_path, {"bin_part_crcs": crcs})
-        except OSError as exc:
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
             _cleanup_on_failure()
             return RepackResult(success=False, error=f"Failed to split {bin_path.name}: {exc}")
         # Return the first part as the "bin_path" in the result
