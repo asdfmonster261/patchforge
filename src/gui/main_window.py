@@ -55,15 +55,20 @@ class BuildWorker(QObject):
 
 
 class RepackWorker(QObject):
-    progress = Signal(int, str)
-    finished = Signal(object)   # RepackResult
+    progress        = Signal(int, str)
+    stream_progress = Signal(int, int, str, int, int, str)  # idx, n, label, done, total, file_size
+    finished        = Signal(object)   # RepackResult
 
     def __init__(self, settings: RepackSettings):
         super().__init__()
         self._settings = settings
 
     def run(self):
-        result = build_repack(self._settings, progress=self.progress.emit)
+        result = build_repack(
+            self._settings,
+            progress=self.progress.emit,
+            stream_progress=self.stream_progress.emit,
+        )
         self.finished.emit(result)
 
 
@@ -995,6 +1000,22 @@ class MainWindow(QMainWindow):
         self.status_lbl.setObjectName("dim")
         og.addWidget(self.status_lbl)
 
+        # Per-stream compression status (repack builds only)
+        self.stream_widget = QWidget()
+        sw_layout = QVBoxLayout(self.stream_widget)
+        sw_layout.setContentsMargins(0, 0, 0, 0)
+        sw_layout.setSpacing(2)
+        self.stream_label = QLabel()
+        self.stream_bar = QProgressBar()
+        self.stream_bar.setRange(0, 100)
+        self.stream_bar.setValue(0)
+        self.stream_bar.setFixedHeight(10)
+        self.stream_bar.setTextVisible(False)
+        sw_layout.addWidget(self.stream_label)
+        sw_layout.addWidget(self.stream_bar)
+        self.stream_widget.setVisible(False)
+        og.addWidget(self.stream_widget)
+
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setPlaceholderText("Build output will appear here…")
@@ -1382,6 +1403,7 @@ class MainWindow(QMainWindow):
 
         self.build_btn.setEnabled(False)
         self.progress_bar.setValue(0)
+        self.stream_widget.setVisible(False)
         self.log.clear()
         self._log("Starting repack build…")
 
@@ -1392,34 +1414,28 @@ class MainWindow(QMainWindow):
         self._repack_worker.moveToThread(self._thread)
         self._thread.started.connect(self._repack_worker.run)
         self._repack_worker.progress.connect(self._on_progress)
+        self._repack_worker.stream_progress.connect(self._on_stream_progress)
         self._repack_worker.finished.connect(self._on_repack_done)
         self._repack_worker.finished.connect(self._thread.quit)
         self._thread.finished.connect(self._on_thread_done)
         self._thread.start()
 
     def _on_progress(self, pct: int, msg: str):
-        compressing = bool(msg and ": compressing " in msg and "done" not in msg)
-        # In parallel mode multiple streams run simultaneously — a "reading"
-        # update from stream N must not stop the indeterminate bar started by
-        # stream M. Only exit indeterminate mode at a terminal stage (≥95% or
-        # "Archive complete"), not on every non-compressing message.
-        terminal = pct >= 95 or (msg and "Archive complete" in msg)
-        indeterminate = self.progress_bar.maximum() == 0
-
-        if compressing:
-            if not indeterminate:
-                self.progress_bar.setRange(0, 0)
-        elif indeterminate:
-            if terminal:
-                self.progress_bar.setRange(0, 100)
-                self.progress_bar.setValue(pct)
-            # else: keep pulsing — another stream is still compressing
-        else:
-            self.progress_bar.setValue(pct)
-
+        self.progress_bar.setValue(pct)
         self.status_lbl.setText(msg)
-        if msg and ": reading " not in msg and ": compressing " not in msg:
+        # Per-file stream messages are shown in the stream widget; skip logging them.
+        if msg and "files…" not in msg and ": compressing " not in msg:
             self._log(msg)
+
+    def _on_stream_progress(self, stream_idx: int, num_streams: int,
+                            label: str, done: int, total: int, file_size: str):
+        self.stream_widget.setVisible(True)
+        size_str = f"  ({file_size})" if file_size else ""
+        self.stream_label.setText(
+            f"Stream {stream_idx + 1} / {num_streams}: {label} — "
+            f"{done:,} / {total:,} files{size_str}"
+        )
+        self.stream_bar.setValue(done * 100 // total if total else 0)
 
     def _on_build_done(self, result: BuildResult):
         if result.success:
@@ -1439,6 +1455,7 @@ class MainWindow(QMainWindow):
             self.open_folder_btn.setVisible(False)
 
     def _on_repack_done(self, result: RepackResult):
+        self.stream_widget.setVisible(False)
         if result.success:
             self.progress_bar.setValue(100)
             self._log(f"\n✓  Done!", color=SUCCESS)

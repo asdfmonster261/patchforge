@@ -32,11 +32,14 @@ class RepackResult:
 def build(
     settings: RepackSettings,
     progress: Optional[Callable[[int, str], None]] = None,
+    stream_progress: Optional[Callable[[int, int, str, int, int, str], None]] = None,
 ) -> RepackResult:
     """
     Build a self-contained Windows installer exe from settings.
 
     progress(pct, message) is called with 0–100 as the build proceeds.
+    stream_progress(stream_idx, num_streams, label, files_done, files_total)
+    is called once per file during the compression phase.
     """
 
     def _progress(pct: int, msg: str) -> None:
@@ -99,6 +102,7 @@ def build(
             codec=settings.codec,
             progress=_archive_prog,
             tmp_dir=output_dir,
+            stream_progress=stream_progress,
         )
     except Exception as exc:
         return RepackResult(success=False, error=f"Compression failed: {exc}")
