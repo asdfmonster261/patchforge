@@ -146,7 +146,8 @@ static int64_t g_ext_offset[MAX_COMPONENTS + 1]     = {0};
 static int64_t g_ext_csize[MAX_COMPONENTS + 1]      = {0};
 /* Expected CRC32 of each base_game.bin.NNN part, loaded from metadata.
  * Indexed 0..bin_parts-1. Zero entries mean "no CRC available — skip check".
- * The builder refuses to emit more parts than this cap. */
+ * The builder refuses to emit more parts than this cap. Must stay in sync
+ * with MAX_BIN_PARTS in src/core/repack_builder.py. */
 #define MAX_BIN_PARTS 999
 static uint32_t g_bin_part_crcs[MAX_BIN_PARTS]      = {0};
 static int      g_num_bin_part_crcs                 = 0;

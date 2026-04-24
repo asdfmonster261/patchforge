@@ -21,8 +21,8 @@ The JSON metadata contains:
 """
 
 import json
+import os
 import re
-import shutil
 import struct
 import zlib
 from pathlib import Path
@@ -30,6 +30,20 @@ from pathlib import Path
 MAGIC        = b"XPATCH01"
 REPACK_MAGIC = b"XPACK01\x00"
 STUB_DIR = Path(__file__).parent.parent.parent / "stub" / "prebuilt"
+
+
+def _copy_with_crc(src_path: Path, dst_f, chunk_size: int = 1024 * 1024) -> int:
+    """Stream src_path into dst_f (open file), returning its CRC32. Used
+    instead of shutil.copyfileobj so the CRC comes for free during the copy."""
+    crc = 0
+    with open(src_path, "rb") as src:
+        while True:
+            chunk = src.read(chunk_size)
+            if not chunk:
+                break
+            crc = zlib.crc32(chunk, crc)
+            dst_f.write(chunk)
+    return crc & 0xFFFFFFFF
 
 
 def _stub_path(engine: str, arch: str, compression: str) -> Path:
@@ -264,19 +278,6 @@ def package_repack(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _copy_with_crc(src_path: Path, dst_f) -> int:
-        """Stream src_path into dst_f, returning its CRC32. Used instead of
-        shutil.copyfileobj so the CRC comes for free during the copy."""
-        crc = 0
-        with open(src_path, "rb") as src:
-            while True:
-                chunk = src.read(1024 * 1024)
-                if not chunk:
-                    break
-                crc = zlib.crc32(chunk, crc)
-                dst_f.write(chunk)
-        return crc & 0xFFFFFFFF
-
     if split_bin:
         # Pack data goes to a separate file; exe contains only stub + uninst + backdrop.
         bin_path = output_path.parent / _BIN_FILENAME
@@ -356,22 +357,57 @@ def package_repack(
 def patch_repack_metadata(exe_path: Path, extra_fields: dict) -> None:
     """
     Merge `extra_fields` into the JSON metadata embedded at the end of a
-    repack exe (XPACK01 format). Rewrites the trailing [metadata][meta_len]
-    [magic] region — the rest of the exe is untouched.
+    repack exe (XPACK01 format). Streams the body to a temp file and uses
+    os.replace() for an atomic swap, so a crash mid-rewrite leaves either
+    the old exe or the new one intact — never a truncated hybrid.
 
     Used by the repack builder to inject bin_part_crcs after the split pass
     (which is where they're computed) without needing an extra read of the
-    full blob before packaging.
+    full blob before packaging. Memory usage is bounded by the streaming
+    chunk size — safe for arbitrarily large exes.
     """
     exe_path = Path(exe_path)
-    data = bytearray(exe_path.read_bytes())
-    if data[-8:] != REPACK_MAGIC:
-        raise ValueError(f"Not an XPACK01 exe: {exe_path}")
-    old_meta_len = struct.unpack_from("<I", data, len(data) - 12)[0]
-    old_meta_start = len(data) - 12 - old_meta_len
-    old_meta = json.loads(data[old_meta_start:old_meta_start + old_meta_len])
-    old_meta.update(extra_fields)
-    new_meta = json.dumps(old_meta, separators=(",", ":")).encode("utf-8")
-    new_tail = new_meta + struct.pack("<I", len(new_meta)) + REPACK_MAGIC
-    # Rewrite: keep everything up to the old metadata, append new tail.
-    exe_path.write_bytes(bytes(data[:old_meta_start]) + new_tail)
+    tmp_path = exe_path.with_suffix(exe_path.suffix + ".tmp")
+    CHUNK = 1024 * 1024
+
+    with open(exe_path, "rb") as src:
+        src.seek(0, 2)
+        total_size = src.tell()
+        if total_size < 12:
+            raise ValueError(f"Exe too short to be an XPACK01 file: {exe_path}")
+        src.seek(total_size - 12)
+        old_meta_len = struct.unpack("<I", src.read(4))[0]
+        magic = src.read(8)
+        if magic != REPACK_MAGIC:
+            raise ValueError(f"Not an XPACK01 exe: {exe_path}")
+        old_meta_start = total_size - 12 - old_meta_len
+        if old_meta_start < 0:
+            raise ValueError(f"Malformed metadata length in {exe_path}")
+        src.seek(old_meta_start)
+        old_meta = json.loads(src.read(old_meta_len))
+        old_meta.update(extra_fields)
+        new_meta = json.dumps(old_meta, separators=(",", ":")).encode("utf-8")
+
+        # Stream the body into the temp file, then append the new tail.
+        src.seek(0)
+        try:
+            with open(tmp_path, "wb") as dst:
+                remaining = old_meta_start
+                while remaining > 0:
+                    n = min(CHUNK, remaining)
+                    buf = src.read(n)
+                    if not buf:
+                        break
+                    dst.write(buf)
+                    remaining -= len(buf)
+                dst.write(new_meta)
+                dst.write(struct.pack("<I", len(new_meta)))
+                dst.write(REPACK_MAGIC)
+        except Exception:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+    os.replace(tmp_path, exe_path)
