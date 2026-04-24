@@ -4,23 +4,22 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QUrl
-from PySide6.QtGui import QFont, QTextCursor, QColor, QDesktopServices, QAction
+from PySide6.QtCore import Qt, QThread, Signal, QObject, QUrl
+from PySide6.QtGui import QTextCursor, QColor, QDesktopServices, QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
     QRadioButton, QButtonGroup, QProgressBar, QPlainTextEdit,
-    QFileDialog, QSplitter, QSizePolicy, QFrame, QStatusBar,
+    QFileDialog, QSplitter, QFrame, QStatusBar,
     QCheckBox, QListWidget, QListWidgetItem, QScrollArea, QInputDialog,
     QSpinBox, QDoubleSpinBox, QTabWidget,
     QDialog, QDialogButtonBox, QFormLayout, QMenu,
 )
 
-from .theme import QSS, ACCENT, SUCCESS, ERROR, WARN, TEXT_DIM
+from .theme import QSS, SUCCESS, ERROR, WARN
 
 from ..core.engines.hdiffpatch import (
-    HDiffPatchEngine, THREAD_OPTIONS,
-    LZMA2_QUALITIES, BZIP2_QUALITIES, DEFAULT_QUALITY, preset_compressor,
+    HDiffPatchEngine, THREAD_OPTIONS, DEFAULT_QUALITY,
 )
 from ..core.engines.jojodiff import JojoDiffEngine
 from ..core.engines.xdelta3 import XDelta3Engine
@@ -33,8 +32,8 @@ from ..core.xpack_archive import (
     ZSTD_QUALITY_LABELS as REPACK_ZSTD_QUALITY_LABELS,
     THREAD_OPTIONS as REPACK_THREAD_OPTIONS,
 )
-from ..core import verification
 from ..core import recent_files as _recent
+from ..core.fmt import format_size as _fmt_size
 
 
 # ---------------------------------------------------------------------------
@@ -1452,7 +1451,7 @@ class MainWindow(QMainWindow):
     def _on_build_done(self, result: BuildResult):
         if result.success:
             self.progress_bar.setValue(100)
-            self._log(f"\n✓  Done!", color=SUCCESS)
+            self._log("\n✓  Done!", color=SUCCESS)
             self._log(f"   Output:      {result.output_path}")
             self._log(f"   Patch size:  {_fmt_size(result.patch_size)}")
             self._log(f"   Output size: {_fmt_size(result.output_size)}")
@@ -1470,7 +1469,7 @@ class MainWindow(QMainWindow):
         self.stream_widget.setVisible(False)
         if result.success:
             self.progress_bar.setValue(100)
-            self._log(f"\n✓  Done!", color=SUCCESS)
+            self._log("\n✓  Done!", color=SUCCESS)
             self._log(f"   Output:       {result.output_path}")
             self._log(f"   Files packed: {result.total_files}")
             self._log(f"   Game size:    {_fmt_size(result.uncompressed_size)}")
@@ -1882,16 +1881,6 @@ class MainWindow(QMainWindow):
             cursor.setCharFormat(fmt)
         self.log.setTextCursor(cursor)
         self.log.ensureCursorVisible()
-
-
-# ---------------------------------------------------------------------------
-
-def _fmt_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
 
 
 def run_gui():

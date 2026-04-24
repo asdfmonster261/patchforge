@@ -15,7 +15,6 @@ import shlex
 import subprocess
 import tempfile
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 
 from .base import EngineResult, PatchEngine
 from . import dir_format

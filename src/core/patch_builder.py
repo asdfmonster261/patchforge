@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from . import compression as comp_mod
 from .engines import HDiffPatchEngine, JojoDiffEngine, XDelta3Engine, PatchEngine
 from .exe_packager import package
 from .project import ProjectSettings

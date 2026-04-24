@@ -1,10 +1,7 @@
 """File verification — CRC32C, MD5, and filesize."""
 
 import hashlib
-import struct
 from pathlib import Path
-
-METHODS = ["crc32c", "md5", "filesize"]
 
 
 def _crc32c(path: Path) -> str:
@@ -63,8 +60,3 @@ def compute(path: Path, method: str) -> str:
         return str(path.stat().st_size)
     else:
         raise ValueError(f"Unknown verification method: {method!r}")
-
-
-def verify(path: Path, method: str, expected: str) -> bool:
-    """Return True if file matches expected checksum."""
-    return compute(path, method) == expected
