@@ -158,3 +158,52 @@ def test_no_bin_part_crcs_when_not_splitting(tmp_path):
     exe, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
                               max_part_mb=0, split_bin=True)
     assert "bin_part_crcs" not in meta
+
+
+def test_builder_refuses_over_999_parts(tmp_path):
+    """A part size that would produce > MAX_BIN_PARTS (999) must fail the
+    build at Python level with a clear error — the installer stub caps at 999."""
+    import os
+    game = tmp_path / "game"
+    game.mkdir()
+    # ~1.1 GB of incompressible data, split at 1 MB parts → ~1100 parts.
+    # Write in chunks so we don't blow up memory in CI.
+    chunk = os.urandom(1024 * 1024)
+    with open(game / "data.bin", "wb") as f:
+        for _ in range(1100):
+            f.write(chunk)
+
+    settings = RepackSettings(
+        game_dir=str(game), output_dir=str(tmp_path / "out"),
+        app_name="OverCap", version="1.0",
+        codec="zstd", compression="fast", threads=1,
+        split_bin=True, max_part_size_mb=1,
+    )
+    result = build_repack(settings)
+    assert not result.success
+    assert "999" in result.error
+    assert "max_part_size_mb" in result.error
+
+
+def test_cleanup_on_backdrop_failure(tmp_path):
+    """A mid-build failure (backdrop missing) must not leave orphaned
+    blob/sidecar/bin files in the output dir."""
+    import os
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "data.bin").write_bytes(os.urandom(1024 * 1024))
+    out_dir = tmp_path / "out"
+
+    settings = RepackSettings(
+        game_dir=str(game), output_dir=str(out_dir),
+        app_name="CleanupTest", version="1.0",
+        codec="zstd", compression="fast", threads=1,
+        backdrop_path="/nonexistent/does_not_exist.png",  # triggers failure
+    )
+    result = build_repack(settings)
+    assert not result.success
+    assert "Backdrop image not found" in result.error
+    # No orphaned files in the output dir
+    if out_dir.exists():
+        leftovers = list(out_dir.iterdir())
+        assert leftovers == [], f"leaked files: {[p.name for p in leftovers]}"

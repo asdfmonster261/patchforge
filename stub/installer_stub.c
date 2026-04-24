@@ -146,9 +146,9 @@ static int64_t g_ext_offset[MAX_COMPONENTS + 1]     = {0};
 static int64_t g_ext_csize[MAX_COMPONENTS + 1]      = {0};
 /* Expected CRC32 of each base_game.bin.NNN part, loaded from metadata.
  * Indexed 0..bin_parts-1. Zero entries mean "no CRC available — skip check".
- * Size matches MPF_MAX_PARTS defined with the multi-part file reader below. */
-#define BIN_PART_CRC_CAP 999
-static uint32_t g_bin_part_crcs[BIN_PART_CRC_CAP]   = {0};
+ * The builder refuses to emit more parts than this cap. */
+#define MAX_BIN_PARTS 999
+static uint32_t g_bin_part_crcs[MAX_BIN_PARTS]      = {0};
 static int      g_num_bin_part_crcs                 = 0;
 static PackEntry *g_entries           = NULL;
 static uint32_t   g_num_entries       = 0;
@@ -237,8 +237,8 @@ static void format_size_bytes(uint64_t n, char *out, size_t out_len)
 }
 
 /* ---- Multi-part file reader (for base_game.bin.001, .002, ...) ------- */
-/* Presents N on-disk parts as one logical stream. Supports read + seek. */
-#define MPF_MAX_PARTS 999
+/* Presents N on-disk parts as one logical stream. Supports read + seek.
+   Part count is bounded by MAX_BIN_PARTS on the builder side. */
 typedef struct {
     FILE    *fp;             /* currently open part (NULL = needs open) */
     int      cur_idx;        /* 0-based index of fp */
@@ -302,6 +302,8 @@ static int mpf_seek(MPF *m, int64_t off, int whence)
     if (m->num_parts <= 1) {
         return m->fp && _fseeki64(m->fp, target, SEEK_SET) == 0;
     }
+    /* Malformed metadata: num_parts > 1 but no part size — can't index. */
+    if (m->part_size <= 0) return 0;
     int idx = (int)(target / m->part_size);
     int64_t within = target - (int64_t)idx * m->part_size;
     if (idx >= m->num_parts) {
@@ -623,7 +625,7 @@ static int read_install_meta(void)
     if (g_meta.bin_parts < 1) g_meta.bin_parts = 1;
     g_meta.bin_part_size           = json_get_int(buf, "bin_part_size");
     g_num_bin_part_crcs = json_parse_u32_array(buf, "bin_part_crcs",
-                                               g_bin_part_crcs, BIN_PART_CRC_CAP);
+                                               g_bin_part_crcs, MAX_BIN_PARTS);
     if (!g_meta.codec[0]) strncpy(g_meta.codec, "lzma", sizeof(g_meta.codec) - 1);
 
     /* Resolve path to pack data: either self (single-file) or base_game.bin. */
@@ -688,11 +690,10 @@ static int read_pack_entries(void)
 /* UI helpers                                                            */
 /* ==================================================================== */
 
-static void set_status(const char *msg, COLORREF col)
+static void set_status(const char *msg)
 {
     SetWindowTextA(g_hwnd_status, msg);
     InvalidateRect(g_hwnd_status, NULL, TRUE);
-    (void)col;
 }
 
 static void log_append(const char *msg)
@@ -1352,7 +1353,7 @@ static int verify_bin_parts(void)
         if (g_hwnd) {
             char status[128];
             snprintf(status, sizeof(status), "Verifying part %d of %d…", i + 1, num);
-            set_status(status, COL_TEXT_DIM);
+            set_status(status);
         }
 
         uint32_t crc = 0xFFFFFFFFu;
@@ -2310,12 +2311,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             char path[MAX_PATH] = {0};
             GetWindowTextA(g_hwnd_filepath, path, MAX_PATH);
             if (!path[0]) {
-                set_status("Please select an install folder first.", COL_ERROR);
+                set_status("Please select an install folder first.");
                 return 0;
             }
             DWORD attr = GetFileAttributesA(path);
             if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-                set_status("Path is not a directory. Please select a valid folder.", COL_ERROR);
+                set_status("Path is not a directory. Please select a valid folder.");
                 return 0;
             }
             if (g_meta.detect_running_exe[0] &&
@@ -2344,7 +2345,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ensure_dir(path);
 
             EnableWindow(g_hwnd_btn_install, FALSE);
-            set_status(repair_mode ? "Repairing..." : "Installing...", COL_TEXT);
+            set_status(repair_mode ? "Repairing..." : "Installing...");
 
             int low_load = (SendMessageA(g_hwnd_chk_lowload, BM_GETCHECK, 0, 0) == BST_CHECKED);
             int do_verify = g_meta.verify_crc32
@@ -2430,13 +2431,13 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 char buf[64];
                 snprintf(buf, sizeof(buf), "Done! Closing in %d seconds...",
                          g_close_countdown);
-                set_status(buf, COL_SUCCESS);
+                set_status(buf);
                 SetTimer(hwnd, TIMER_CLOSE, 1000, NULL);
             } else {
-                set_status(status_label, COL_SUCCESS);
+                set_status(status_label);
             }
         } else {
-            set_status("Installation failed. See log for details.", COL_ERROR);
+            set_status("Installation failed. See log for details.");
             log_append("ERROR: Installation failed.");
             MessageBoxA(hwnd, "Installation failed.\n\nSome files may not have been written.",
                         "Error", MB_OK | MB_ICONERROR);
@@ -2456,7 +2457,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 char buf[64];
                 snprintf(buf, sizeof(buf), "Done! Closing in %d seconds...",
                          g_close_countdown);
-                set_status(buf, COL_SUCCESS);
+                set_status(buf);
             }
         }
         break;
