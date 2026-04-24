@@ -43,6 +43,9 @@ import zlib
 from pathlib import Path
 from typing import Callable, Optional
 
+from .fmt import THREAD_OPTIONS as THREAD_OPTIONS  # noqa: F401  re-export
+from .fmt import format_size as _fmt_size
+
 MAGIC = b"XPACK01\x00"
 
 # Read/write chunk size used when streaming files through the compressor.
@@ -93,19 +96,6 @@ ZSTD_QUALITY_LABELS: dict[str, str] = {
     "max":    "Max (zstd-19)",
     "ultra":  "Ultra (zstd-22)",
 }
-
-def _build_thread_options() -> list[int]:
-    cores = os.cpu_count() or 1
-    opts: list[int] = []
-    p = 1
-    while p <= cores:
-        opts.append(p)
-        p *= 2
-    if opts[-1] != cores:
-        opts.append(cores)
-    return opts
-
-THREAD_OPTIONS = _build_thread_options()
 
 
 # ---------------------------------------------------------------------------
@@ -593,15 +583,3 @@ def _assemble_xpack(
                 pass
 
     return Path(xpack_name), ext_offsets, ext_csizes
-
-
-# ---------------------------------------------------------------------------
-# Utility
-# ---------------------------------------------------------------------------
-
-def _fmt_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"

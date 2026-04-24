@@ -14,7 +14,6 @@ Presets mirror ISXPM's three xdelta3 modes (GENERATING_SPEED=0/1/2):
 import shlex
 import subprocess
 import tempfile
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .base import EngineResult, PatchEngine
