@@ -175,7 +175,7 @@ typedef struct {
     char label[256];
     char group[64];
     int  default_checked;
-    int  requires[MAX_COMPONENTS];  /* 1-based indices of components this one depends on */
+    uint32_t requires[MAX_COMPONENTS];  /* 1-based indices of components this one depends on */
     int  num_requires;
     char shortcut_target[512];      /* overrides g_meta.shortcut_target if non-empty */
     int  sac_warning;               /* show SAC/AV warning when this component is checked */
@@ -394,9 +394,8 @@ static int json_get_bool(const char *json, const char *key, int def)
     return def;
 }
 
-/* Parse a JSON integer array into uint32_t[] (full unsigned range).
-   Decimal only. json_parse_int_array casts to int and truncates values
-   above 0x7FFFFFFF — not safe for CRC32 values. */
+/* Parse a JSON integer array of decimal numbers into uint32_t[]. Covers the
+   full unsigned 32-bit range (CRC32 values can exceed int32 max). */
 static int json_parse_u32_array(const char *json, const char *key, uint32_t *out, int max)
 {
     char search[128];
@@ -414,27 +413,6 @@ static int json_parse_u32_array(const char *json, const char *key, uint32_t *out
         if (*p >= '0' && *p <= '9') {
             out[count++] = (uint32_t)(_atoi64(p) & 0xFFFFFFFFu);
         }
-        while (*p && *p != ',' && *p != ']') p++;
-    }
-    return count;
-}
-
-static int json_parse_int_array(const char *json, const char *key, int *out, int max)
-{
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\"", key);
-    const char *p = strstr(json, search);
-    if (!p) return 0;
-    p += strlen(search);
-    while (*p == ' ' || *p == ':') p++;
-    if (*p != '[') return 0;
-    p++;
-    int count = 0;
-    while (count < max) {
-        while (*p == ' ' || *p == ',') p++;
-        if (*p == ']' || !*p) break;
-        if (*p >= '0' && *p <= '9')
-            out[count++] = (int)_atoi64(p);
         while (*p && *p != ',' && *p != ']') p++;
     }
     return count;
@@ -477,7 +455,7 @@ static void json_parse_components(const char *json)
         c->default_checked = json_get_bool(tmp, "default_checked", 1);
         json_get_str(tmp, "label", c->label, sizeof(c->label));
         json_get_str(tmp, "group", c->group, sizeof(c->group));
-        c->num_requires    = json_parse_int_array(tmp, "requires",
+        c->num_requires    = json_parse_u32_array(tmp, "requires",
                                                   c->requires, MAX_COMPONENTS);
         c->size_bytes      = (uint64_t)json_get_int(tmp, "size_bytes");
         json_get_str(tmp, "shortcut_target", c->shortcut_target, sizeof(c->shortcut_target));

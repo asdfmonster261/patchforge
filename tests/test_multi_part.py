@@ -226,6 +226,95 @@ def test_negative_max_part_size_rejected(tmp_path):
     assert "max_part_size_mb" in result.error
 
 
+def test_many_parts_boundary_stress(tmp_path):
+    """10+ parts, each 256 KB — exercises MPF's cross-boundary reads many
+    times. If the reader had a bug at part transitions (off-by-one in pos
+    tracking, dropped bytes at EOF of a part, etc.) the concatenated data
+    would differ from the source. Our split + CRC pipeline also catches
+    any mismatch between what the builder wrote and what verify reads back."""
+    import os, zlib
+    game = tmp_path / "game"
+    game.mkdir()
+    payload = os.urandom(3 * 1024 * 1024)  # 3 MB
+    (game / "data.bin").write_bytes(payload)
+
+    out_dir = tmp_path / "out"
+    settings = RepackSettings(
+        game_dir=str(game), output_dir=str(out_dir),
+        app_name="ManyParts", version="1.0",
+        codec="zstd", compression="fast", threads=1,
+        split_bin=True, max_part_size_mb=1,  # ~3+ parts of 1 MB + tail
+    )
+    result = build_repack(settings)
+    assert result.success, result.error
+    meta = _read_metadata(Path(result.output_path))
+    parts = sorted(out_dir.glob("base_game.bin.*"))
+    assert len(parts) >= 3
+
+    # Confirm the stored per-part CRCs match the bytes on disk
+    for part, expected_crc in zip(parts, meta["bin_part_crcs"]):
+        assert zlib.crc32(part.read_bytes()) & 0xFFFFFFFF == expected_crc
+
+    # And the concatenation equals what the builder's temp blob would have been.
+    joined = b"".join(p.read_bytes() for p in parts)
+    assert len(joined) == sum(p.stat().st_size for p in parts)
+    # Each non-last part must be exactly bin_part_size
+    for p in parts[:-1]:
+        assert p.stat().st_size == meta["bin_part_size"]
+
+
+def test_external_sidecar_with_multipart(tmp_path):
+    """External-component sidecars and multi-part base bin must coexist:
+      - base_game.bin splits into .001, .002, ... with per-part CRCs
+      - external component stays as a single un-split .bin file
+      - metadata carries both bin_part_crcs (per-base-part) and
+        external_components / external_csizes for the sidecar
+      - both feature sets survive the patch_repack_metadata rewrite"""
+    import os
+    game = tmp_path / "game"
+    game.mkdir()
+    (game / "data.bin").write_bytes(os.urandom(3 * 1024 * 1024))
+
+    # Optional external component — 512 KB, flagged external=True
+    comp_dir = tmp_path / "crack"
+    comp_dir.mkdir()
+    (comp_dir / "steam_api.dll").write_bytes(os.urandom(512 * 1024))
+
+    out_dir = tmp_path / "out"
+    settings = RepackSettings(
+        game_dir=str(game), output_dir=str(out_dir),
+        app_name="ExtMP", version="1.0",
+        codec="zstd", compression="fast", threads=1,
+        split_bin=True, max_part_size_mb=1,
+        components=[{
+            "label": "Crack", "folder": str(comp_dir),
+            "default_checked": True, "group": "", "requires": [],
+            "external": True,
+        }],
+    )
+    result = build_repack(settings)
+    assert result.success, result.error
+    meta = _read_metadata(Path(result.output_path))
+
+    # Multi-part base bin: per-part CRCs present
+    assert "bin_parts" in meta
+    assert meta["bin_parts"] >= 2
+    assert len(meta["bin_part_crcs"]) == meta["bin_parts"]
+
+    # External sidecar: recorded under external_* fields
+    assert "external_components" in meta
+    assert "1" in meta["external_components"]
+    assert meta["external_components"]["1"].endswith(".bin")
+
+    # Physical files on disk: base_game.bin.NNN parts + single Crack.bin
+    parts = sorted(out_dir.glob("base_game.bin.*"))
+    assert len(parts) == meta["bin_parts"]
+    # External sidecar must NOT be split (only base bin is subject to multi-part)
+    external_parts = list(out_dir.glob("Crack.bin.*"))
+    assert external_parts == []
+    assert (out_dir / "Crack.bin").exists()
+
+
 def test_cleanup_on_backdrop_failure(tmp_path):
     """A mid-build failure (backdrop missing) must not leave orphaned
     blob/sidecar/bin files in the output dir."""

@@ -49,6 +49,11 @@ MAGIC = b"XPACK01\x00"
 # 4 MB keeps per-file memory bounded regardless of individual file size.
 _COPY_CHUNK = 4 * 1024 * 1024
 
+# Fire the stream_progress "starting file" callback before compressing files
+# above this size, so the GUI label updates immediately when a large file
+# begins (rather than waiting for the next 200-file batch tick to fire).
+_LARGE_FILE_PREFIRE_BYTES = 50 * 1024 * 1024
+
 # ---- LZMA quality maps ----
 
 # quality key → (stdlib-lzma preset, optional dict_size override in bytes)
@@ -203,7 +208,7 @@ def _do_compress_to_file(
                         pre_size = os.path.getsize(abs_path)
                     except OSError:
                         pre_size = 0
-                    if prog_callback and pre_size > 50 * 1024 * 1024:
+                    if prog_callback and pre_size > _LARGE_FILE_PREFIRE_BYTES:
                         prog_callback(i, len(specs), pre_size)
                     file_size = 0
                     crc = 0
@@ -270,7 +275,7 @@ def _do_compress_to_file(
                 pre_size = os.path.getsize(abs_path)
             except OSError:
                 pre_size = 0
-            if prog_callback and pre_size > 50 * 1024 * 1024:
+            if prog_callback and pre_size > _LARGE_FILE_PREFIRE_BYTES:
                 prog_callback(i, len(specs), pre_size)
             file_size = 0
             crc = 0
