@@ -131,3 +131,14 @@ def test_component_indices_in_metadata(tmp_path):
     ])
     for i, comp in enumerate(meta["components"]):
         assert comp["index"] == i + 1, f"component {i} has wrong index {comp['index']}"
+
+
+def test_component_size_bytes(tmp_path):
+    """size_bytes per component should equal the sum of that component's file sizes."""
+    # Each helper-built component has a single 512-byte file.
+    meta = _build(tmp_path, [
+        {"label": "A", "default_checked": False, "group": "", "requires": []},
+        {"label": "B", "default_checked": False, "group": "", "requires": []},
+    ])
+    for comp in meta["components"]:
+        assert comp["size_bytes"] == 512, f"{comp['label']}: {comp['size_bytes']}"
