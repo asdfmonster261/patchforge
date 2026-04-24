@@ -106,6 +106,8 @@ typedef struct {
     int     shortcut_create_desktop;
     int     shortcut_create_startmenu;
     char    codec[16];   /* "lzma" (default) or "zstd" */
+    int     bin_parts;        /* 1 = single file; >1 = split into .001, .002 ... */
+    int64_t bin_part_size;    /* fixed size of each part except the last */
 } InstallMeta;
 
 /* ---- Per-file table entry ---- */
@@ -226,6 +228,100 @@ static void format_size_bytes(uint64_t n, char *out, size_t out_len)
     int u = 0;
     while (v >= 1024.0 && u < 4) { v /= 1024.0; u++; }
     snprintf(out, out_len, "%.1f %s", v, units[u]);
+}
+
+/* ---- Multi-part file reader (for base_game.bin.001, .002, ...) ------- */
+/* Presents N on-disk parts as one logical stream. Supports read + seek. */
+#define MPF_MAX_PARTS 999
+typedef struct {
+    FILE    *fp;             /* currently open part (NULL = needs open) */
+    int      cur_idx;        /* 0-based index of fp */
+    int      num_parts;
+    int64_t  part_size;      /* fixed size of parts[0..num_parts-2]; last part ≤ this */
+    int64_t  pos;            /* logical position in the virtual stream */
+    char     base_path[MAX_PATH];   /* path prefix; part N is "base_path.%03d" */
+} MPF;
+
+/* If num_parts == 1, base_path is the raw file (no .001 suffix). */
+static int mpf_open(MPF *m, const char *base_path, int num_parts, int64_t part_size)
+{
+    memset(m, 0, sizeof(*m));
+    m->num_parts = num_parts;
+    m->part_size = part_size;
+    size_t bp_len = strlen(base_path);
+    if (bp_len >= MAX_PATH) bp_len = MAX_PATH - 1;
+    memcpy(m->base_path, base_path, bp_len);
+    m->base_path[bp_len] = '\0';
+    m->cur_idx = 0;
+    char path[MAX_PATH + 8];
+    if (num_parts > 1)
+        snprintf(path, sizeof(path), "%s.%03d", base_path, 1);
+    else
+        snprintf(path, sizeof(path), "%s", base_path);
+    m->fp = fopen(path, "rb");
+    return m->fp != NULL;
+}
+
+static void mpf_close(MPF *m)
+{
+    if (m->fp) { fclose(m->fp); m->fp = NULL; }
+}
+
+/* Move to part index idx and position within it. Caller must ensure idx is valid. */
+static int mpf_seek_to_part(MPF *m, int idx, int64_t within)
+{
+    if (idx != m->cur_idx || !m->fp) {
+        if (m->fp) { fclose(m->fp); m->fp = NULL; }
+        char path[MAX_PATH + 8];
+        if (m->num_parts > 1)
+            snprintf(path, sizeof(path), "%s.%03d", m->base_path, idx + 1);
+        else
+            snprintf(path, sizeof(path), "%s", m->base_path);
+        m->fp = fopen(path, "rb");
+        if (!m->fp) return 0;
+        m->cur_idx = idx;
+    }
+    return _fseeki64(m->fp, within, SEEK_SET) == 0;
+}
+
+/* SEEK_SET and SEEK_CUR are supported; SEEK_END is not used here. */
+static int mpf_seek(MPF *m, int64_t off, int whence)
+{
+    int64_t target;
+    if (whence == SEEK_SET)      target = off;
+    else if (whence == SEEK_CUR) target = m->pos + off;
+    else                         return 0;
+    if (target < 0) return 0;
+    m->pos = target;
+    if (m->num_parts <= 1) {
+        return m->fp && _fseeki64(m->fp, target, SEEK_SET) == 0;
+    }
+    int idx = (int)(target / m->part_size);
+    int64_t within = target - (int64_t)idx * m->part_size;
+    if (idx >= m->num_parts) {
+        /* Past the end of the last part — position beyond EOF is fine; reads will
+           simply return 0. Don't treat this as an error since it matches fseek. */
+        return 1;
+    }
+    return mpf_seek_to_part(m, idx, within);
+}
+
+static size_t mpf_read(MPF *m, void *buf, size_t n)
+{
+    if (!m->fp) return 0;
+    uint8_t *out = (uint8_t *)buf;
+    size_t total = 0;
+    while (n > 0) {
+        size_t got = fread(out + total, 1, n, m->fp);
+        total  += got;
+        n      -= got;
+        m->pos += (int64_t)got;
+        if (n == 0) break;
+        /* Current part exhausted — advance if more parts remain. */
+        if (m->num_parts <= 1 || m->cur_idx + 1 >= m->num_parts) break;
+        if (!mpf_seek_to_part(m, m->cur_idx + 1, 0)) break;
+    }
+    return total;
 }
 
 static const char *json_get_str(const char *json, const char *key,
@@ -492,6 +588,9 @@ static int read_install_meta(void)
     g_meta.shortcut_create_startmenu = json_get_bool(buf, "shortcut_create_startmenu", 0);
     json_get_str(buf, "arp_subkey", g_meta.arp_subkey, sizeof(g_meta.arp_subkey));
     json_get_str(buf, "codec",     g_meta.codec,      sizeof(g_meta.codec));
+    g_meta.bin_parts               = (int)json_get_int(buf, "bin_parts");
+    if (g_meta.bin_parts < 1) g_meta.bin_parts = 1;
+    g_meta.bin_part_size           = json_get_int(buf, "bin_part_size");
     if (!g_meta.codec[0]) strncpy(g_meta.codec, "lzma", sizeof(g_meta.codec) - 1);
 
     /* Resolve path to pack data: either self (single-file) or base_game.bin. */
@@ -522,33 +621,33 @@ static int read_install_meta(void)
 /* Read the XPACK01 file table from the embedded blob. */
 static int read_pack_entries(void)
 {
-    FILE *f = fopen(g_bin_path, "rb");
-    if (!f) return 0;
+    MPF mf;
+    if (!mpf_open(&mf, g_bin_path, g_meta.bin_parts, g_meta.bin_part_size)) return 0;
 
-    _fseeki64(f, g_meta.pack_data_offset, SEEK_SET);
+    mpf_seek(&mf, g_meta.pack_data_offset, SEEK_SET);
     uint32_t n = 0;
-    if (fread(&n, 4, 1, f) != 1) { fclose(f); return 0; }
+    if (mpf_read(&mf, &n, 4) != 4) { mpf_close(&mf); return 0; }
 
     g_entries = (PackEntry *)malloc(n * sizeof(PackEntry));
-    if (!g_entries) { fclose(f); return 0; }
+    if (!g_entries) { mpf_close(&mf); return 0; }
     g_num_entries = n;
 
-#define READ_PACK_FAIL { free(g_entries); g_entries = NULL; g_num_entries = 0; fclose(f); return 0; }
+#define READ_PACK_FAIL { free(g_entries); g_entries = NULL; g_num_entries = 0; mpf_close(&mf); return 0; }
     for (uint32_t i = 0; i < n; i++) {
         uint16_t plen = 0;
-        if (fread(&plen, 2, 1, f) != 1) READ_PACK_FAIL
+        if (mpf_read(&mf, &plen, 2) != 2) READ_PACK_FAIL
         if (plen >= (uint16_t)sizeof(g_entries[i].path))
             plen = (uint16_t)(sizeof(g_entries[i].path) - 1);
-        if (fread(g_entries[i].path, 1, plen, f) != plen) READ_PACK_FAIL
+        if (mpf_read(&mf, g_entries[i].path, plen) != plen) READ_PACK_FAIL
         g_entries[i].path[plen] = '\0';
-        if (fread(&g_entries[i].offset,    8, 1, f) != 1) READ_PACK_FAIL
-        if (fread(&g_entries[i].size,      8, 1, f) != 1) READ_PACK_FAIL
-        if (fread(&g_entries[i].component, 4, 1, f) != 1) READ_PACK_FAIL
-        if (fread(&g_entries[i].crc32,     4, 1, f) != 1) READ_PACK_FAIL
+        if (mpf_read(&mf, &g_entries[i].offset,    8) != 8) READ_PACK_FAIL
+        if (mpf_read(&mf, &g_entries[i].size,      8) != 8) READ_PACK_FAIL
+        if (mpf_read(&mf, &g_entries[i].component, 4) != 4) READ_PACK_FAIL
+        if (mpf_read(&mf, &g_entries[i].crc32,     4) != 4) READ_PACK_FAIL
     }
 #undef READ_PACK_FAIL
 
-    fclose(f);
+    mpf_close(&mf);
     return 1;
 }
 
@@ -1203,22 +1302,22 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                       int shortcut_desktop, int shortcut_startmenu,
                       uint32_t *out_skipped, uint32_t *out_replaced)
 {
-    FILE *f = fopen(g_bin_path, "rb");
-    if (!f) return 0;
+    MPF base;
+    if (!mpf_open(&base, g_bin_path, g_meta.bin_parts, g_meta.bin_part_size)) return 0;
 
     /* Seek past the file table */
-    _fseeki64(f, g_meta.pack_data_offset, SEEK_SET);
+    mpf_seek(&base, g_meta.pack_data_offset, SEEK_SET);
     uint32_t n = 0;
-    if (fread(&n, 4, 1, f) != 1) { fclose(f); return 0; }
+    if (mpf_read(&base, &n, 4) != 4) { mpf_close(&base); return 0; }
     for (uint32_t i = 0; i < n; i++) {
         uint16_t plen = 0;
-        if (fread(&plen, 2, 1, f) != 1) { fclose(f); return 0; }
-        _fseeki64(f, (int64_t)(plen + 8 + 8 + 4 + 4), SEEK_CUR);
+        if (mpf_read(&base, &plen, 2) != 2) { mpf_close(&base); return 0; }
+        mpf_seek(&base, (int64_t)(plen + 8 + 8 + 4 + 4), SEEK_CUR);
     }
 
     /* Read number of compressed streams */
     uint32_t num_streams = 0;
-    if (fread(&num_streams, 4, 1, f) != 1) { fclose(f); return 0; }
+    if (mpf_read(&base, &num_streams, 4) != 4) { mpf_close(&base); return 0; }
 
     /* Count how many files will actually be installed (for progress %) */
     uint32_t total_to_install = 0;
@@ -1242,15 +1341,15 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
     uint8_t *outbuf = (uint8_t *)malloc(OUT_SZ);
     if (!inbuf || !outbuf) {
         free(inbuf); free(outbuf);
-        fclose(f);
+        mpf_close(&base);
         return 0;
     }
 
     for (uint32_t s = 0; s < num_streams && success; s++) {
         uint32_t comp_idx = 0;
         uint64_t csize    = 0;
-        fread(&comp_idx, 4, 1, f);
-        fread(&csize,    8, 1, f);
+        mpf_read(&base, &comp_idx, 4);
+        mpf_read(&base, &csize,    8);
 
         /* csize == 0 is the sentinel for an external-sidecar stream. */
         int is_external = (csize == 0 &&
@@ -1265,7 +1364,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
         if (!install_this) {
             /* csize == 0 for external streams, so this seek is always a no-op;
              * keep it for embedded streams that aren't selected. */
-            if (!is_external) _fseeki64(f, (int64_t)csize, SEEK_CUR);
+            if (!is_external) mpf_seek(&base, (int64_t)csize, SEEK_CUR);
             continue;
         }
 
@@ -1278,20 +1377,20 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             }
         }
         if (first_entry == g_num_entries) {
-            if (!is_external) _fseeki64(f, (int64_t)csize, SEEK_CUR);
+            if (!is_external) mpf_seek(&base, (int64_t)csize, SEEK_CUR);
             continue;
         }
 
         /* For external streams, open the sidecar .bin file. */
-        FILE   *src       = f;
+        MPF  side;
+        MPF *src           = &base;
         uint64_t src_csize = csize;
         int opened_sidecar = 0;
 
         if (is_external) {
             char sidecar_path[MAX_PATH];
             build_sidecar_path(g_ext_bin[comp_idx], sidecar_path);
-            src = fopen(sidecar_path, "rb");
-            if (!src) {
+            if (!mpf_open(&side, sidecar_path, 1, 0)) {
                 if (g_hwnd) {
                     char *msg = (char *)malloc(MAX_PATH + 80);
                     if (msg) {
@@ -1303,7 +1402,8 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 }
                 continue;
             }
-            _fseeki64(src, g_ext_offset[comp_idx], SEEK_SET);
+            src = &side;
+            mpf_seek(src, g_ext_offset[comp_idx], SEEK_SET);
             src_csize      = (uint64_t)g_ext_csize[comp_idx];
             opened_sidecar = 1;
         }
@@ -1334,18 +1434,18 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             /* ---- zstd decompression ---- */
             ZSTD_DStream *zds = ZSTD_createDStream();
             if (!zds) {
-                success = 0; if (opened_sidecar) fclose(src); break;
+                success = 0; if (opened_sidecar) mpf_close(&side); break;
             }
             if (ZSTD_isError(ZSTD_initDStream(zds))) {
                 ZSTD_freeDStream(zds); success = 0;
-                if (opened_sidecar) { fclose(src); } break;
+                if (opened_sidecar) { mpf_close(&side); } break;
             }
 
             uint64_t total_read = 0;
             while (total_read < src_csize && success) {
                 size_t to_read = IN_SZ < (src_csize - total_read)
                                  ? IN_SZ : (size_t)(src_csize - total_read);
-                size_t got = fread(inbuf, 1, to_read, src);
+                size_t got = mpf_read(src, inbuf, to_read);
                 if (got == 0) break;
                 total_read += got;
 
@@ -1376,7 +1476,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 mt_opts.memlimit_stop      = UINT64_MAX;
                 if (lzma_stream_decoder_mt(&strm, &mt_opts) != LZMA_OK) {
                     success = 0;
-                    if (opened_sidecar) fclose(src);
+                    if (opened_sidecar) mpf_close(&side);
                     break; /* strm uninitialised — lzma_end() not needed */
                 }
             }
@@ -1391,7 +1491,7 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                 if (strm.avail_in == 0 && total_read < src_csize) {
                     size_t to_read = IN_SZ < (src_csize - total_read)
                                      ? IN_SZ : (size_t)(src_csize - total_read);
-                    size_t got = fread(inbuf, 1, to_read, src);
+                    size_t got = mpf_read(src, inbuf, to_read);
                     strm.next_in  = inbuf;
                     strm.avail_in = (uint32_t)got;
                     total_read   += got;
@@ -1418,12 +1518,12 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
             lzma_end(&strm);
         }
 
-        if (opened_sidecar) { fclose(src); src = NULL; }
+        if (opened_sidecar) { mpf_close(&side); src = &base; }
     }
 
     free(inbuf);
     free(outbuf);
-    fclose(f);
+    mpf_close(&base);
 
     /* Write game registry key */
     if (success && g_meta.install_registry_key[0]) {
@@ -2359,19 +2459,39 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR lpCmd, int nShow)
 
     /* When pack data lives in a separate file, verify it is present. */
     if (strcmp(g_bin_path, g_exe_path) != 0) {
-        FILE *bf = fopen(g_bin_path, "rb");
-        if (!bf) {
+        /* Check that every expected data file is present. For multi-part
+           splits, verify each part individually so the user gets told which
+           file is missing rather than a vague "data file not found". */
+        char first_path[MAX_PATH + 8];
+        int  num_parts   = g_meta.bin_parts > 0 ? g_meta.bin_parts : 1;
+        int  missing_part = 0;
+        for (int i = 0; i < num_parts; i++) {
+            if (num_parts > 1)
+                snprintf(first_path, sizeof(first_path), "%s.%03d", g_bin_path, i + 1);
+            else
+                snprintf(first_path, sizeof(first_path), "%s", g_bin_path);
+            FILE *bf = fopen(first_path, "rb");
+            if (!bf) { missing_part = i + 1; break; }
+            fclose(bf);
+        }
+        if (missing_part) {
             if (!g_silent) {
-                char msg[MAX_PATH + 160];
-                snprintf(msg, sizeof(msg),
-                    "Cannot find the data file:\n  %s\n\n"
-                    "Place base_game.bin in the same folder as this installer and try again.",
-                    g_bin_path);
+                char msg[MAX_PATH + 200];
+                if (num_parts > 1) {
+                    snprintf(msg, sizeof(msg),
+                        "Cannot find data file part %d of %d:\n  %s.%03d\n\n"
+                        "Place all base_game.bin.NNN parts in the same folder as this installer and try again.",
+                        missing_part, num_parts, g_bin_path, missing_part);
+                } else {
+                    snprintf(msg, sizeof(msg),
+                        "Cannot find the data file:\n  %s\n\n"
+                        "Place base_game.bin in the same folder as this installer and try again.",
+                        g_bin_path);
+                }
                 MessageBoxA(NULL, msg, "PatchForge Installer", MB_OK | MB_ICONERROR);
             }
             return 1;
         }
-        fclose(bf);
     }
 
     if (!read_pack_entries()) {

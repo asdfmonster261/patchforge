@@ -481,6 +481,9 @@ def _add_repack(sub):
     p.add_argument("--split-bin", action="store_true", dest="split_bin",
                    help="Write compressed game data to a separate base_game.bin file "
                         "(required for games > 3.5 GB; applied automatically above that threshold)")
+    p.add_argument("--max-part-size-mb", metavar="MB", type=int, dest="max_part_size_mb",
+                   help="Split base_game.bin into <name>.bin.001, .002, ... parts of this "
+                        "size in MB (0 = no split). Useful for file hosts with upload caps")
 
     # Save project after build
     p.add_argument("--save-project", metavar="FILE",
