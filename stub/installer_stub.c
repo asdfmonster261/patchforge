@@ -290,7 +290,10 @@ static int mpf_seek_to_part(MPF *m, int idx, int64_t within)
     return _fseeki64(m->fp, within, SEEK_SET) == 0;
 }
 
-/* SEEK_SET and SEEK_CUR are supported; SEEK_END is not used here. */
+/* SEEK_SET and SEEK_CUR are supported; SEEK_END is not used here.
+   Returns 1 on success, 0 on failure. Past-EOF seeks fail explicitly rather
+   than silently succeed — callers here never seek past the virtual file end
+   in normal flow, so a past-EOF seek indicates malformed metadata. */
 static int mpf_seek(MPF *m, int64_t off, int whence)
 {
     int64_t target;
@@ -298,20 +301,20 @@ static int mpf_seek(MPF *m, int64_t off, int whence)
     else if (whence == SEEK_CUR) target = m->pos + off;
     else                         return 0;
     if (target < 0) return 0;
-    m->pos = target;
+
     if (m->num_parts <= 1) {
-        return m->fp && _fseeki64(m->fp, target, SEEK_SET) == 0;
+        if (!m->fp || _fseeki64(m->fp, target, SEEK_SET) != 0) return 0;
+        m->pos = target;
+        return 1;
     }
     /* Malformed metadata: num_parts > 1 but no part size — can't index. */
     if (m->part_size <= 0) return 0;
     int idx = (int)(target / m->part_size);
+    if (idx >= m->num_parts) return 0;
     int64_t within = target - (int64_t)idx * m->part_size;
-    if (idx >= m->num_parts) {
-        /* Past the end of the last part — position beyond EOF is fine; reads will
-           simply return 0. Don't treat this as an error since it matches fseek. */
-        return 1;
-    }
-    return mpf_seek_to_part(m, idx, within);
+    if (!mpf_seek_to_part(m, idx, within)) return 0;
+    m->pos = target;
+    return 1;
 }
 
 static size_t mpf_read(MPF *m, void *buf, size_t n)
@@ -555,7 +558,11 @@ static void build_sidecar_path(const char *filename, char *out)
     char exe_dir[MAX_PATH];
     strncpy(exe_dir, g_exe_path, MAX_PATH - 1);
     exe_dir[MAX_PATH - 1] = '\0';
-    char *sep = strrchr(exe_dir, '\\');
+    /* Windows paths usually use '\\', but some launcher contexts pass '/'.
+       Take whichever separator appears last. */
+    char *sep_bs = strrchr(exe_dir, '\\');
+    char *sep_fs = strrchr(exe_dir, '/');
+    char *sep = (sep_bs > sep_fs) ? sep_bs : sep_fs;
     if (sep) *(sep + 1) = '\0';
     else     exe_dir[0] = '\0';
     snprintf(out, MAX_PATH, "%s%s", exe_dir, filename);
@@ -1375,7 +1382,10 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
                       int shortcut_desktop, int shortcut_startmenu,
                       uint32_t *out_skipped, uint32_t *out_replaced)
 {
-    int bad_part = verify_bin_parts();
+    /* Skip bin-part CRC check on repair: user has already installed once
+       (so the parts were intact then), and per-extracted-file CRC covers
+       the actual failure mode on disk. Saves ~30s on a 20 GB install. */
+    int bad_part = repair_mode ? 0 : verify_bin_parts();
     if (bad_part > 0) {
         if (!g_silent) {
             char msg[MAX_PATH + 200];
