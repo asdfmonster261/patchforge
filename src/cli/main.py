@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+from ..core.fmt import format_size as _fmt_size
+
 
 def run_cli():
     parser = _build_parser()
@@ -742,11 +744,3 @@ def _die(msg: str):
 
 def _warn(msg: str):
     print(f"warning: {msg}", file=sys.stderr)
-
-
-def _fmt_size(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.1f} {unit}"
-        n /= 1024
-    return f"{n:.1f} TB"
