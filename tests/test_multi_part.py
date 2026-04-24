@@ -138,3 +138,23 @@ def test_max_part_size_auto_enables_split_bin(tmp_path):
                               max_part_mb=1, split_bin=False)
     assert meta.get("bin_parts", 1) >= 2
     assert len(parts) == meta["bin_parts"]
+
+
+def test_bin_part_crcs_present_and_match(tmp_path):
+    """bin_part_crcs array must be present when splitting, and each entry
+    must equal the CRC32 of the corresponding part file."""
+    import zlib
+    exe, meta, parts = _build(tmp_path, game_size_bytes=2_500_000,
+                              max_part_mb=1, split_bin=True)
+    assert "bin_part_crcs" in meta
+    assert len(meta["bin_part_crcs"]) == meta["bin_parts"]
+    for part, expected in zip(parts, meta["bin_part_crcs"]):
+        actual = zlib.crc32(part.read_bytes()) & 0xFFFFFFFF
+        assert actual == expected, f"{part.name}: expected {expected:#x}, got {actual:#x}"
+
+
+def test_no_bin_part_crcs_when_not_splitting(tmp_path):
+    """Single-file builds should not emit bin_part_crcs (no waste)."""
+    exe, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
+                              max_part_mb=0, split_bin=True)
+    assert "bin_part_crcs" not in meta
