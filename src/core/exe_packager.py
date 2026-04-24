@@ -24,6 +24,7 @@ import json
 import re
 import shutil
 import struct
+import zlib
 from pathlib import Path
 
 MAGIC        = b"XPATCH01"
@@ -263,12 +264,24 @@ def package_repack(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def _copy_with_crc(src_path: Path, dst_f) -> int:
+        """Stream src_path into dst_f, returning its CRC32. Used instead of
+        shutil.copyfileobj so the CRC comes for free during the copy."""
+        crc = 0
+        with open(src_path, "rb") as src:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                crc = zlib.crc32(chunk, crc)
+                dst_f.write(chunk)
+        return crc & 0xFFFFFFFF
+
     if split_bin:
         # Pack data goes to a separate file; exe contains only stub + uninst + backdrop.
         bin_path = output_path.parent / _BIN_FILENAME
         with open(bin_path, "wb") as bf:
-            with open(pack_blob_path, "rb") as pf:
-                shutil.copyfileobj(pf, bf)
+            blob_crc = _copy_with_crc(Path(pack_blob_path), bf)
 
         pack_data_offset = 0           # offset within the bin file
         uninst_offset    = len(stub_bytes)
@@ -284,6 +297,10 @@ def package_repack(
         meta["arp_subkey"]          = arp_subkey
         meta["backdrop_offset"]     = bd_offset
         meta["backdrop_size"]       = bd_size
+        # Default bin_part_crcs covers the full blob. For multi-part builds
+        # the repack_builder overwrites this via patch_repack_metadata() with
+        # one CRC per split part.
+        meta["bin_part_crcs"]       = [blob_crc]
 
         meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
         meta_len  = struct.pack("<I", len(meta_json))
@@ -306,25 +323,29 @@ def package_repack(
         bd_offset        = uninst_offset + uninst_size
         bd_size          = len(backdrop_data) if backdrop_data else 0
 
-        meta = dict(metadata)
-        meta["pack_data_offset"]    = pack_data_offset
-        meta["pack_data_size"]      = pack_data_size
-        meta["uninstaller_offset"]  = uninst_offset
-        meta["uninstaller_size"]    = uninst_size
-        meta["arp_subkey"]          = arp_subkey
-        meta["backdrop_offset"]     = bd_offset
-        meta["backdrop_size"]       = bd_size
-
-        meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
-        meta_len  = struct.pack("<I", len(meta_json))
-
+        # Write the exe; the blob CRC is computed during the embed copy.
+        # We can't know the CRC until after the blob's been written, so
+        # writing happens in two passes: body first (to collect CRC), then
+        # re-open and seek to write final metadata.
         with open(output_path, "wb") as f:
             f.write(stub_bytes)
-            with open(pack_blob_path, "rb") as blob_f:
-                shutil.copyfileobj(blob_f, f)
+            blob_crc = _copy_with_crc(Path(pack_blob_path), f)
             f.write(uninst_blob)
             if backdrop_data:
                 f.write(backdrop_data)
+
+            meta = dict(metadata)
+            meta["pack_data_offset"]    = pack_data_offset
+            meta["pack_data_size"]      = pack_data_size
+            meta["uninstaller_offset"]  = uninst_offset
+            meta["uninstaller_size"]    = uninst_size
+            meta["arp_subkey"]          = arp_subkey
+            meta["backdrop_offset"]     = bd_offset
+            meta["backdrop_size"]       = bd_size
+            meta["bin_part_crcs"]       = [blob_crc]
+
+            meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+            meta_len  = struct.pack("<I", len(meta_json))
             f.write(meta_json)
             f.write(meta_len)
             f.write(REPACK_MAGIC)
