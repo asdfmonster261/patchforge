@@ -152,6 +152,7 @@ def build(
                 "requires":         [int(r) for r in c.get("requires", [])],
                 "shortcut_target":  c.get("shortcut_target", ""),
                 "sac_warning":      bool(c.get("sac_warning", False)),
+                "size_bytes":       sum(e["size"] for e in file_list if e["component"] == i + 1),
             }
             for i, c in enumerate(settings.components or [])
         ],

@@ -171,6 +171,7 @@ typedef struct {
     int  num_requires;
     char shortcut_target[512];      /* overrides g_meta.shortcut_target if non-empty */
     int  sac_warning;               /* show SAC/AV warning when this component is checked */
+    uint64_t size_bytes;            /* total uncompressed size of this component's files */
     HWND hwnd_ctrl;
 } ComponentInfo;
 
@@ -216,6 +217,16 @@ static uint32_t crc32_update(uint32_t crc, const uint8_t *buf, size_t len)
 /* ==================================================================== */
 /* JSON helpers (same lightweight approach as patcher stubs)             */
 /* ==================================================================== */
+
+/* Format a byte count as "X.X B/KB/MB/GB/TB" into a caller-provided buffer. */
+static void format_size_bytes(uint64_t n, char *out, size_t out_len)
+{
+    static const char *units[] = {"B", "KB", "MB", "GB", "TB"};
+    double v = (double)n;
+    int u = 0;
+    while (v >= 1024.0 && u < 4) { v /= 1024.0; u++; }
+    snprintf(out, out_len, "%.1f %s", v, units[u]);
+}
 
 static const char *json_get_str(const char *json, const char *key,
                                 char *out, int out_len)
@@ -336,6 +347,7 @@ static void json_parse_components(const char *json)
         json_get_str(tmp, "group", c->group, sizeof(c->group));
         c->num_requires    = json_parse_int_array(tmp, "requires",
                                                   c->requires, MAX_COMPONENTS);
+        c->size_bytes      = (uint64_t)json_get_int(tmp, "size_bytes");
         json_get_str(tmp, "shortcut_target", c->shortcut_target, sizeof(c->shortcut_target));
         c->sac_warning     = json_get_bool(tmp, "sac_warning", 0);
         free(tmp);
@@ -1757,18 +1769,29 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             char prev_group[64] = {0};
             for (int ci = 0; ci < g_num_components; ci++) {
                 ComponentInfo *c = &g_components[ci];
+                char size_str[32];
+                format_size_bytes(c->size_bytes, size_str, sizeof(size_str));
+                char disp[320];
                 if (c->group[0]) {
                     /* New group: emit a group-enable checkbox header */
                     if (strcmp(c->group, prev_group) != 0) {
                         strncpy(prev_group, c->group, sizeof(prev_group) - 1);
                         int grp_on = 0;
+                        uint64_t grp_size = 0;
                         for (int j = ci; j < g_num_components; j++) {
                             if (strcmp(g_components[j].group, c->group) != 0) break;
-                            if (g_components[j].default_checked) { grp_on = 1; break; }
+                            if (g_components[j].default_checked) { grp_on = 1; }
+                            if (g_components[j].size_bytes > grp_size)
+                                grp_size = g_components[j].size_bytes;  /* radio: largest option */
                         }
+                        char grp_size_str[32];
+                        format_size_bytes(grp_size, grp_size_str, sizeof(grp_size_str));
+                        char grp_disp[128];
+                        snprintf(grp_disp, sizeof(grp_disp), "%s  (up to %s)",
+                                 c->group, grp_size_str);
                         int gi = g_num_groups;
                         strncpy(g_groups[gi].group, c->group, sizeof(g_groups[gi].group) - 1);
-                        g_groups[gi].hwnd_hdr = CreateWindowExA(0, "BUTTON", c->group,
+                        g_groups[gi].hwnd_hdr = CreateWindowExA(0, "BUTTON", grp_disp,
                             WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_GROUP,
                             col2_x, right_y, col2_w, 20, hwnd,
                             (HMENU)(LONG_PTR)(IDC_GROUP_BASE + gi), NULL, NULL);
@@ -1784,7 +1807,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                         strcmp(g_components[ci - 1].group, c->group) != 0);
                     DWORD btn_style = WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON;
                     if (first_in_grp) btn_style |= WS_GROUP;
-                    c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
+                    snprintf(disp, sizeof(disp), "%s  (%s)", c->label, size_str);
+                    c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", disp,
                         btn_style,
                         col2_x + 16, right_y, col2_w - 16, 20, hwnd,
                         (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
@@ -1793,7 +1817,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 } else {
                     /* Standalone checkbox */
                     prev_group[0] = '\0';
-                    c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", c->label,
+                    snprintf(disp, sizeof(disp), "%s  (%s)", c->label, size_str);
+                    c->hwnd_ctrl = CreateWindowExA(0, "BUTTON", disp,
                         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_GROUP,
                         col2_x, right_y, col2_w, 20, hwnd,
                         (HMENU)(LONG_PTR)(IDC_COMP_BASE + ci), NULL, NULL);
