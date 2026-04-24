@@ -406,20 +406,36 @@ def build(
 
     all_file_entries: list[dict] = []
     streams_out: list[tuple[int, Path, int]] = []
+    xpack_tmp: Optional[Path] = None
 
-    _compress_sequential(
-        stream_specs, quality, threads, codec,
-        all_file_entries, streams_out, _prog, tmp_dir,
-        stream_progress=stream_progress,
-    )
+    try:
+        _compress_sequential(
+            stream_specs, quality, threads, codec,
+            all_file_entries, streams_out, _prog, tmp_dir,
+            stream_progress=stream_progress,
+        )
 
-    total_uncompressed = sum(e["size"] for e in all_file_entries)
+        total_uncompressed = sum(e["size"] for e in all_file_entries)
 
-    _prog(95, "Encoding archive…")
-    xpack_tmp, ext_offsets, ext_csizes = _assemble_xpack(
-        all_file_entries, streams_out, tmp_dir, ext_bin_paths,
-    )
-    _prog(100, "Archive complete.")
+        _prog(95, "Encoding archive…")
+        xpack_tmp, ext_offsets, ext_csizes = _assemble_xpack(
+            all_file_entries, streams_out, tmp_dir, ext_bin_paths,
+        )
+        _prog(100, "Archive complete.")
+    except BaseException:
+        # Clean up any partial temp files and sidecars we may have written
+        # before re-raising. Stream temp files live under tmp_dir with a
+        # .xpk_stream suffix; sidecars have user-facing paths in ext_bin_paths.
+        for _, p, _ in streams_out:
+            try: p.unlink(missing_ok=True)
+            except OSError: pass
+        if xpack_tmp:
+            try: xpack_tmp.unlink(missing_ok=True)
+            except OSError: pass
+        for bp in ext_bin_paths.values():
+            try: bp.unlink(missing_ok=True)
+            except OSError: pass
+        raise
 
     ext_info = {
         comp_idx: {

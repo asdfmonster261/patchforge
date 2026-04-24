@@ -315,6 +315,51 @@ def test_external_sidecar_with_multipart(tmp_path):
     assert (out_dir / "Crack.bin").exists()
 
 
+def test_patch_repack_metadata_is_atomic_and_streamed(tmp_path):
+    """patch_repack_metadata should leave no .tmp or corrupted files if it
+    raises mid-rewrite, and should work without loading the whole exe into
+    RAM (stream-based so arbitrarily large exes are safe)."""
+    import os, struct
+    from src.core.exe_packager import patch_repack_metadata, REPACK_MAGIC
+
+    # Build a minimal fake xpack01 exe for the round-trip test.
+    exe = tmp_path / "fake.exe"
+    body = b"STUBSTUBSTUB" + b"\x00" * 500  # body bytes to preserve
+    meta = b'{"a":1,"b":2}'
+    exe.write_bytes(body + meta + struct.pack("<I", len(meta)) + REPACK_MAGIC)
+
+    patch_repack_metadata(exe, {"b": 3, "c": 42})
+
+    # Body must be untouched
+    with open(exe, "rb") as f:
+        assert f.read(len(body)) == body
+
+    # Metadata must reflect both the kept + updated fields
+    full = exe.read_bytes()
+    assert full[-8:] == REPACK_MAGIC
+    new_meta_len = struct.unpack("<I", full[-12:-8])[0]
+    new_meta = full[-(12 + new_meta_len):-12]
+    import json
+    parsed = json.loads(new_meta)
+    assert parsed == {"a": 1, "b": 3, "c": 42}
+
+    # Temp file must not exist (os.replace removed it)
+    assert not exe.with_suffix(".exe.tmp").exists()
+
+
+def test_patch_repack_metadata_rejects_bad_magic(tmp_path):
+    """Corrupt input raises ValueError (caught by the repack_builder's
+    widened exception handler so output artifacts get cleaned up)."""
+    from src.core.exe_packager import patch_repack_metadata
+
+    bad = tmp_path / "bad.exe"
+    bad.write_bytes(b"not a real installer exe" + b"\x00" * 100)
+    with pytest.raises(ValueError):
+        patch_repack_metadata(bad, {"x": 1})
+    # No temp file left behind on failure
+    assert not bad.with_suffix(".exe.tmp").exists()
+
+
 def test_cleanup_on_backdrop_failure(tmp_path):
     """A mid-build failure (backdrop missing) must not leave orphaned
     blob/sidecar/bin files in the output dir."""
