@@ -63,6 +63,12 @@ class RepackSettings:
     # same folder as the exe.
     split_bin: bool = False
 
+    # Multi-part splitting: when > 0 and split_bin is set (or auto-triggered),
+    # the base_game.bin sidecar is split into <name>.bin.001, .002, ... parts
+    # of this size.  Useful for distribution on file hosts with upload caps.
+    # 0 = no multi-part split.
+    max_part_size_mb: int = 0
+
     # Optional components — list of dicts with keys:
     #   label: str, folder: str, default_checked: bool, group: str,
     #   requires: list[int] (1-based indices of required components),
