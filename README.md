@@ -29,7 +29,11 @@ A video game binary patch and installer generator that produces self-contained W
 - **Two codecs** — LZMA (`lzma`) and Zstandard (`zstd`); selectable per project
 - **Multi-threaded compression** — MT encoder for both codecs; thread count derived automatically from CPU core count at runtime
 - **Optional components** — extra folders offered as checkboxes or radio-button groups during install; each group has an enable/disable toggle; components can declare dependencies on other components; a per-component flag shows an antivirus / Smart App Control warning when that component is selected
+- **External component sidecars** — per-component toggle to store a component's compressed stream in a separate `.bin` file distributed alongside the installer exe; components sharing the same group are written into the same sidecar
+- **Large game support** — archives exceeding 3.5 GB auto-split into a `base_game.bin` sidecar alongside the exe (configurable threshold; also controllable via `--split-bin`); the 4 GB exe size limit is never reached regardless of game size
 - **Multi-threaded installation** — LZMA installer uses `lzma_stream_decoder_mt` to decompress across all available cores; respects the "Reduce system load" checkbox
+- **Silent install** — `/S` flag runs a completely headless install with no UI; combines with `/D=PATH` to set the install directory from the command line
+- **Repair / reinstall detection** — installer detects an existing install and offers a Repair or Reinstall option; repair re-extracts only files that fail CRC verification
 - **CRC32 integrity verification** — every file is checksummed at build time and verified on extraction
 - **Uninstaller** — optionally embeds a standalone uninstaller and registers the app in Add/Remove Programs
 - **Shortcuts** — Desktop and Start Menu shortcuts with configurable target and display name
@@ -136,6 +140,7 @@ Each `--component` is a JSON object with:
 | `requires` | int[] | 1-based indices of components that must be selected for this one to be enabled |
 | `shortcut_target` | string | Overrides the main shortcut target when this component is selected |
 | `sac_warning` | bool | Show an antivirus / Smart App Control warning when this component is selected |
+| `external` | bool | Store this component's compressed stream in a separate `.bin` sidecar file instead of inside the exe; components in the same group share one sidecar |
 
 The flag is repeatable.
 
@@ -180,6 +185,7 @@ patchforge repack --project installer.xpr --threads 16 --output-dir dist/
 | `--shortcut-startmenu` / `--no-shortcut-startmenu` | on | Create a Start Menu shortcut |
 | `--component JSON` | — | Add an optional component (repeatable; see above) |
 | `--no-uninstaller` | — | Omit the uninstaller and Add/Remove Programs registration |
+| `--split-bin` | auto | Force the base game archive into a `base_game.bin` sidecar even below the 3.5 GB auto-split threshold |
 | `--save-project FILE` | — | Save resolved settings to a `.xpr` after building |
 
 #### Repack project commands
@@ -224,8 +230,12 @@ patchforge show-repack-project installer.xpr
 | `--extra-args ARGS` | — | Extra CLI arguments passed verbatim to the diff engine |
 | `--delete-extra-files` | on | Delete game files absent from the target version |
 | `--no-delete-extra-files` | — | Keep game files absent from the target version |
-| `--run-before CMD` | — | Shell command to run before patching starts |
+| `--preserve-timestamps` | off | Preserve original file timestamps when applying the patch |
+| `--run-on-startup CMD` | — | Shell command to run when the patcher window first opens |
+| `--run-before CMD` | — | Shell command to run immediately before patching starts |
 | `--run-after CMD` | — | Shell command to run after patching succeeds |
+| `--run-on-finish CMD` | — | Shell command to run when the patcher window closes (always, not just on success) |
+| `--extra-file SRC[:DEST]` | — | Bundle an extra file into the patch exe; optional `:DEST` sets the relative install path (repeatable) |
 | `--backup-at MODE` | `same_folder` | `disabled` \| `same_folder` \| `custom` |
 | `--backup-path DIR` | — | Backup directory (used when `--backup-at custom`) |
 | `--save-project FILE` | — | Save resolved settings to a `.xpm` after building |
@@ -331,9 +341,20 @@ Each component is a folder of files merged on top of the base game during instal
 - **Checkboxes** — when the group field is blank (independent, togglable)
 - **Group header + radio buttons** — when two or more components share the same group name; the group header is a checkbox that enables or disables the whole group, and the radio buttons beneath it are mutually exclusive within the group
 
-Components can declare `requires` dependencies on other components (by 1-based index); the installer auto-enables required components and greys out unavailable ones. Components with `sac_warning: true` display an amber warning banner in the installer when selected, useful for components that may trigger antivirus or Windows Smart App Control.
+Components can declare `requires` dependencies on other components (by 1-based index); the installer auto-enables required components and greys out unavailable ones. Components with `sac_warning: true` display an amber warning banner in the installer when selected, useful for components that may trigger antivirus or Windows Smart App Control. Components with `external: true` are stored in a separate `.bin` sidecar file; all components sharing the same group go into the same sidecar.
 
 Up to 16 components are supported.
+
+### Silent Install
+
+The installer supports headless operation:
+
+```
+MyGame_installer.exe /S              # silent install to default path
+MyGame_installer.exe /S /D=C:\Games  # silent install to a custom path
+```
+
+`/D` must be the last argument if used. No UI is shown; the installer exits with code 0 on success and non-zero on failure.
 
 ### Repack Project Files (`.xpr`)
 
@@ -463,12 +484,14 @@ All patch mode settings can be saved and reloaded as a JSON project file. Exampl
 
 ```
 [ installer_stub EXE bytes      ]
-[ XPACK01 blob                  ]  ← see format below
+[ XPACK01 blob                  ]  ← see format below (absent if split-bin)
 [ backdrop image bytes          ]  (zero bytes if none)
 [ JSON metadata (UTF-8)         ]
 [ metadata length   4 bytes LE  ]
 [ magic "XPACK01\0" 8 bytes     ]  ← end of file
 ```
+
+When the base game archive exceeds 3.5 GB (or `--split-bin` is set), the XPACK01 blob is written to `<name>_base_game.bin` instead of being embedded in the exe. External component sidecars are always separate files named after the component group or label (e.g. `Crack.bin`). All sidecar files must be distributed alongside the exe.
 
 **XPACK01 blob layout:**
 
@@ -484,11 +507,11 @@ All patch mode settings can be saved and reloaded as a JSON project file. Exampl
 [ 4B LE: num_streams            ]
   Per stream:
     [ 4B LE: component_index    ]
-    [ 8B LE: compressed size    ]
-    [ N bytes: XZ/LZMA2 or Zstandard stream  ]
+    [ 8B LE: compressed size    ]  0 = stream is in an external sidecar .bin file
+    [ N bytes: XZ/LZMA2 or Zstandard stream  ]  (omitted when csize = 0)
 ```
 
-Each optional component has its own compressed stream. The installer decompresses only the streams corresponding to the user's selections. File offsets are relative to the start of their own stream's decompressed data. The codec (`lzma` or `zstd`) is recorded in the JSON metadata.
+Each optional component has its own compressed stream. The installer decompresses only the streams corresponding to the user's selections. File offsets are relative to the start of their own stream's decompressed data. The codec (`lzma` or `zstd`) is recorded in the JSON metadata, along with `external_components`, `external_offsets`, and `external_csizes` maps for any sidecar streams.
 
 The stub reads backwards from the end of its own file to locate and parse the embedded data. End-users just double-click the `.exe` — no installer or runtime required.
 
