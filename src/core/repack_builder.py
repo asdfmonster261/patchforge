@@ -32,7 +32,7 @@ class RepackResult:
 def build(
     settings: RepackSettings,
     progress: Optional[Callable[[int, str], None]] = None,
-    stream_progress: Optional[Callable[[int, int, str, int, int, int], None]] = None,
+    stream_progress: Optional[Callable[[int, int, str, int, int, str], None]] = None,
 ) -> RepackResult:
     """
     Build a self-contained Windows installer exe from settings.
