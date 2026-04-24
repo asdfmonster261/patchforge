@@ -153,11 +153,35 @@ def test_bin_part_crcs_present_and_match(tmp_path):
         assert actual == expected, f"{part.name}: expected {expected:#x}, got {actual:#x}"
 
 
-def test_no_bin_part_crcs_when_not_splitting(tmp_path):
-    """Single-file builds should not emit bin_part_crcs (no waste)."""
+def test_bin_part_crcs_present_for_non_multipart(tmp_path):
+    """Non-multi-part builds now also embed bin_part_crcs (single-element
+    list covering the whole blob). Both split-bin and single-file modes
+    should have it so the installer can catch corruption at startup."""
+    import zlib
+    # split-bin with a single file (no multi-part)
     exe, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
                               max_part_mb=0, split_bin=True)
-    assert "bin_part_crcs" not in meta
+    assert "bin_part_crcs" in meta
+    assert len(meta["bin_part_crcs"]) == 1
+    # The stored CRC should match the CRC of the base_game.bin content
+    bin_file = next(Path(exe).parent.glob("base_game.bin"))
+    assert zlib.crc32(bin_file.read_bytes()) & 0xFFFFFFFF == meta["bin_part_crcs"][0]
+
+
+def test_bin_part_crcs_present_for_single_file_exe(tmp_path):
+    """Single-file exe (no split_bin) should also embed a blob CRC covering
+    [pack_data_offset, pack_data_offset + pack_data_size)."""
+    import zlib
+    exe, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
+                              max_part_mb=0, split_bin=False)
+    assert "bin_part_crcs" in meta
+    assert len(meta["bin_part_crcs"]) == 1
+    # Verify: read the blob region from inside the exe and CRC it
+    exe_bytes = Path(exe).read_bytes()
+    start = meta["pack_data_offset"]
+    size  = meta["pack_data_size"]
+    actual = zlib.crc32(exe_bytes[start:start + size]) & 0xFFFFFFFF
+    assert actual == meta["bin_part_crcs"][0]
 
 
 def test_builder_refuses_over_999_parts(tmp_path):

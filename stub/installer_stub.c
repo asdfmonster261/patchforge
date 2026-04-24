@@ -1338,39 +1338,64 @@ static void dispatch_chunk(DispatchState *ds, const uint8_t *ptr, size_t len)
     }
 }
 
-/* Verify CRC32 of every base_game.bin.NNN part against expected values from
-   metadata. Returns 0 on success, or the 1-based index of the first bad part. */
+/* Verify CRC32 of the compressed data against expected value(s) from
+   metadata. Two modes:
+     - Multi-part (bin_parts > 1): one CRC per base_game.bin.NNN part; on
+       failure returns the 1-based part index.
+     - Single-piece (bin_parts <= 1): one CRC covering the blob region
+       [pack_data_offset, pack_data_offset + pack_data_size) of g_bin_path
+       (which equals g_exe_path for single-file exes, or the sidecar
+       base_game.bin for split-bin mode). On failure returns 1.
+   Returns 0 on success. */
 static int verify_bin_parts(void)
 {
-    if (g_num_bin_part_crcs <= 0 || g_meta.bin_parts <= 1) return 0;
+    if (g_num_bin_part_crcs <= 0) return 0;
 
     const size_t IN_SZ = 1 << 20;  /* 1 MiB read buffer */
     uint8_t *buf = (uint8_t *)malloc(IN_SZ);
     if (!buf) return 0;  /* OOM: skip check rather than fail-closed */
 
-    int num = g_meta.bin_parts;
-    if (num > g_num_bin_part_crcs) num = g_num_bin_part_crcs;
-
-    for (int i = 0; i < num; i++) {
-        char path[MAX_PATH + 8];
-        snprintf(path, sizeof(path), "%s.%03d", g_bin_path, i + 1);
-        FILE *f = fopen(path, "rb");
-        if (!f) { free(buf); return i + 1; }
-
-        if (g_hwnd) {
-            char status[128];
-            snprintf(status, sizeof(status), "Verifying part %d of %d…", i + 1, num);
-            set_status(status);
+    if (g_meta.bin_parts > 1) {
+        int num = g_meta.bin_parts;
+        if (num > g_num_bin_part_crcs) num = g_num_bin_part_crcs;
+        for (int i = 0; i < num; i++) {
+            char path[MAX_PATH + 8];
+            snprintf(path, sizeof(path), "%s.%03d", g_bin_path, i + 1);
+            FILE *f = fopen(path, "rb");
+            if (!f) { free(buf); return i + 1; }
+            if (g_hwnd) {
+                char status[128];
+                snprintf(status, sizeof(status), "Verifying part %d of %d…", i + 1, num);
+                set_status(status);
+            }
+            uint32_t crc = 0xFFFFFFFFu;
+            size_t got;
+            while ((got = fread(buf, 1, IN_SZ, f)) > 0)
+                crc = crc32_update(crc, buf, got);
+            fclose(f);
+            crc ^= 0xFFFFFFFFu;
+            if (crc != g_bin_part_crcs[i]) { free(buf); return i + 1; }
         }
-
+    } else {
+        /* Single-piece: one CRC covers the blob region of g_bin_path. */
+        MPF m;
+        if (!mpf_open(&m, g_bin_path, 1, 0)) { free(buf); return 1; }
+        if (!mpf_seek(&m, g_meta.pack_data_offset, SEEK_SET)) {
+            mpf_close(&m); free(buf); return 1;
+        }
+        if (g_hwnd) set_status("Verifying data…");
         uint32_t crc = 0xFFFFFFFFu;
-        size_t got;
-        while ((got = fread(buf, 1, IN_SZ, f)) > 0)
+        int64_t remaining = g_meta.pack_data_size;
+        while (remaining > 0) {
+            size_t to_read = (remaining < (int64_t)IN_SZ) ? (size_t)remaining : IN_SZ;
+            size_t got = mpf_read(&m, buf, to_read);
+            if (got == 0) break;
             crc = crc32_update(crc, buf, got);
-        fclose(f);
+            remaining -= (int64_t)got;
+        }
+        mpf_close(&m);
         crc ^= 0xFFFFFFFFu;
-
-        if (crc != g_bin_part_crcs[i]) { free(buf); return i + 1; }
+        if (crc != g_bin_part_crcs[0]) { free(buf); return 1; }
     }
 
     free(buf);
@@ -1389,10 +1414,21 @@ static int do_install(const char *install_dir, int low_load, int verify_crc32,
     if (bad_part > 0) {
         if (!g_silent) {
             char msg[MAX_PATH + 200];
-            snprintf(msg, sizeof(msg),
-                "Data file part %d of %d is corrupted or could not be read:\n  %s.%03d\n\n"
-                "Re-download this part and try again.",
-                bad_part, g_meta.bin_parts, g_bin_path, bad_part);
+            if (g_meta.bin_parts > 1) {
+                snprintf(msg, sizeof(msg),
+                    "Data file part %d of %d is corrupted or could not be read:\n  %s.%03d\n\n"
+                    "Re-download this part and try again.",
+                    bad_part, g_meta.bin_parts, g_bin_path, bad_part);
+            } else if (strcmp(g_bin_path, g_exe_path) != 0) {
+                snprintf(msg, sizeof(msg),
+                    "The data file is corrupted or could not be read:\n  %s\n\n"
+                    "Re-download it and try again.",
+                    g_bin_path);
+            } else {
+                snprintf(msg, sizeof(msg),
+                    "This installer's compressed data is corrupted.\n"
+                    "Re-download the installer and try again.");
+            }
             MessageBoxA(g_hwnd, msg, "PatchForge Installer", MB_OK | MB_ICONERROR);
         }
         return 0;
