@@ -170,6 +170,18 @@ def build(
             str(ci): info["csize"] for ci, info in ext_info.items()
         }
 
+    # Multi-part bin splitting: decide upfront so the part count gets baked
+    # into metadata (the split itself happens after packaging).
+    bin_part_size = 0
+    bin_num_parts = 1
+    if settings.max_part_size_mb > 0:
+        bin_part_size = settings.max_part_size_mb * 1024 * 1024
+        blob_size = blob_path.stat().st_size
+        if blob_size > bin_part_size:
+            bin_num_parts = (blob_size + bin_part_size - 1) // bin_part_size
+            metadata["bin_parts"] = bin_num_parts
+            metadata["bin_part_size"] = bin_part_size
+
     # ------------------------------------------------------------------ #
     # 4. Load backdrop                                                     #
     # ------------------------------------------------------------------ #
@@ -186,7 +198,8 @@ def build(
     # Determine whether to split pack data into a separate .bin file.
     app_cfg   = load_app_settings()
     threshold = app_cfg.bin_split_threshold_gb * 1024 ** 3
-    use_bin   = settings.split_bin or (blob_path.stat().st_size >= threshold)
+    use_bin   = (settings.split_bin or bin_num_parts > 1 or
+                 blob_path.stat().st_size >= threshold)
 
     _progress(82, "Packaging installer exe…")
 
@@ -220,11 +233,36 @@ def build(
         except OSError:
             pass
 
+    # Multi-part splitting of base_game.bin (after packaging, since parts
+    # are just raw byte chunks of the final sidecar).
+    bin_part_paths: list[Path] = []
+    if bin_path and bin_num_parts > 1:
+        _progress(98, f"Splitting {bin_path.name} into {bin_num_parts} parts…")
+        CHUNK = 1024 * 1024  # 1 MB copy buffer
+        with open(bin_path, "rb") as src:
+            for i in range(bin_num_parts):
+                part_path = bin_path.with_name(f"{bin_path.name}.{i + 1:03d}")
+                remaining = bin_part_size
+                with open(part_path, "wb") as dst:
+                    while remaining > 0:
+                        buf = src.read(min(CHUNK, remaining))
+                        if not buf:
+                            break
+                        dst.write(buf)
+                        remaining -= len(buf)
+                bin_part_paths.append(part_path)
+        bin_path.unlink()
+        # Return the first part as the "bin_path" in the result
+        bin_path = bin_part_paths[0]
+
     _progress(100, "Done.")
 
     # Total compressed output: exe stub + base_game.bin (if split) + all sidecars
     total_compressed = output_path.stat().st_size
-    if bin_path:
+    if bin_part_paths:
+        for p in bin_part_paths:
+            total_compressed += p.stat().st_size
+    elif bin_path:
         total_compressed += bin_path.stat().st_size
     for info in ext_info.values():
         p = info["path"]

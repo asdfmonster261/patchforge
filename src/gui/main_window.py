@@ -954,24 +954,36 @@ class MainWindow(QMainWindow):
         )
         pg.addWidget(self.rp_split_bin_chk, 7, 0, 1, 2)
 
-        pg.addWidget(QLabel("Shortcut target:"), 8, 0)
+        pg.addWidget(QLabel("Max part size (MB):"), 8, 0)
+        self.rp_max_part_size_spin = QSpinBox()
+        self.rp_max_part_size_spin.setRange(0, 100_000)
+        self.rp_max_part_size_spin.setValue(0)
+        self.rp_max_part_size_spin.setSpecialValueText("Off")
+        self.rp_max_part_size_spin.setToolTip(
+            "If set, splits base_game.bin into <name>.bin.001, .002, ... parts of this size.\n"
+            "Useful for distribution on file hosts with upload size caps.\n"
+            "0 (Off) = no multi-part split."
+        )
+        pg.addWidget(self.rp_max_part_size_spin, 8, 1)
+
+        pg.addWidget(QLabel("Shortcut target:"), 9, 0)
         self.rp_shortcut_target_edit = QLineEdit()
         self.rp_shortcut_target_edit.setPlaceholderText(
             "Relative path to game exe within install dir  (e.g. Game.exe)")
-        pg.addWidget(self.rp_shortcut_target_edit, 8, 1)
+        pg.addWidget(self.rp_shortcut_target_edit, 9, 1)
 
-        pg.addWidget(QLabel("Shortcut name:"), 9, 0)
+        pg.addWidget(QLabel("Shortcut name:"), 10, 0)
         self.rp_shortcut_name_edit = QLineEdit()
         self.rp_shortcut_name_edit.setPlaceholderText("Display name  (blank = use App Name)")
-        pg.addWidget(self.rp_shortcut_name_edit, 9, 1)
+        pg.addWidget(self.rp_shortcut_name_edit, 10, 1)
 
         self.rp_shortcut_startmenu_chk = QCheckBox("Create Start Menu shortcut")
         self.rp_shortcut_startmenu_chk.setChecked(True)
-        pg.addWidget(self.rp_shortcut_startmenu_chk, 10, 0, 1, 2)
+        pg.addWidget(self.rp_shortcut_startmenu_chk, 11, 0, 1, 2)
 
         self.rp_shortcut_desktop_chk = QCheckBox("Create Desktop shortcut")
         self.rp_shortcut_desktop_chk.setChecked(False)
-        pg.addWidget(self.rp_shortcut_desktop_chk, 11, 0, 1, 2)
+        pg.addWidget(self.rp_shortcut_desktop_chk, 12, 0, 1, 2)
 
         layout.addWidget(post_grp)
         layout.addStretch()
@@ -1631,6 +1643,7 @@ class MainWindow(QMainWindow):
             include_uninstaller  = self.rp_include_uninstaller_chk.isChecked(),
             verify_crc32         = self.rp_verify_crc32_chk.isChecked(),
             split_bin            = self.rp_split_bin_chk.isChecked(),
+            max_part_size_mb     = self.rp_max_part_size_spin.value(),
             shortcut_target           = self.rp_shortcut_target_edit.text().strip(),
             shortcut_name             = self.rp_shortcut_name_edit.text().strip(),
             shortcut_create_startmenu = self.rp_shortcut_startmenu_chk.isChecked(),
@@ -1691,6 +1704,7 @@ class MainWindow(QMainWindow):
         self.rp_include_uninstaller_chk.setChecked(s.include_uninstaller)
         self.rp_verify_crc32_chk.setChecked(s.verify_crc32)
         self.rp_split_bin_chk.setChecked(s.split_bin)
+        self.rp_max_part_size_spin.setValue(s.max_part_size_mb)
         self.rp_shortcut_target_edit.setText(s.shortcut_target)
         self.rp_shortcut_name_edit.setText(s.shortcut_name)
         self.rp_shortcut_startmenu_chk.setChecked(s.shortcut_create_startmenu)
