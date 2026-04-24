@@ -1006,7 +1006,6 @@ class MainWindow(QMainWindow):
         sw_layout.setContentsMargins(0, 0, 0, 0)
         sw_layout.setSpacing(2)
         self.stream_label = QLabel()
-        self.stream_label.setObjectName("dim")
         self.stream_bar = QProgressBar()
         self.stream_bar.setRange(0, 100)
         self.stream_bar.setValue(0)
