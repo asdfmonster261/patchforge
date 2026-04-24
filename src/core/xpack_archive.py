@@ -314,7 +314,7 @@ def build(
     codec: str = "lzma",
     progress: Optional[Callable[[int, str], None]] = None,
     tmp_dir: Optional[Path] = None,
-    stream_progress: Optional[Callable[[int, int, str, int, int, int], None]] = None,
+    stream_progress: Optional[Callable[[int, int, str, int, int, str], None]] = None,
 ) -> tuple[Path, int, int, list[dict], dict[int, dict]]:
     """
     Walk *game_dir* (and any optional component folders), compress into an
@@ -440,7 +440,7 @@ def _compress_sequential(
     streams_out: list,
     _prog: Callable,
     tmp_dir: Optional[Path] = None,
-    stream_progress: Optional[Callable[[int, int, str, int, int, int], None]] = None,
+    stream_progress: Optional[Callable[[int, int, str, int, int, str], None]] = None,
 ) -> None:
     """Compress each stream in turn, writing to temp files."""
     weights = [est for _, _, _, est in stream_specs]
@@ -460,7 +460,7 @@ def _compress_sequential(
         _prog(5 + int(s_start * 88),
               f"{label}: compressing {total} file(s)…")
         if stream_progress:
-            stream_progress(stream_idx, num_streams, label, 0, max(total, 1), 0)
+            stream_progress(stream_idx, num_streams, label, 0, max(total, 1), "")
 
         file_entries: list[dict] = []
 
@@ -470,7 +470,8 @@ def _compress_sequential(
             pct = 5 + int((_ss + done / tot * _sr) * 88)
             _prog(pct, f"{_lbl}: {done}/{tot} files…")
             if stream_progress:
-                stream_progress(_si, _ns, _lbl, done, tot, file_size)
+                size_str = _fmt_size(file_size) if file_size else ""
+                stream_progress(_si, _ns, _lbl, done, tot, size_str)
 
         stream_tmp = _compress_stream_to_tmpfile(
             comp_idx, specs, quality, threads, codec,
