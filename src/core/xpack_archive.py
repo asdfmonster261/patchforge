@@ -199,6 +199,12 @@ def _do_compress_to_file(
             stream_offset = 0
             try:
                 for i, (rel, abs_path) in enumerate(specs):
+                    try:
+                        pre_size = os.path.getsize(abs_path)
+                    except OSError:
+                        pre_size = 0
+                    if prog_callback and pre_size > 50 * 1024 * 1024:
+                        prog_callback(i, len(specs), pre_size)
                     file_size = 0
                     crc = 0
                     with open(abs_path, "rb") as fh:
@@ -218,7 +224,7 @@ def _do_compress_to_file(
                     })
                     stream_offset += file_size
                     if prog_callback and ((i + 1) % 200 == 0 or i + 1 == len(specs)):
-                        prog_callback(i + 1, len(specs))
+                        prog_callback(i + 1, len(specs), file_size)
             except Exception as exc:
                 write_error[0] = exc
             finally:
@@ -260,6 +266,12 @@ def _do_compress_to_file(
 
         stream_offset = 0
         for i, (rel, abs_path) in enumerate(specs):
+            try:
+                pre_size = os.path.getsize(abs_path)
+            except OSError:
+                pre_size = 0
+            if prog_callback and pre_size > 50 * 1024 * 1024:
+                prog_callback(i, len(specs), pre_size)
             file_size = 0
             crc = 0
             with open(abs_path, "rb") as fh:
@@ -281,7 +293,7 @@ def _do_compress_to_file(
             })
             stream_offset += file_size
             if prog_callback and ((i + 1) % 200 == 0 or i + 1 == len(specs)):
-                prog_callback(i + 1, len(specs))
+                prog_callback(i + 1, len(specs), file_size)
 
         out_f.write(compressor.flush())
 
@@ -302,6 +314,7 @@ def build(
     codec: str = "lzma",
     progress: Optional[Callable[[int, str], None]] = None,
     tmp_dir: Optional[Path] = None,
+    stream_progress: Optional[Callable[[int, int, str, int, int, str], None]] = None,
 ) -> tuple[Path, int, int, list[dict], dict[int, dict]]:
     """
     Walk *game_dir* (and any optional component folders), compress into an
@@ -392,6 +405,7 @@ def build(
     _compress_sequential(
         stream_specs, quality, threads, codec,
         all_file_entries, streams_out, _prog, tmp_dir,
+        stream_progress=stream_progress,
     )
 
     total_uncompressed = sum(e["size"] for e in all_file_entries)
@@ -426,6 +440,7 @@ def _compress_sequential(
     streams_out: list,
     _prog: Callable,
     tmp_dir: Optional[Path] = None,
+    stream_progress: Optional[Callable[[int, int, str, int, int, str], None]] = None,
 ) -> None:
     """Compress each stream in turn, writing to temp files."""
     weights = [est for _, _, _, est in stream_specs]
@@ -433,6 +448,8 @@ def _compress_sequential(
     cum = [0.0]
     for w in weights:
         cum.append(cum[-1] + w / total_w)
+
+    num_streams = len(stream_specs)
 
     for stream_idx, (comp_idx, label, specs, _) in enumerate(stream_specs):
         s_start = cum[stream_idx]
@@ -442,13 +459,19 @@ def _compress_sequential(
 
         _prog(5 + int(s_start * 88),
               f"{label}: compressing {total} file(s)…")
+        if stream_progress:
+            stream_progress(stream_idx, num_streams, label, 0, max(total, 1), "")
 
         file_entries: list[dict] = []
 
-        def _file_prog(done: int, tot: int,
-                       _lbl=label, _ss=s_start, _sr=s_range) -> None:
+        def _file_prog(done: int, tot: int, file_size: int = 0,
+                       _lbl=label, _ss=s_start, _sr=s_range,
+                       _si=stream_idx, _ns=num_streams) -> None:
             pct = 5 + int((_ss + done / tot * _sr) * 88)
             _prog(pct, f"{_lbl}: {done}/{tot} files…")
+            if stream_progress:
+                size_str = _fmt_size(file_size) if file_size else ""
+                stream_progress(_si, _ns, _lbl, done, tot, size_str)
 
         stream_tmp = _compress_stream_to_tmpfile(
             comp_idx, specs, quality, threads, codec,
