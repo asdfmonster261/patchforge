@@ -2043,13 +2043,26 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (notif == BN_CLICKED) {
                 int ci = id - IDC_COMP_BASE;
                 ComponentInfo *cc = &g_components[ci];
-                /* If just checked, auto-check everything it requires */
+                /* If just checked, auto-check all transitive deps until stable.
+                   Single-pass only catches direct deps; iterate to handle chains
+                   like A→B→C where checking A must also pull in C. */
                 if (SendMessageA(cc->hwnd_ctrl, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                    for (int r = 0; r < cc->num_requires; r++) {
-                        int ri = cc->requires[r] - 1;
-                        if (ri >= 0 && ri < g_num_components && g_components[ri].hwnd_ctrl)
-                            SendMessageA(g_components[ri].hwnd_ctrl,
-                                         BM_SETCHECK, BST_CHECKED, 0);
+                    int changed = 1;
+                    while (changed) {
+                        changed = 0;
+                        for (int j = 0; j < g_num_components; j++) {
+                            ComponentInfo *cj = &g_components[j];
+                            if (!cj->hwnd_ctrl) continue;
+                            if (SendMessageA(cj->hwnd_ctrl, BM_GETCHECK, 0, 0) != BST_CHECKED) continue;
+                            for (int r = 0; r < cj->num_requires; r++) {
+                                int ri = cj->requires[r] - 1;
+                                if (ri < 0 || ri >= g_num_components || !g_components[ri].hwnd_ctrl) continue;
+                                if (SendMessageA(g_components[ri].hwnd_ctrl, BM_GETCHECK, 0, 0) != BST_CHECKED) {
+                                    SendMessageA(g_components[ri].hwnd_ctrl, BM_SETCHECK, BST_CHECKED, 0);
+                                    changed = 1;
+                                }
+                            }
+                        }
                     }
                 }
                 refresh_component_states();
