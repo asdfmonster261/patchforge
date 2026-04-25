@@ -251,6 +251,13 @@ static int jojo_apply_entry(int op, const char *rel_path,
                               void *userdata)
 {
     struct DirPatchCtx *ctx = (struct DirPatchCtx *)userdata;
+    /* Refuse path-traversal entries before touching the filesystem. */
+    if (!pfg_path_is_safe(rel_path)) {
+        snprintf(ctx->err_msg, sizeof(ctx->err_msg),
+            "ERROR: refused unsafe path in patch: %s", rel_path);
+        ctx->had_error = 1;
+        return 0;
+    }
     char full_path[MAX_PATH];
     snprintf(full_path, MAX_PATH, "%s\\%s", ctx->game_dir, rel_path);
 

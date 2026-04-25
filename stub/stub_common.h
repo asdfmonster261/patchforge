@@ -158,6 +158,32 @@ int browse_for_file(HWND owner, char *out_path, int out_len, const char *filter)
 int find_target_file(char *out_path, int out_len);
 int do_patch(const char *target_path, const char *patch_data, size_t patch_size);
 
+/* ---- Path safety: reject absolute paths, drive letters, UNC, .. components.
+ * Returned paths are always relative-and-contained; the caller can safely
+ * snprintf("%s\\%s", base_dir, path) without escaping base_dir. */
+static int pfg_path_is_safe(const char *path)
+{
+    if (!path || !path[0]) return 0;
+    /* Reject absolute paths (leading separator) */
+    if (path[0] == '/' || path[0] == '\\') return 0;
+    /* Reject drive-letter paths "X:..." */
+    if (path[1] == ':') return 0;
+    /* Reject UNC paths "\\server\..." (the leading-backslash check above
+     * already catches this, but the explicit second-char test guards
+     * against any future loosening.) */
+    if (path[0] == '\\' && path[1] == '\\') return 0;
+    /* Reject any ".." path component */
+    const char *p = path;
+    while (*p) {
+        if (p[0] == '.' && p[1] == '.' &&
+            (p[2] == '\0' || p[2] == '/' || p[2] == '\\'))
+            return 0;
+        while (*p && *p != '/' && *p != '\\') p++;
+        if (*p) p++;
+    }
+    return 1;
+}
+
 /* ---- Simple JSON key extraction (no external deps) ---- */
 static const char *json_get_str(const char *json, const char *key,
                                 char *out, int out_len)
@@ -267,7 +293,10 @@ static void json_parse_extra_files(const char *json, PatchMeta *meta)
         int64_t size   = json_get_int(obj, "size");
         free(obj);
 
-        if (dest[0] && size > 0) {
+        /* Reject any extra-file entry whose dest would escape the game dir.
+         * The Python builder validates this too, but a tampered .exe could
+         * carry malicious dest values. */
+        if (dest[0] && size > 0 && pfg_path_is_safe(dest)) {
             strncpy(meta->extra_files_meta[n].dest, dest, 511);
             meta->extra_files_meta[n].dest[511] = '\0';
             meta->extra_files_meta[n].offset = offset;
@@ -328,7 +357,11 @@ static int read_patch_meta_impl(PatchMeta *meta, char **json_out,
     int64_t data_start = json_get_int(json, "patch_data_offset");
     int64_t data_size  = json_get_int(json, "patch_data_size");
     if (data_size <= 0 || data_start < 0) { free(json); CloseHandle(f); return 0; }
-    if (data_start + data_size > file_size) { free(json); CloseHandle(f); return 0; }
+    /* Subtract instead of add — guards against int64 overflow when a
+     * tampered metadata blob supplies enormous offsets/sizes. */
+    if (data_start > file_size || data_size > file_size - data_start) {
+        free(json); CloseHandle(f); return 0;
+    }
 
     char *data = (char *)malloc((size_t)data_size);
     if (!data) { free(json); CloseHandle(f); return 0; }
@@ -595,6 +628,12 @@ static int verify_all_checksums(const char *game_dir, const PatchMeta *meta)
             const char *rel_path = entry;
             const char *expected = pipe + 1;
 
+            if (!pfg_path_is_safe(rel_path)) {
+                all_pass = 0;
+                entry = next ? next + 1 : NULL;
+                continue;
+            }
+
             char full_path[MAX_PATH];
             snprintf(full_path, MAX_PATH, "%s\\%s", game_dir, rel_path);
             for (char *p = full_path; *p; p++)
@@ -651,6 +690,14 @@ static int verify_source_files(const char *game_dir, const PatchMeta *meta,
             *pipe = '\0';
             const char *rel_path = entry;
             const char *expected = pipe + 1;
+
+            if (!pfg_path_is_safe(rel_path)) {
+                failed++;
+                if (!first_bad[0])
+                    strncpy(first_bad, rel_path, MAX_PATH - 1);
+                entry = next ? next + 1 : NULL;
+                continue;
+            }
 
             char full_path[MAX_PATH];
             snprintf(full_path, MAX_PATH, "%s\\%s", game_dir, rel_path);
