@@ -3,43 +3,22 @@
 import hashlib
 from pathlib import Path
 
+import crcmod
+
+_crc32c_fn = crcmod.predefined.mkCrcFun("crc-32c")
+
 
 def _crc32c(path: Path) -> str:
-    """CRC32C via hardware intrinsic if available, else pure-Python fallback."""
-    try:
-        import crcmod
-        crc_fn = crcmod.predefined.mkCrcFun("crc-32c")
-        buf = bytearray(1 << 20)
-        crc = 0
-        with open(path, "rb") as f:
-            while True:
-                n = f.readinto(buf)
-                if not n:
-                    break
-                crc = crc_fn(buf[:n], crc)
-        return format(crc & 0xFFFFFFFF, "08x")
-    except ImportError:
-        pass
-
-    # Pure-Python CRC32C using the Castagnoli polynomial
-    poly = 0x82F63B78
-    table = []
-    for i in range(256):
-        crc = i
-        for _ in range(8):
-            crc = (crc >> 1) ^ (poly if crc & 1 else 0)
-        table.append(crc)
-
-    crc = 0xFFFFFFFF
+    """Streaming CRC32C using crcmod (C-accelerated)."""
     buf = bytearray(1 << 20)
+    crc = 0
     with open(path, "rb") as f:
         while True:
             n = f.readinto(buf)
             if not n:
                 break
-            for b in buf[:n]:
-                crc = (crc >> 8) ^ table[(crc ^ b) & 0xFF]
-    return format((crc ^ 0xFFFFFFFF) & 0xFFFFFFFF, "08x")
+            crc = _crc32c_fn(buf[:n], crc)
+    return format(crc & 0xFFFFFFFF, "08x")
 
 
 def compute(path: Path, method: str) -> str:
