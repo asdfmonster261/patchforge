@@ -43,6 +43,7 @@ import zlib
 from pathlib import Path
 from typing import Callable, Optional
 
+from .compression import xz_command, zstd_command
 from .fmt import THREAD_OPTIONS as THREAD_OPTIONS  # noqa: F401  re-export
 from .fmt import format_size as _fmt_size
 
@@ -152,7 +153,7 @@ def _do_compress_to_file(
         # Produce a valid empty compressed stream so the reader doesn't choke.
         if codec == "zstd":
             try:
-                r = subprocess.run(["zstd", "-1", "-c"], input=b"", capture_output=True)
+                r = subprocess.run([zstd_command(), "-1", "-c"], input=b"", capture_output=True)
                 if r.returncode == 0:
                     out_f.write(r.stdout)
                     return
@@ -166,13 +167,14 @@ def _do_compress_to_file(
     if use_cli:
         if codec == "zstd":
             level = _ZSTD_LEVEL_MAP.get(quality, 19)
+            zstd = zstd_command()
             if level == 22:
-                cmd = ["zstd", "--ultra", "-22", f"-T{threads}", "-c"]
+                cmd = [zstd, "--ultra", "-22", f"-T{threads}", "-c"]
             else:
-                cmd = ["zstd", f"-{level}", f"-T{threads}", "-c"]
+                cmd = [zstd, f"-{level}", f"-T{threads}", "-c"]
         else:
             preset = _XZ_PRESET.get(quality, 9)
-            cmd = ["xz", f"-T{threads}", f"-{preset}", "-c"]
+            cmd = [xz_command(), f"-T{threads}", f"-{preset}", "-c"]
             if preset >= 9:
                 cmd.insert(-1, "--block-size=64MiB")
 
