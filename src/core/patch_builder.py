@@ -16,6 +16,7 @@ from typing import Callable, Optional
 
 from .engines import HDiffPatchEngine, JojoDiffEngine, XDelta3Engine, PatchEngine
 from .exe_packager import package
+from .fmt import files_equal
 from .project import ProjectSettings
 
 _ENGINE_ARCH = "win-x64" if sys.platform == "win32" else "linux-x64"
@@ -181,7 +182,7 @@ def build(
         else:
             src_f = src_files[rel]
             if src_f.stat().st_size != tgt_f.stat().st_size or \
-               src_f.read_bytes() != tgt_f.read_bytes():
+               not files_equal(src_f, tgt_f):
                 entries.append((rel, tgt_f, src_f))
 
     files_modified = sum(1 for _, _, src_f in entries if src_f is not None)
