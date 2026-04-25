@@ -109,6 +109,6 @@ def load(path: Path) -> ProjectSettings:
             f"Upgrade PatchForge to open this project."
         )
     # Forward-compat: ignore unknown keys
-    known = {k for k in ProjectSettings.__dataclass_fields__}
+    known = set(ProjectSettings.__dataclass_fields__)
     filtered = {k: v for k, v in data.items() if k in known}
     return ProjectSettings(**filtered)

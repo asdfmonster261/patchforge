@@ -10,13 +10,9 @@ Tests:
 """
 import json
 import struct
-import tempfile
-import os
+import sys
 from pathlib import Path
 
-import pytest
-
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.core.repack_builder import build as build_repack

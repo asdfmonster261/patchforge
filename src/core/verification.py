@@ -25,7 +25,7 @@ def compute(path: Path, method: str) -> str:
     """Return checksum string for path using the given method."""
     if method == "crc32c":
         return _crc32c(path)
-    elif method == "md5":
+    if method == "md5":
         h = hashlib.md5()
         buf = bytearray(1 << 20)
         with open(path, "rb") as f:
@@ -35,7 +35,6 @@ def compute(path: Path, method: str) -> str:
                     break
                 h.update(buf[:n])
         return h.hexdigest()
-    elif method == "filesize":
+    if method == "filesize":
         return str(path.stat().st_size)
-    else:
-        raise ValueError(f"Unknown verification method: {method!r}")
+    raise ValueError(f"Unknown verification method: {method!r}")

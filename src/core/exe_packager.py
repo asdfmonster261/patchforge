@@ -317,41 +317,40 @@ def package_repack(
 
         return output_path, bin_path
 
-    else:
-        # Single-file: pack data embedded immediately after stub.
-        pack_data_offset = len(stub_bytes)
-        uninst_offset    = pack_data_offset + pack_data_size
-        bd_offset        = uninst_offset + uninst_size
-        bd_size          = len(backdrop_data) if backdrop_data else 0
+    # Single-file: pack data embedded immediately after stub.
+    pack_data_offset = len(stub_bytes)
+    uninst_offset    = pack_data_offset + pack_data_size
+    bd_offset        = uninst_offset + uninst_size
+    bd_size          = len(backdrop_data) if backdrop_data else 0
 
-        # Write the exe; the blob CRC is computed during the embed copy.
-        # We can't know the CRC until after the blob's been written, so
-        # writing happens in two passes: body first (to collect CRC), then
-        # re-open and seek to write final metadata.
-        with open(output_path, "wb") as f:
-            f.write(stub_bytes)
-            blob_crc = _copy_with_crc(Path(pack_blob_path), f)
-            f.write(uninst_blob)
-            if backdrop_data:
-                f.write(backdrop_data)
+    # Write the exe; the blob CRC is computed during the embed copy.
+    # We can't know the CRC until after the blob's been written, so
+    # writing happens in two passes: body first (to collect CRC), then
+    # re-open and seek to write final metadata.
+    with open(output_path, "wb") as f:
+        f.write(stub_bytes)
+        blob_crc = _copy_with_crc(Path(pack_blob_path), f)
+        f.write(uninst_blob)
+        if backdrop_data:
+            f.write(backdrop_data)
 
-            meta = dict(metadata)
-            meta["pack_data_offset"]    = pack_data_offset
-            meta["pack_data_size"]      = pack_data_size
-            meta["uninstaller_offset"]  = uninst_offset
-            meta["uninstaller_size"]    = uninst_size
-            meta["arp_subkey"]          = arp_subkey
-            meta["backdrop_offset"]     = bd_offset
-            meta["backdrop_size"]       = bd_size
-            meta["bin_part_crcs"]       = [blob_crc]
+        meta = dict(metadata)
+        meta["pack_data_offset"]    = pack_data_offset
+        meta["pack_data_size"]      = pack_data_size
+        meta["uninstaller_offset"]  = uninst_offset
+        meta["uninstaller_size"]    = uninst_size
+        meta["arp_subkey"]          = arp_subkey
+        meta["backdrop_offset"]     = bd_offset
+        meta["backdrop_size"]       = bd_size
+        meta["bin_part_crcs"]       = [blob_crc]
 
-            meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
-            meta_len  = struct.pack("<I", len(meta_json))
-            f.write(meta_json)
-            f.write(meta_len)
-            f.write(REPACK_MAGIC)
+        meta_json = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+        meta_len  = struct.pack("<I", len(meta_json))
+        f.write(meta_json)
+        f.write(meta_len)
+        f.write(REPACK_MAGIC)
 
-        return output_path, None
+    return output_path, None
 
 
 def patch_repack_metadata(exe_path: Path, extra_fields: dict) -> None:

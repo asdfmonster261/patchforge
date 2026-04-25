@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .compression import xz_command, zstd_command
-from .fmt import THREAD_OPTIONS as THREAD_OPTIONS  # noqa: F401  re-export
+from .fmt import THREAD_OPTIONS as THREAD_OPTIONS  # re-export for GUI
 from .fmt import format_size as _fmt_size
 
 MAGIC = b"XPACK01\x00"
@@ -78,9 +78,6 @@ LZMA_QUALITY_LABELS: dict[str, str] = {
     "normal": "Normal (lzma2-6)",
     "max":    "Max (lzma2-9)",
 }
-
-# Back-compat alias
-QUALITY_LABELS = LZMA_QUALITY_LABELS
 
 # ---- Zstd quality maps ----
 

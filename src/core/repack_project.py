@@ -103,6 +103,6 @@ def load(path: Path) -> RepackSettings:
             f"(schema {version}, this build supports {_CURRENT_SCHEMA}). "
             f"Upgrade PatchForge to open this project."
         )
-    known = {k for k in RepackSettings.__dataclass_fields__}
+    known = set(RepackSettings.__dataclass_fields__)
     filtered = {k: v for k, v in data.items() if k in known}
     return RepackSettings(**filtered)
