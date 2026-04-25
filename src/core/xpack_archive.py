@@ -99,6 +99,11 @@ ZSTD_QUALITY_LABELS: dict[str, str] = {
 }
 
 
+def supported_quality_keys(codec: str) -> set[str]:
+    """Return the set of valid quality keys for a given codec."""
+    return set(_ZSTD_LEVEL_MAP) if codec == "zstd" else set(_QUALITY_MAP)
+
+
 # ---------------------------------------------------------------------------
 # Internal: compress one component's files directly to a temp file
 # ---------------------------------------------------------------------------

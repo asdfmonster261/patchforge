@@ -66,8 +66,10 @@ class JojoDiffEngine(PatchEngine):
 
     # ------------------------------------------------------------------ #
 
-    def _generate_file(self, source, target, output, flags: list[str] = [],
-                        extra: list[str] = []) -> EngineResult:
+    def _generate_file(self, source, target, output, flags: list[str] | None = None,
+                        extra: list[str] | None = None) -> EngineResult:
+        flags = flags or []
+        extra = extra or []
         cmd = [str(self._binary())] + flags + extra + [str(source), str(target), str(output)]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True)
@@ -86,8 +88,10 @@ class JojoDiffEngine(PatchEngine):
         except OSError as exc:
             return EngineResult(success=False, patch_path=None, patch_size=0, error=str(exc))
 
-    def _generate_dir(self, source, target, output, flags: list[str] = [], threads=1,
-                       extra: list[str] = []) -> EngineResult:
+    def _generate_dir(self, source, target, output, flags: list[str] | None = None,
+                       threads=1, extra: list[str] | None = None) -> EngineResult:
+        flags = flags or []
+        extra = extra or []
         binary = str(self._binary())
 
         def make_patch(src_file: Path, tgt_file: Path) -> bytes:

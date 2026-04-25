@@ -75,9 +75,8 @@ def build(
     if settings.max_part_size_mb < 0:
         return RepackResult(success=False,
                             error=f"max_part_size_mb must be ≥ 0, got {settings.max_part_size_mb}")
-    from .xpack_archive import _QUALITY_MAP, _ZSTD_LEVEL_MAP
-    valid_qualities = _ZSTD_LEVEL_MAP if settings.codec == "zstd" else _QUALITY_MAP
-    if settings.compression not in valid_qualities:
+    from .xpack_archive import supported_quality_keys
+    if settings.compression not in supported_quality_keys(settings.codec):
         return RepackResult(success=False,
                             error=f"Unknown compression quality for {settings.codec}: {settings.compression!r}")
 
