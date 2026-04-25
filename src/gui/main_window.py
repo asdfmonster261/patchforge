@@ -156,6 +156,63 @@ class HSep(QFrame):
 
 
 # ---------------------------------------------------------------------------
+# Widget ↔ settings-field binders
+#
+# Each helper returns a (collect, apply) closure pair. _build_*_bindings
+# below assembles a {field_name: (collect, apply)} dict so _collect_settings
+# and _apply_settings have one source of truth and don't drift apart.
+# ---------------------------------------------------------------------------
+
+def _bind_lineedit(widget):
+    return (lambda: widget.text().strip(),
+            lambda v: widget.setText(v or ""))
+
+
+def _bind_filepicker(widget):
+    def _set(v):
+        widget.path = v or ""
+    return (lambda: widget.path, _set)
+
+
+def _bind_checkbox(widget):
+    return (widget.isChecked, widget.setChecked)
+
+
+def _bind_spin(widget):
+    return (widget.value, widget.setValue)
+
+
+def _bind_combo_data(widget, default=None):
+    """Combo where each item carries a UserRole data value (currentData())."""
+    def _get():
+        v = widget.currentData()
+        return v if v is not None else default
+
+    def _set(value):
+        for i in range(widget.count()):
+            if widget.itemData(i) == value:
+                widget.setCurrentIndex(i)
+                return
+        # Fallback: match by visible text — used when project file stores a
+        # legacy preset name that no longer exists as a UserRole entry.
+        for i in range(widget.count()):
+            if widget.itemText(i) == value:
+                widget.setCurrentIndex(i)
+                return
+
+    return (_get, _set)
+
+
+def _bind_radio_pair(primary_widget, primary_value, fallback_value):
+    """Two mutually-exclusive radios → a string field (e.g. arch x64/x86).
+    primary_widget is the radio whose checked-state means primary_value."""
+    def _set(value):
+        primary_widget.setChecked(value == primary_value)
+    return (lambda: primary_value if primary_widget.isChecked() else fallback_value,
+            _set)
+
+
+# ---------------------------------------------------------------------------
 # Main Window
 # ---------------------------------------------------------------------------
 
@@ -175,6 +232,8 @@ class MainWindow(QMainWindow):
         self._output_dir: str = ""
 
         self._build_ui()
+        self._build_patch_bindings()
+        self._build_repack_bindings()
         self._connect_signals()
         self._on_engine_changed()  # set initial compression list
 
@@ -277,6 +336,47 @@ class MainWindow(QMainWindow):
     def _on_clear_recent(self) -> None:
         _recent.clear()
 
+    def _grid_lineedit(self, grid, row, col, label, placeholder="",
+                       colspan=1, readonly=False):
+        """Add a label + QLineEdit pair to a QGridLayout. Returns the edit.
+        Used to collapse the recurring 4-line "addWidget(QLabel),
+        self.X = QLineEdit(), setPlaceholderText, addWidget(self.X)" pattern
+        in the panel builders below."""
+        grid.addWidget(QLabel(label), row, col)
+        edit = QLineEdit()
+        if placeholder:
+            edit.setPlaceholderText(placeholder)
+        if readonly:
+            edit.setReadOnly(True)
+        grid.addWidget(edit, row, col + 1, 1, colspan)
+        return edit
+
+    def _grid_browse_row(self, grid, row, col, label, placeholder,
+                         browse_cb, colspan=3):
+        """Add a label + read-only QLineEdit + Browse + clear-button row.
+        Used by the icon-picker and backdrop-picker rows in both panels.
+        Returns (edit, browse_button, clear_button)."""
+        grid.addWidget(QLabel(label), row, col)
+        row_layout = QHBoxLayout()
+        row_layout.setSpacing(4)
+        edit = QLineEdit()
+        edit.setPlaceholderText(placeholder)
+        edit.setReadOnly(True)
+        row_layout.addWidget(edit)
+        browse = QPushButton("Browse…")
+        browse.setFixedWidth(70)
+        browse.clicked.connect(browse_cb)
+        row_layout.addWidget(browse)
+        clear = QPushButton("✕")
+        clear.setFixedWidth(24)
+        clear.setToolTip(f"Clear {label.rstrip(':').lower()}")
+        clear.clicked.connect(lambda: edit.setText(""))
+        row_layout.addWidget(clear)
+        container = QWidget()
+        container.setLayout(row_layout)
+        grid.addWidget(container, row, col + 1, 1, colspan)
+        return edit, browse, clear
+
     def _build_patch_panel(self) -> QWidget:
         # Wrap everything in a scroll area so the panel doesn't get clipped
         scroll = QScrollArea()
@@ -308,96 +408,32 @@ class MainWindow(QMainWindow):
         mg.setColumnStretch(1, 1)
         mg.setColumnStretch(3, 1)
 
-        mg.addWidget(QLabel("App name:"),    0, 0)
-        self.app_name_edit = QLineEdit()
-        self.app_name_edit.setPlaceholderText("My Application")
-        mg.addWidget(self.app_name_edit, 0, 1)
+        self.app_name_edit          = self._grid_lineedit(mg, 0, 0, "App name:",     "My Application")
+        self.app_note_edit          = self._grid_lineedit(mg, 0, 2, "App note:",     "Short subtitle (optional)")
+        self.version_edit           = self._grid_lineedit(mg, 1, 0, "Version:",      "1.0.0")
+        self.patch_exe_version_edit = self._grid_lineedit(mg, 1, 2, "Exe version:",  "1.0.0.0  (informational)")
+        self.desc_edit              = self._grid_lineedit(mg, 2, 0, "Description:",  "Optional description shown in patcher", colspan=3)
+        self.copyright_edit         = self._grid_lineedit(mg, 3, 0, "Copyright:",    "© 2025 My Company")
+        self.company_info_edit      = self._grid_lineedit(mg, 3, 2, "Company:",      "Publisher / company name")
+        self.contact_edit           = self._grid_lineedit(mg, 4, 0, "Contact:",      "support@example.com or URL")
+        self.window_title_edit      = self._grid_lineedit(mg, 4, 2, "Window title:", "Patcher title bar (defaults to app name)")
+        self.patch_exe_name_edit    = self._grid_lineedit(
+            mg, 5, 0, "Exe name:",
+            "Output exe filename stem — blank = auto (AppName_version_patch_x64.exe)",
+            colspan=3,
+        )
 
-        mg.addWidget(QLabel("App note:"),    0, 2)
-        self.app_note_edit = QLineEdit()
-        self.app_note_edit.setPlaceholderText("Short subtitle (optional)")
-        mg.addWidget(self.app_note_edit, 0, 3)
+        self.icon_edit, self.icon_browse_btn, self.icon_clear_btn = self._grid_browse_row(
+            mg, 6, 0, "Icon (.ico):",
+            "Optional — leave blank for default icon",
+            self._on_icon_browse,
+        )
 
-        mg.addWidget(QLabel("Version:"),     1, 0)
-        self.version_edit = QLineEdit()
-        self.version_edit.setPlaceholderText("1.0.0")
-        mg.addWidget(self.version_edit, 1, 1)
-
-        mg.addWidget(QLabel("Exe version:"), 1, 2)
-        self.patch_exe_version_edit = QLineEdit()
-        self.patch_exe_version_edit.setPlaceholderText("1.0.0.0  (informational)")
-        mg.addWidget(self.patch_exe_version_edit, 1, 3)
-
-        mg.addWidget(QLabel("Description:"), 2, 0)
-        self.desc_edit = QLineEdit()
-        self.desc_edit.setPlaceholderText("Optional description shown in patcher")
-        mg.addWidget(self.desc_edit, 2, 1, 1, 3)
-
-        mg.addWidget(QLabel("Copyright:"),   3, 0)
-        self.copyright_edit = QLineEdit()
-        self.copyright_edit.setPlaceholderText("© 2025 My Company")
-        mg.addWidget(self.copyright_edit, 3, 1)
-
-        mg.addWidget(QLabel("Company:"),     3, 2)
-        self.company_info_edit = QLineEdit()
-        self.company_info_edit.setPlaceholderText("Publisher / company name")
-        mg.addWidget(self.company_info_edit, 3, 3)
-
-        mg.addWidget(QLabel("Contact:"),     4, 0)
-        self.contact_edit = QLineEdit()
-        self.contact_edit.setPlaceholderText("support@example.com or URL")
-        mg.addWidget(self.contact_edit, 4, 1)
-
-        mg.addWidget(QLabel("Window title:"), 4, 2)
-        self.window_title_edit = QLineEdit()
-        self.window_title_edit.setPlaceholderText("Patcher title bar (defaults to app name)")
-        mg.addWidget(self.window_title_edit, 4, 3)
-
-        mg.addWidget(QLabel("Exe name:"),    5, 0)
-        self.patch_exe_name_edit = QLineEdit()
-        self.patch_exe_name_edit.setPlaceholderText(
-            "Output exe filename stem — blank = auto (AppName_version_patch_x64.exe)")
-        mg.addWidget(self.patch_exe_name_edit, 5, 1, 1, 3)
-
-        mg.addWidget(QLabel("Icon (.ico):"), 6, 0)
-        icon_row = QHBoxLayout()
-        icon_row.setSpacing(4)
-        self.icon_edit = QLineEdit()
-        self.icon_edit.setPlaceholderText("Optional — leave blank for default icon")
-        self.icon_edit.setReadOnly(True)
-        icon_row.addWidget(self.icon_edit)
-        self.icon_browse_btn = QPushButton("Browse…")
-        self.icon_browse_btn.setFixedWidth(70)
-        self.icon_browse_btn.clicked.connect(self._on_icon_browse)
-        icon_row.addWidget(self.icon_browse_btn)
-        self.icon_clear_btn = QPushButton("✕")
-        self.icon_clear_btn.setFixedWidth(24)
-        self.icon_clear_btn.setToolTip("Clear icon")
-        self.icon_clear_btn.clicked.connect(lambda: self.icon_edit.setText(""))
-        icon_row.addWidget(self.icon_clear_btn)
-        icon_container = QWidget()
-        icon_container.setLayout(icon_row)
-        mg.addWidget(icon_container, 6, 1, 1, 3)
-
-        mg.addWidget(QLabel("Backdrop:"), 7, 0)
-        bd_row = QHBoxLayout()
-        bd_row.setSpacing(4)
-        self.backdrop_edit = QLineEdit()
-        self.backdrop_edit.setPlaceholderText("Optional background image (PNG/JPEG/BMP)")
-        self.backdrop_edit.setReadOnly(True)
-        bd_row.addWidget(self.backdrop_edit)
-        self.backdrop_browse_btn = QPushButton("Browse…")
-        self.backdrop_browse_btn.setFixedWidth(70)
-        self.backdrop_browse_btn.clicked.connect(self._on_backdrop_browse)
-        bd_row.addWidget(self.backdrop_browse_btn)
-        self.backdrop_clear_btn = QPushButton("✕")
-        self.backdrop_clear_btn.setFixedWidth(24)
-        self.backdrop_clear_btn.setToolTip("Clear backdrop")
-        self.backdrop_clear_btn.clicked.connect(lambda: self.backdrop_edit.setText(""))
-        bd_row.addWidget(self.backdrop_clear_btn)
-        bd_w = QWidget()
-        bd_w.setLayout(bd_row)
-        mg.addWidget(bd_w, 7, 1, 1, 3)
+        self.backdrop_edit, self.backdrop_browse_btn, self.backdrop_clear_btn = self._grid_browse_row(
+            mg, 7, 0, "Backdrop:",
+            "Optional background image (PNG/JPEG/BMP)",
+            self._on_backdrop_browse,
+        )
 
         layout.addWidget(meta_grp)
 
@@ -491,14 +527,10 @@ class MainWindow(QMainWindow):
         rg.setContentsMargins(0, 0, 0, 0)
         rg.setSpacing(5)
         rg.setColumnStretch(1, 1)
-        rg.addWidget(QLabel("Key:"),   0, 0)
-        self.reg_key_edit = QLineEdit()
-        self.reg_key_edit.setPlaceholderText(r"SOFTWARE\MyCompany\MyApp")
-        rg.addWidget(self.reg_key_edit, 0, 1)
-        rg.addWidget(QLabel("Value:"), 1, 0)
-        self.reg_val_edit = QLineEdit()
-        self.reg_val_edit.setPlaceholderText("InstallPath  (leave blank for default)")
-        rg.addWidget(self.reg_val_edit, 1, 1)
+        self.reg_key_edit = self._grid_lineedit(rg, 0, 0, "Key:",
+            r"SOFTWARE\MyCompany\MyApp")
+        self.reg_val_edit = self._grid_lineedit(rg, 1, 0, "Value:",
+            "InstallPath  (leave blank for default)")
         self.reg_panel.hide()
         find_outer.addWidget(self.reg_panel)
 
@@ -510,14 +542,8 @@ class MainWindow(QMainWindow):
         ig.setColumnStretch(1, 1)
         self.ini_path_picker = FilePicker("INI file:", "open", "INI files (*.ini);;All files (*)")
         ig.addWidget(self.ini_path_picker, 0, 0, 1, 2)
-        ig.addWidget(QLabel("Section:"), 1, 0)
-        self.ini_section_edit = QLineEdit()
-        self.ini_section_edit.setPlaceholderText("Settings")
-        ig.addWidget(self.ini_section_edit, 1, 1)
-        ig.addWidget(QLabel("Key:"),     2, 0)
-        self.ini_key_edit = QLineEdit()
-        self.ini_key_edit.setPlaceholderText("InstallPath")
-        ig.addWidget(self.ini_key_edit, 2, 1)
+        self.ini_section_edit = self._grid_lineedit(ig, 1, 0, "Section:", "Settings")
+        self.ini_key_edit     = self._grid_lineedit(ig, 2, 0, "Key:",     "InstallPath")
         self.ini_panel.hide()
         find_outer.addWidget(self.ini_panel)
 
@@ -563,15 +589,10 @@ class MainWindow(QMainWindow):
         ag.addWidget(ef_btn_w, 1, 2)
 
         # run_before / run_after
-        ag.addWidget(QLabel("Run before:"), 2, 0)
-        self.run_before_edit = QLineEdit()
-        self.run_before_edit.setPlaceholderText("Command to run before patching (optional)")
-        ag.addWidget(self.run_before_edit, 2, 1, 1, 2)
-
-        ag.addWidget(QLabel("Run after:"), 3, 0)
-        self.run_after_edit = QLineEdit()
-        self.run_after_edit.setPlaceholderText("Command to run after patching (optional)")
-        ag.addWidget(self.run_after_edit, 3, 1, 1, 2)
+        self.run_before_edit = self._grid_lineedit(ag, 2, 0, "Run before:",
+            "Command to run before patching (optional)", colspan=2)
+        self.run_after_edit  = self._grid_lineedit(ag, 3, 0, "Run after:",
+            "Command to run after patching (optional)", colspan=2)
 
         # Backup
         ag.addWidget(QLabel("Backup:"), 4, 0)
@@ -645,26 +666,18 @@ class MainWindow(QMainWindow):
         ag.addWidget(cd_w, 8, 1, 1, 2)
 
         # Detect running exe
-        ag.addWidget(QLabel("Detect running:"), 9, 0)
-        self.detect_running_edit = QLineEdit()
-        self.detect_running_edit.setPlaceholderText("e.g. GameApp.exe — warn if running before patching")
+        self.detect_running_edit = self._grid_lineedit(ag, 9, 0, "Detect running:",
+            "e.g. GameApp.exe — warn if running before patching", colspan=2)
         self.detect_running_edit.setToolTip(
             "If the specified process is running when the user clicks Patch,\n"
             "a warning dialog will appear asking whether to continue."
         )
-        ag.addWidget(self.detect_running_edit, 9, 1, 1, 2)
 
-        # Run on startup
-        ag.addWidget(QLabel("Run on startup:"), 10, 0)
-        self.run_on_startup_edit = QLineEdit()
-        self.run_on_startup_edit.setPlaceholderText("Command to run when the patcher window opens (optional)")
-        ag.addWidget(self.run_on_startup_edit, 10, 1, 1, 2)
-
-        # Run on finish
-        ag.addWidget(QLabel("Run on finish:"), 11, 0)
-        self.run_on_finish_edit = QLineEdit()
-        self.run_on_finish_edit.setPlaceholderText("Command to run after successful patch + dialog (optional)")
-        ag.addWidget(self.run_on_finish_edit, 11, 1, 1, 2)
+        # Run on startup / Run on finish
+        self.run_on_startup_edit = self._grid_lineedit(ag, 10, 0, "Run on startup:",
+            "Command to run when the patcher window opens (optional)", colspan=2)
+        self.run_on_finish_edit  = self._grid_lineedit(ag, 11, 0, "Run on finish:",
+            "Command to run after successful patch + dialog (optional)", colspan=2)
 
         layout.addWidget(adv_grp)
         layout.addStretch()
@@ -743,92 +756,31 @@ class MainWindow(QMainWindow):
         ig.setColumnStretch(1, 1)
         ig.setColumnStretch(3, 1)
 
-        ig.addWidget(QLabel("App name:"),   0, 0)
-        self.rp_app_name_edit = QLineEdit()
-        self.rp_app_name_edit.setPlaceholderText("My Game")
-        ig.addWidget(self.rp_app_name_edit, 0, 1)
+        self.rp_app_name_edit     = self._grid_lineedit(ig, 0, 0, "App name:",     "My Game")
+        self.rp_app_note_edit     = self._grid_lineedit(ig, 0, 2, "App note:",     "Short subtitle (optional)")
+        self.rp_version_edit      = self._grid_lineedit(ig, 1, 0, "Version:",      "1.0.0")
+        self.rp_exe_version_edit  = self._grid_lineedit(ig, 1, 2, "Exe version:",  "1.0.0.0  (informational)")
+        self.rp_desc_edit         = self._grid_lineedit(ig, 2, 0, "Description:",  "Optional description shown in installer", colspan=3)
+        self.rp_copyright_edit    = self._grid_lineedit(ig, 3, 0, "Copyright:",    "© 2025 My Company")
+        self.rp_company_edit      = self._grid_lineedit(ig, 3, 2, "Company:",      "Publisher / company name")
+        self.rp_contact_edit      = self._grid_lineedit(ig, 4, 0, "Contact:",      "support@example.com or URL")
+        self.rp_window_title_edit = self._grid_lineedit(ig, 4, 2, "Window title:", "Installer title bar (defaults to app name)")
+        self.rp_exe_name_edit     = self._grid_lineedit(
+            ig, 5, 0, "Exe name:",
+            "Output exe filename stem — blank = auto (AppName_version_installer_x64.exe)",
+            colspan=3,
+        )
 
-        ig.addWidget(QLabel("App note:"),   0, 2)
-        self.rp_app_note_edit = QLineEdit()
-        self.rp_app_note_edit.setPlaceholderText("Short subtitle (optional)")
-        ig.addWidget(self.rp_app_note_edit, 0, 3)
-
-        ig.addWidget(QLabel("Version:"),    1, 0)
-        self.rp_version_edit = QLineEdit()
-        self.rp_version_edit.setPlaceholderText("1.0.0")
-        ig.addWidget(self.rp_version_edit, 1, 1)
-
-        ig.addWidget(QLabel("Exe version:"), 1, 2)
-        self.rp_exe_version_edit = QLineEdit()
-        self.rp_exe_version_edit.setPlaceholderText("1.0.0.0  (informational)")
-        ig.addWidget(self.rp_exe_version_edit, 1, 3)
-
-        ig.addWidget(QLabel("Description:"), 2, 0)
-        self.rp_desc_edit = QLineEdit()
-        self.rp_desc_edit.setPlaceholderText("Optional description shown in installer")
-        ig.addWidget(self.rp_desc_edit, 2, 1, 1, 3)
-
-        ig.addWidget(QLabel("Copyright:"),  3, 0)
-        self.rp_copyright_edit = QLineEdit()
-        self.rp_copyright_edit.setPlaceholderText("© 2025 My Company")
-        ig.addWidget(self.rp_copyright_edit, 3, 1)
-
-        ig.addWidget(QLabel("Company:"),    3, 2)
-        self.rp_company_edit = QLineEdit()
-        self.rp_company_edit.setPlaceholderText("Publisher / company name")
-        ig.addWidget(self.rp_company_edit, 3, 3)
-
-        ig.addWidget(QLabel("Contact:"),    4, 0)
-        self.rp_contact_edit = QLineEdit()
-        self.rp_contact_edit.setPlaceholderText("support@example.com or URL")
-        ig.addWidget(self.rp_contact_edit, 4, 1)
-
-        ig.addWidget(QLabel("Window title:"), 4, 2)
-        self.rp_window_title_edit = QLineEdit()
-        self.rp_window_title_edit.setPlaceholderText("Installer title bar (defaults to app name)")
-        ig.addWidget(self.rp_window_title_edit, 4, 3)
-
-        ig.addWidget(QLabel("Exe name:"),   5, 0)
-        self.rp_exe_name_edit = QLineEdit()
-        self.rp_exe_name_edit.setPlaceholderText(
-            "Output exe filename stem — blank = auto (AppName_version_installer_x64.exe)")
-        ig.addWidget(self.rp_exe_name_edit, 5, 1, 1, 3)
-
-        ig.addWidget(QLabel("Icon (.ico):"), 6, 0)
-        rp_icon_row = QHBoxLayout()
-        rp_icon_row.setSpacing(4)
-        self.rp_icon_edit = QLineEdit()
-        self.rp_icon_edit.setPlaceholderText("Optional — leave blank for default icon")
-        self.rp_icon_edit.setReadOnly(True)
-        rp_icon_row.addWidget(self.rp_icon_edit)
-        rp_icon_btn = QPushButton("Browse…")
-        rp_icon_btn.setFixedWidth(70)
-        rp_icon_btn.clicked.connect(self._on_rp_icon_browse)
-        rp_icon_row.addWidget(rp_icon_btn)
-        rp_icon_clr = QPushButton("✕")
-        rp_icon_clr.setFixedWidth(24)
-        rp_icon_clr.clicked.connect(lambda: self.rp_icon_edit.setText(""))
-        rp_icon_row.addWidget(rp_icon_clr)
-        rp_icon_w = QWidget(); rp_icon_w.setLayout(rp_icon_row)
-        ig.addWidget(rp_icon_w, 6, 1, 1, 3)
-
-        ig.addWidget(QLabel("Backdrop:"),   7, 0)
-        rp_bd_row = QHBoxLayout()
-        rp_bd_row.setSpacing(4)
-        self.rp_backdrop_edit = QLineEdit()
-        self.rp_backdrop_edit.setPlaceholderText("Optional background image (PNG/JPEG/BMP)")
-        self.rp_backdrop_edit.setReadOnly(True)
-        rp_bd_row.addWidget(self.rp_backdrop_edit)
-        rp_bd_btn = QPushButton("Browse…")
-        rp_bd_btn.setFixedWidth(70)
-        rp_bd_btn.clicked.connect(self._on_rp_backdrop_browse)
-        rp_bd_row.addWidget(rp_bd_btn)
-        rp_bd_clr = QPushButton("✕")
-        rp_bd_clr.setFixedWidth(24)
-        rp_bd_clr.clicked.connect(lambda: self.rp_backdrop_edit.setText(""))
-        rp_bd_row.addWidget(rp_bd_clr)
-        rp_bd_w = QWidget(); rp_bd_w.setLayout(rp_bd_row)
-        ig.addWidget(rp_bd_w, 7, 1, 1, 3)
+        self.rp_icon_edit, _, _ = self._grid_browse_row(
+            ig, 6, 0, "Icon (.ico):",
+            "Optional — leave blank for default icon",
+            self._on_rp_icon_browse,
+        )
+        self.rp_backdrop_edit, _, _ = self._grid_browse_row(
+            ig, 7, 0, "Backdrop:",
+            "Optional background image (PNG/JPEG/BMP)",
+            self._on_rp_backdrop_browse,
+        )
 
         layout.addWidget(info_grp)
 
@@ -887,21 +839,12 @@ class MainWindow(QMainWindow):
         pg.setSpacing(6)
         pg.setColumnStretch(1, 1)
 
-        pg.addWidget(QLabel("Registry key:"), 0, 0)
-        self.rp_registry_key_edit = QLineEdit()
-        self.rp_registry_key_edit.setPlaceholderText(
+        self.rp_registry_key_edit   = self._grid_lineedit(pg, 0, 0, "Registry key:",
             r"SOFTWARE\MyCompany\MyGame  — written to HKCU after install (for patch detection)")
-        pg.addWidget(self.rp_registry_key_edit, 0, 1)
-
-        pg.addWidget(QLabel("Run after install:"), 1, 0)
-        self.rp_run_after_edit = QLineEdit()
-        self.rp_run_after_edit.setPlaceholderText("Command to run after successful install (optional)")
-        pg.addWidget(self.rp_run_after_edit, 1, 1)
-
-        pg.addWidget(QLabel("Detect running:"), 2, 0)
-        self.rp_detect_running_edit = QLineEdit()
-        self.rp_detect_running_edit.setPlaceholderText("e.g. GameApp.exe — warn if running before install")
-        pg.addWidget(self.rp_detect_running_edit, 2, 1)
+        self.rp_run_after_edit      = self._grid_lineedit(pg, 1, 0, "Run after install:",
+            "Command to run after successful install (optional)")
+        self.rp_detect_running_edit = self._grid_lineedit(pg, 2, 0, "Detect running:",
+            "e.g. GameApp.exe — warn if running before install")
 
         pg.addWidget(QLabel("Min. free space:"), 3, 0)
         rp_fs_row = QHBoxLayout()
@@ -965,16 +908,10 @@ class MainWindow(QMainWindow):
         )
         pg.addWidget(self.rp_max_part_size_spin, 8, 1)
 
-        pg.addWidget(QLabel("Shortcut target:"), 9, 0)
-        self.rp_shortcut_target_edit = QLineEdit()
-        self.rp_shortcut_target_edit.setPlaceholderText(
+        self.rp_shortcut_target_edit = self._grid_lineedit(pg, 9, 0, "Shortcut target:",
             "Relative path to game exe within install dir  (e.g. Game.exe)")
-        pg.addWidget(self.rp_shortcut_target_edit, 9, 1)
-
-        pg.addWidget(QLabel("Shortcut name:"), 10, 0)
-        self.rp_shortcut_name_edit = QLineEdit()
-        self.rp_shortcut_name_edit.setPlaceholderText("Display name  (blank = use App Name)")
-        pg.addWidget(self.rp_shortcut_name_edit, 10, 1)
+        self.rp_shortcut_name_edit   = self._grid_lineedit(pg, 10, 0, "Shortcut name:",
+            "Display name  (blank = use App Name)")
 
         self.rp_shortcut_startmenu_chk = QCheckBox("Create Start Menu shortcut")
         self.rp_shortcut_startmenu_chk.setChecked(True)
@@ -1615,40 +1552,9 @@ class MainWindow(QMainWindow):
             if d:
                 components.append(d)
 
-        s = RepackSettings(
-            app_name             = self.rp_app_name_edit.text().strip(),
-            app_note             = self.rp_app_note_edit.text().strip(),
-            version              = self.rp_version_edit.text().strip(),
-            description          = self.rp_desc_edit.text().strip(),
-            copyright            = self.rp_copyright_edit.text().strip(),
-            contact              = self.rp_contact_edit.text().strip(),
-            company_info         = self.rp_company_edit.text().strip(),
-            window_title         = self.rp_window_title_edit.text().strip(),
-            installer_exe_name   = self.rp_exe_name_edit.text().strip(),
-            installer_exe_version= self.rp_exe_version_edit.text().strip(),
-            game_dir             = self.rp_game_picker.path,
-            output_dir           = self.rp_out_picker.path,
-            arch                 = "x64" if self.rp_arch_x64.isChecked() else "x86",
-            codec                = "zstd" if self.rp_codec_zstd.isChecked() else "lzma",
-            compression          = self.rp_comp_combo.currentData() or "max",
-            threads              = self.rp_threads_combo.currentData() or 1,
-            icon_path            = self.rp_icon_edit.text().strip(),
-            backdrop_path        = self.rp_backdrop_edit.text().strip(),
-            install_registry_key = self.rp_registry_key_edit.text().strip(),
-            run_after_install    = self.rp_run_after_edit.text().strip(),
-            detect_running_exe   = self.rp_detect_running_edit.text().strip(),
-            required_free_space_gb = self.rp_free_space_spin.value(),
-            close_delay          = self.rp_close_delay_spin.value(),
-            include_uninstaller  = self.rp_include_uninstaller_chk.isChecked(),
-            verify_crc32         = self.rp_verify_crc32_chk.isChecked(),
-            split_bin            = self.rp_split_bin_chk.isChecked(),
-            max_part_size_mb     = self.rp_max_part_size_spin.value(),
-            shortcut_target           = self.rp_shortcut_target_edit.text().strip(),
-            shortcut_name             = self.rp_shortcut_name_edit.text().strip(),
-            shortcut_create_startmenu = self.rp_shortcut_startmenu_chk.isChecked(),
-            shortcut_create_desktop   = self.rp_shortcut_desktop_chk.isChecked(),
-            components           = components,
-        )
+        kwargs = {f: collect() for f, (collect, _) in self._repack_bindings.items()}
+        kwargs["components"] = components
+        s = RepackSettings(**kwargs)
         if validate:
             errors = []
             if not s.app_name:
@@ -1668,96 +1574,115 @@ class MainWindow(QMainWindow):
         return s
 
     def _apply_repack_settings(self, s: RepackSettings):
-        self.rp_app_name_edit.setText(s.app_name)
-        self.rp_app_note_edit.setText(s.app_note)
-        self.rp_version_edit.setText(s.version)
-        self.rp_desc_edit.setText(s.description)
-        self.rp_copyright_edit.setText(s.copyright)
-        self.rp_contact_edit.setText(s.contact)
-        self.rp_company_edit.setText(s.company_info)
-        self.rp_window_title_edit.setText(s.window_title)
-        self.rp_exe_name_edit.setText(s.installer_exe_name)
-        self.rp_exe_version_edit.setText(s.installer_exe_version)
-        self.rp_game_picker.path = s.game_dir
-        self.rp_out_picker.path  = s.output_dir
-        self.rp_arch_x64.setChecked(s.arch == "x64")
-        self.rp_arch_x86.setChecked(s.arch == "x86")
-        self.rp_codec_lzma.setChecked(s.codec != "zstd")
-        self.rp_codec_zstd.setChecked(s.codec == "zstd")
-        self._on_rp_codec_changed()  # refresh quality combo for the loaded codec
-        for i in range(self.rp_comp_combo.count()):
-            if self.rp_comp_combo.itemData(i) == s.compression:
-                self.rp_comp_combo.setCurrentIndex(i)
-                break
-        for i in range(self.rp_threads_combo.count()):
-            if self.rp_threads_combo.itemData(i) == s.threads:
-                self.rp_threads_combo.setCurrentIndex(i)
-                break
-        self.rp_icon_edit.setText(s.icon_path)
-        self.rp_backdrop_edit.setText(s.backdrop_path)
-        self.rp_registry_key_edit.setText(s.install_registry_key)
-        self.rp_run_after_edit.setText(s.run_after_install)
-        self.rp_detect_running_edit.setText(s.detect_running_exe)
-        self.rp_free_space_spin.setValue(s.required_free_space_gb)
-        self.rp_close_delay_spin.setValue(s.close_delay)
-        self.rp_include_uninstaller_chk.setChecked(s.include_uninstaller)
-        self.rp_verify_crc32_chk.setChecked(s.verify_crc32)
-        self.rp_split_bin_chk.setChecked(s.split_bin)
-        self.rp_max_part_size_spin.setValue(s.max_part_size_mb)
-        self.rp_shortcut_target_edit.setText(s.shortcut_target)
-        self.rp_shortcut_name_edit.setText(s.shortcut_name)
-        self.rp_shortcut_startmenu_chk.setChecked(s.shortcut_create_startmenu)
-        self.rp_shortcut_desktop_chk.setChecked(s.shortcut_create_desktop)
+        # Codec radio binder fires before _on_rp_codec_changed which
+        # repopulates the quality combo for the codec — but the quality
+        # binder needs to run AFTER repopulation to find the right item.
+        # So: apply codec first, refresh, then apply the rest.
+        self._repack_bindings["codec"][1](s.codec)
+        self._on_rp_codec_changed()
+        for f, (_, apply) in self._repack_bindings.items():
+            if f == "codec":
+                continue
+            apply(getattr(s, f))
+
+        # Components — list widget needs explicit population.
         self.rp_comp_list.clear()
         for c in (s.components or []):
             item = QListWidgetItem(self._comp_item_text(c))
             item.setData(Qt.UserRole, c)
             self.rp_comp_list.addItem(item)
 
+    def _build_patch_bindings(self) -> None:
+        """Map ProjectSettings fields → (collect, apply) closures for the
+        patch-mode form.  Used by _collect_settings / _apply_settings.
+        Special cases (engine combo without UserRole data, three-way
+        find-method radio group, extra_files list, dependent combos that
+        need on-change handlers re-fired) are handled inline in the
+        collect/apply methods rather than via a binder."""
+        self._patch_bindings = {
+            "app_name":         _bind_lineedit(self.app_name_edit),
+            "app_note":         _bind_lineedit(self.app_note_edit),
+            "version":          _bind_lineedit(self.version_edit),
+            "description":      _bind_lineedit(self.desc_edit),
+            "copyright":        _bind_lineedit(self.copyright_edit),
+            "contact":          _bind_lineedit(self.contact_edit),
+            "company_info":     _bind_lineedit(self.company_info_edit),
+            "window_title":     _bind_lineedit(self.window_title_edit),
+            "patch_exe_name":   _bind_lineedit(self.patch_exe_name_edit),
+            "patch_exe_version":_bind_lineedit(self.patch_exe_version_edit),
+            "source_dir":       _bind_filepicker(self.src_picker),
+            "target_dir":       _bind_filepicker(self.tgt_picker),
+            "output_dir":       _bind_filepicker(self.out_picker),
+            "registry_key":     _bind_lineedit(self.reg_key_edit),
+            "registry_value":   _bind_lineedit(self.reg_val_edit),
+            "ini_path":         _bind_filepicker(self.ini_path_picker),
+            "ini_section":      _bind_lineedit(self.ini_section_edit),
+            "ini_key":          _bind_lineedit(self.ini_key_edit),
+            "arch":             _bind_radio_pair(self.arch_x64, "x64", "x86"),
+            "threads":          _bind_combo_data(self.threads_combo, default=1),
+            "compressor_quality": _bind_combo_data(self.quality_combo, default=DEFAULT_QUALITY),
+            "icon_path":        _bind_lineedit(self.icon_edit),
+            "extra_diff_args":  _bind_lineedit(self.extra_diff_args_edit),
+            "delete_extra_files": _bind_checkbox(self.delete_extra_chk),
+            "run_before":       _bind_lineedit(self.run_before_edit),
+            "run_after":        _bind_lineedit(self.run_after_edit),
+            "backup_at":        _bind_combo_data(self.backup_combo, default="same_folder"),
+            "backup_path":      _bind_lineedit(self.backup_path_edit),
+            "backdrop_path":    _bind_lineedit(self.backdrop_edit),
+            "close_delay":      _bind_spin(self.close_delay_spin),
+            "required_free_space_gb": _bind_spin(self.free_space_spin),
+            "preserve_timestamps":    _bind_checkbox(self.preserve_timestamps_chk),
+            "detect_running_exe":     _bind_lineedit(self.detect_running_edit),
+            "run_on_startup":   _bind_lineedit(self.run_on_startup_edit),
+            "run_on_finish":    _bind_lineedit(self.run_on_finish_edit),
+        }
+
+    def _build_repack_bindings(self) -> None:
+        """Map RepackSettings fields → (collect, apply) closures for the
+        repack-mode form.  See _build_patch_bindings for the conventions."""
+        self._repack_bindings = {
+            "app_name":             _bind_lineedit(self.rp_app_name_edit),
+            "app_note":             _bind_lineedit(self.rp_app_note_edit),
+            "version":              _bind_lineedit(self.rp_version_edit),
+            "description":          _bind_lineedit(self.rp_desc_edit),
+            "copyright":            _bind_lineedit(self.rp_copyright_edit),
+            "contact":              _bind_lineedit(self.rp_contact_edit),
+            "company_info":         _bind_lineedit(self.rp_company_edit),
+            "window_title":         _bind_lineedit(self.rp_window_title_edit),
+            "installer_exe_name":   _bind_lineedit(self.rp_exe_name_edit),
+            "installer_exe_version":_bind_lineedit(self.rp_exe_version_edit),
+            "game_dir":             _bind_filepicker(self.rp_game_picker),
+            "output_dir":           _bind_filepicker(self.rp_out_picker),
+            "arch":                 _bind_radio_pair(self.rp_arch_x64, "x64", "x86"),
+            "codec":                _bind_radio_pair(self.rp_codec_zstd, "zstd", "lzma"),
+            "compression":          _bind_combo_data(self.rp_comp_combo, default="max"),
+            "threads":              _bind_combo_data(self.rp_threads_combo, default=1),
+            "icon_path":            _bind_lineedit(self.rp_icon_edit),
+            "backdrop_path":        _bind_lineedit(self.rp_backdrop_edit),
+            "install_registry_key": _bind_lineedit(self.rp_registry_key_edit),
+            "run_after_install":    _bind_lineedit(self.rp_run_after_edit),
+            "detect_running_exe":   _bind_lineedit(self.rp_detect_running_edit),
+            "required_free_space_gb": _bind_spin(self.rp_free_space_spin),
+            "close_delay":          _bind_spin(self.rp_close_delay_spin),
+            "include_uninstaller":  _bind_checkbox(self.rp_include_uninstaller_chk),
+            "verify_crc32":         _bind_checkbox(self.rp_verify_crc32_chk),
+            "split_bin":            _bind_checkbox(self.rp_split_bin_chk),
+            "max_part_size_mb":     _bind_spin(self.rp_max_part_size_spin),
+            "shortcut_target":          _bind_lineedit(self.rp_shortcut_target_edit),
+            "shortcut_name":            _bind_lineedit(self.rp_shortcut_name_edit),
+            "shortcut_create_startmenu":_bind_checkbox(self.rp_shortcut_startmenu_chk),
+            "shortcut_create_desktop":  _bind_checkbox(self.rp_shortcut_desktop_chk),
+        }
+
     def _collect_settings(self, validate: bool = True) -> Optional[ProjectSettings]:
-        s = ProjectSettings(
-            app_name      = self.app_name_edit.text().strip(),
-            app_note      = self.app_note_edit.text().strip(),
-            version       = self.version_edit.text().strip(),
-            description   = self.desc_edit.text().strip(),
-            copyright     = self.copyright_edit.text().strip(),
-            contact       = self.contact_edit.text().strip(),
-            company_info  = self.company_info_edit.text().strip(),
-            window_title  = self.window_title_edit.text().strip(),
-            patch_exe_name    = self.patch_exe_name_edit.text().strip(),
-            patch_exe_version = self.patch_exe_version_edit.text().strip(),
-            source_dir    = self.src_picker.path,
-            target_dir    = self.tgt_picker.path,
-            output_dir    = self.out_picker.path,
-            engine        = self._engine_key(),
-            compression   = self._compression_key(),
-            verify_method = self._verify_key(),
-            find_method   = self._find_method_key(),
-            registry_key  = self.reg_key_edit.text().strip(),
-            registry_value= self.reg_val_edit.text().strip(),
-            ini_path      = self.ini_path_picker.path,
-            ini_section   = self.ini_section_edit.text().strip(),
-            ini_key       = self.ini_key_edit.text().strip(),
-            arch               = "x64" if self.arch_x64.isChecked() else "x86",
-            threads            = self.threads_combo.currentData(),
-            compressor_quality = self.quality_combo.currentData() or DEFAULT_QUALITY,
-            icon_path          = self.icon_edit.text().strip(),
-            # New fields
-            extra_diff_args    = self.extra_diff_args_edit.text().strip(),
-            delete_extra_files = self.delete_extra_chk.isChecked(),
-            run_before         = self.run_before_edit.text().strip(),
-            run_after          = self.run_after_edit.text().strip(),
-            backup_at          = self.backup_combo.currentData() or "same_folder",
-            backup_path        = self.backup_path_edit.text().strip(),
-            backdrop_path      = self.backdrop_edit.text().strip(),
-            close_delay            = self.close_delay_spin.value(),
-            required_free_space_gb = self.free_space_spin.value(),
-            preserve_timestamps    = self.preserve_timestamps_chk.isChecked(),
-            detect_running_exe     = self.detect_running_edit.text().strip(),
-            run_on_startup         = self.run_on_startup_edit.text().strip(),
-            run_on_finish          = self.run_on_finish_edit.text().strip(),
-            extra_files        = self._collect_extra_files(),
-        )
+        kwargs = {f: collect() for f, (collect, _) in self._patch_bindings.items()}
+        # Special cases not covered by the binder dict:
+        kwargs["engine"]        = self._engine_key()
+        kwargs["compression"]   = self._compression_key()
+        kwargs["verify_method"] = self._verify_key()
+        kwargs["find_method"]   = self._find_method_key()
+        kwargs["extra_files"]   = self._collect_extra_files()
+        s = ProjectSettings(**kwargs)
         if validate:
             errors = []
             if not s.app_name:
@@ -1784,77 +1709,37 @@ class MainWindow(QMainWindow):
         return s
 
     def _apply_settings(self, s: ProjectSettings):
-        self.app_name_edit.setText(s.app_name)
-        self.app_note_edit.setText(s.app_note)
-        self.version_edit.setText(s.version)
-        self.patch_exe_version_edit.setText(s.patch_exe_version)
-        self.desc_edit.setText(s.description)
-        self.copyright_edit.setText(s.copyright)
-        self.contact_edit.setText(s.contact)
-        self.company_info_edit.setText(s.company_info)
-        self.window_title_edit.setText(s.window_title)
-        self.patch_exe_name_edit.setText(s.patch_exe_name)
-        self.src_picker.path = s.source_dir
-        self.tgt_picker.path = s.target_dir
-        self.out_picker.path = s.output_dir
-
+        # Engine combo has no UserRole data — set by index, then fire the
+        # on-change handler so the compression combo repopulates before the
+        # compression binder applies the saved value.
         engine_map = {"hdiffpatch": 0, "xdelta3": 1, "jojodiff": 2}
         self.engine_combo.setCurrentIndex(engine_map.get(s.engine, 0))
         self._on_engine_changed()
 
+        # Backup combo's on-change handler enables/disables the path field;
+        # the binder below sets the index, but we still need the side effect.
+        for f, (_, apply) in self._patch_bindings.items():
+            apply(getattr(s, f))
+        self._on_backup_changed()
+
+        # Compression combo lookup — falls back to text match if the saved
+        # preset key isn't present as UserRole data (legacy projects).
         for i in range(self.comp_combo.count()):
             if self.comp_combo.itemData(i) == s.compression or \
                self.comp_combo.itemText(i) == s.compression:
                 self.comp_combo.setCurrentIndex(i)
                 break
 
+        # Combos without UserRole data — set by index from a known map.
         verify_map = {"crc32c": 0, "md5": 1, "filesize": 2}
         self.verify_combo.setCurrentIndex(verify_map.get(s.verify_method, 0))
 
+        # Three-way radio group.
         self.find_manual.setChecked(s.find_method == "manual")
         self.find_registry.setChecked(s.find_method == "registry")
         self.find_ini.setChecked(s.find_method == "ini")
 
-        self.reg_key_edit.setText(s.registry_key)
-        self.reg_val_edit.setText(s.registry_value)
-        self.ini_path_picker.path = s.ini_path
-        self.ini_section_edit.setText(s.ini_section)
-        self.ini_key_edit.setText(s.ini_key)
-
-        self.arch_x64.setChecked(s.arch == "x64")
-        self.arch_x86.setChecked(s.arch == "x86")
-
-        self.icon_edit.setText(s.icon_path)
-
-        for i in range(self.threads_combo.count()):
-            if self.threads_combo.itemData(i) == s.threads:
-                self.threads_combo.setCurrentIndex(i)
-                break
-
-        for i in range(self.quality_combo.count()):
-            if self.quality_combo.itemData(i) == s.compressor_quality:
-                self.quality_combo.setCurrentIndex(i)
-                break
-
-        # New fields
-        self.extra_diff_args_edit.setText(s.extra_diff_args)
-        self.delete_extra_chk.setChecked(s.delete_extra_files)
-        self.run_before_edit.setText(s.run_before)
-        self.run_after_edit.setText(s.run_after)
-
-        backup_map = {"same_folder": 0, "custom": 1, "disabled": 2}
-        self.backup_combo.setCurrentIndex(backup_map.get(s.backup_at, 0))
-        self._on_backup_changed()
-        self.backup_path_edit.setText(s.backup_path)
-
-        self.backdrop_edit.setText(s.backdrop_path)
-        self.preserve_timestamps_chk.setChecked(s.preserve_timestamps)
-        self.free_space_spin.setValue(s.required_free_space_gb)
-        self.close_delay_spin.setValue(s.close_delay)
-        self.detect_running_edit.setText(s.detect_running_exe)
-        self.run_on_startup_edit.setText(s.run_on_startup)
-        self.run_on_finish_edit.setText(s.run_on_finish)
-
+        # Extra files — list widget needs explicit population.
         self.extra_files_list.clear()
         for ef in (s.extra_files or []):
             src  = ef.get("src", "")

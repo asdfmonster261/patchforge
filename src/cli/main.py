@@ -200,45 +200,11 @@ def _cmd_build(args):
     else:
         settings = ProjectSettings()
 
-    # Apply flag overrides
-    if args.source_dir:     settings.source_dir    = args.source_dir
-    if args.target_dir:     settings.target_dir    = args.target_dir
-    if args.output_dir:     settings.output_dir    = args.output_dir
-    if args.app_name:       settings.app_name      = args.app_name
-    if args.app_note:       settings.app_note      = args.app_note
-    if args.version:        settings.version       = args.version
-    if args.description:    settings.description   = args.description
-    if args.copyright:      settings.copyright     = args.copyright
-    if args.contact:        settings.contact       = args.contact
-    if args.company_info:   settings.company_info  = args.company_info
-    if args.window_title:   settings.window_title  = args.window_title
-    if args.patch_exe_name:    settings.patch_exe_name    = args.patch_exe_name
-    if args.patch_exe_version: settings.patch_exe_version = args.patch_exe_version
-    if args.engine:         settings.engine        = args.engine
-    if args.compression:    settings.compression   = args.compression
-    if args.threads:              settings.threads            = args.threads
-    if args.compressor_quality:   settings.compressor_quality = args.compressor_quality
-    if args.verify_method:  settings.verify_method = args.verify_method
-    if args.find_method:    settings.find_method   = args.find_method
-    if args.registry_key:   settings.registry_key  = args.registry_key
-    if args.registry_value: settings.registry_value = args.registry_value
-    if args.ini_path:       settings.ini_path      = args.ini_path
-    if args.ini_section:    settings.ini_section   = args.ini_section
-    if args.ini_key:        settings.ini_key       = args.ini_key
-    if args.arch:           settings.arch          = args.arch
-    if args.icon_path:      settings.icon_path     = args.icon_path
-    if args.extra_diff_args:    settings.extra_diff_args    = args.extra_diff_args
+    _apply_truthy(settings, args, _BUILD_FIELDS)
     if args.delete_extra_files is not None:
-                            settings.delete_extra_files  = args.delete_extra_files
+        settings.delete_extra_files = args.delete_extra_files
     if args.preserve_timestamps:
-                            settings.preserve_timestamps = True
-    if args.run_on_startup: settings.run_on_startup = args.run_on_startup
-    if args.run_before:     settings.run_before     = args.run_before
-    if args.run_after:      settings.run_after      = args.run_after
-    if args.run_on_finish:  settings.run_on_finish  = args.run_on_finish
-    if args.backup_at:      settings.backup_at      = args.backup_at
-    if args.backup_path:    settings.backup_path    = args.backup_path
-    if args.backdrop_path:  settings.backdrop_path  = args.backdrop_path
+        settings.preserve_timestamps = True
     if args.extra_files:
         parsed = []
         for entry in args.extra_files:
@@ -324,29 +290,7 @@ def _cmd_new_project(args):
     from src.core.project import ProjectSettings, save
 
     s = ProjectSettings()
-    if args.app_name:      s.app_name      = args.app_name
-    if args.app_note:      s.app_note      = args.app_note
-    if args.version:       s.version       = args.version
-    if args.description:   s.description   = args.description
-    if args.copyright:     s.copyright     = args.copyright
-    if args.contact:       s.contact       = args.contact
-    if args.company_info:  s.company_info  = args.company_info
-    if args.window_title:  s.window_title  = args.window_title
-    if args.patch_exe_name:    s.patch_exe_name    = args.patch_exe_name
-    if args.patch_exe_version: s.patch_exe_version = args.patch_exe_version
-    if args.engine:        s.engine        = args.engine
-    if args.compression:   s.compression   = args.compression
-    if args.threads:              s.threads            = args.threads
-    if args.compressor_quality:   s.compressor_quality = args.compressor_quality
-    if args.verify_method: s.verify_method = args.verify_method
-    if args.arch:          s.arch          = args.arch
-    if args.icon_path:     s.icon_path     = args.icon_path
-    if args.extra_diff_args:   s.extra_diff_args   = args.extra_diff_args
-    if args.run_before:        s.run_before        = args.run_before
-    if args.run_after:         s.run_after         = args.run_after
-    if args.backup_at:         s.backup_at         = args.backup_at
-    if args.backup_path:       s.backup_path       = args.backup_path
-    if args.backdrop_path:     s.backdrop_path     = args.backdrop_path
+    _apply_truthy(s, args, _NEW_PROJECT_FIELDS)
 
     out = Path(args.output)
     save(s, out)
@@ -513,37 +457,14 @@ def _cmd_repack(args):
     else:
         settings = RepackSettings()
 
-    # Apply flag overrides
-    if args.game_dir:              settings.game_dir              = args.game_dir
-    if args.output_dir:            settings.output_dir            = args.output_dir
-    if args.app_name:              settings.app_name              = args.app_name
-    if args.app_note:              settings.app_note              = args.app_note
-    if args.version:               settings.version               = args.version
-    if args.description:           settings.description           = args.description
-    if args.copyright:             settings.copyright             = args.copyright
-    if args.contact:               settings.contact               = args.contact
-    if args.company_info:          settings.company_info          = args.company_info
-    if args.window_title:          settings.window_title          = args.window_title
-    if args.installer_exe_name:    settings.installer_exe_name    = args.installer_exe_name
-    if args.installer_exe_version: settings.installer_exe_version = args.installer_exe_version
-    if args.codec:                 settings.codec                 = args.codec
-    if args.compression:           settings.compression           = args.compression
-    if args.threads:               settings.threads               = args.threads
-    if args.arch:                  settings.arch                  = args.arch
-    if args.icon_path:             settings.icon_path             = args.icon_path
-    if args.backdrop_path:         settings.backdrop_path         = args.backdrop_path
-    if args.install_registry_key:  settings.install_registry_key  = args.install_registry_key
-    if args.run_after_install:     settings.run_after_install     = args.run_after_install
-    if args.detect_running_exe:    settings.detect_running_exe    = args.detect_running_exe
-    if args.close_delay is not None:            settings.close_delay            = args.close_delay
-    if args.required_free_space_gb is not None: settings.required_free_space_gb = args.required_free_space_gb
-    if args.no_uninstaller:                     settings.include_uninstaller    = False
-    if args.no_verify_crc32:                    settings.verify_crc32           = False
-    if args.split_bin:                          settings.split_bin              = True
-    if args.shortcut_target:                    settings.shortcut_target        = args.shortcut_target
-    if args.shortcut_name:                      settings.shortcut_name          = args.shortcut_name
-    if args.shortcut_desktop is not None:       settings.shortcut_create_desktop   = args.shortcut_desktop
-    if args.shortcut_startmenu is not None:     settings.shortcut_create_startmenu = args.shortcut_startmenu
+    _apply_truthy(settings, args, _REPACK_FIELDS)
+    _apply_optional(settings, args, ("close_delay", "required_free_space_gb",
+                                     "max_part_size_mb"))
+    if args.no_uninstaller:                  settings.include_uninstaller       = False
+    if args.no_verify_crc32:                 settings.verify_crc32              = False
+    if args.split_bin:                       settings.split_bin                 = True
+    if args.shortcut_desktop is not None:    settings.shortcut_create_desktop   = args.shortcut_desktop
+    if args.shortcut_startmenu is not None:  settings.shortcut_create_startmenu = args.shortcut_startmenu
 
     # Parse --component flags
     if args.components_json:
@@ -650,35 +571,12 @@ def _cmd_new_repack_project(args):
     from src.core.repack_project import RepackSettings, save as save_repack
 
     s = RepackSettings()
-    if args.app_name:             s.app_name             = args.app_name
-    if args.app_note:             s.app_note             = args.app_note
-    if args.version:              s.version              = args.version
-    if args.description:          s.description          = args.description
-    if args.copyright:            s.copyright            = args.copyright
-    if args.contact:              s.contact              = args.contact
-    if args.company_info:         s.company_info         = args.company_info
-    if args.window_title:         s.window_title         = args.window_title
-    if args.installer_exe_name:   s.installer_exe_name   = args.installer_exe_name
-    if args.installer_exe_version: s.installer_exe_version = args.installer_exe_version
-    if args.game_dir:             s.game_dir             = args.game_dir
-    if args.output_dir:           s.output_dir           = args.output_dir
-    if args.codec:                s.codec                = args.codec
-    if args.compression:          s.compression          = args.compression
-    if args.threads:              s.threads              = args.threads
-    if args.arch:                 s.arch                 = args.arch
-    if args.icon_path:            s.icon_path            = args.icon_path
-    if args.backdrop_path:        s.backdrop_path        = args.backdrop_path
-    if args.install_registry_key: s.install_registry_key = args.install_registry_key
-    if args.run_after_install:    s.run_after_install    = args.run_after_install
-    if args.detect_running_exe:   s.detect_running_exe   = args.detect_running_exe
-    if args.close_delay is not None:            s.close_delay            = args.close_delay
-    if args.required_free_space_gb is not None: s.required_free_space_gb = args.required_free_space_gb
-    if args.no_uninstaller:                     s.include_uninstaller    = False
-    if args.no_verify_crc32:                    s.verify_crc32           = False
-    if args.shortcut_target:                    s.shortcut_target        = args.shortcut_target
-    if args.shortcut_name:                      s.shortcut_name          = args.shortcut_name
-    if args.shortcut_desktop is not None:       s.shortcut_create_desktop   = args.shortcut_desktop
-    if args.shortcut_startmenu is not None:     s.shortcut_create_startmenu = args.shortcut_startmenu
+    _apply_truthy(s, args, _NEW_REPACK_PROJECT_FIELDS)
+    _apply_optional(s, args, ("close_delay", "required_free_space_gb"))
+    if args.no_uninstaller:                  s.include_uninstaller       = False
+    if args.no_verify_crc32:                 s.verify_crc32              = False
+    if args.shortcut_desktop is not None:    s.shortcut_create_desktop   = args.shortcut_desktop
+    if args.shortcut_startmenu is not None:  s.shortcut_create_startmenu = args.shortcut_startmenu
     if args.components_json:
         parsed = []
         for raw in args.components_json:
@@ -750,3 +648,82 @@ def _die(msg: str):
 
 def _warn(msg: str):
     print(f"warning: {msg}", file=sys.stderr)
+
+
+def _apply_truthy(settings, args, names):
+    """For each name, copy args.<name> → settings.<name> when args.<name> is
+    truthy. Names are listed once instead of one `if` line per field; values
+    that should override on falsy (0, False, '') belong in _apply_optional."""
+    for name in names:
+        v = getattr(args, name, None)
+        if v:
+            setattr(settings, name, v)
+
+
+def _apply_optional(settings, args, names):
+    """Same as _apply_truthy but tests `is not None` so 0 / False / '' can
+    override existing project values where those are meaningful."""
+    for name in names:
+        v = getattr(args, name, None)
+        if v is not None:
+            setattr(settings, name, v)
+
+
+def _apply_renamed(settings, args, mapping):
+    """For each (arg_attr, settings_attr), copy when the arg is truthy.
+    Use this when the CLI flag dest differs from the settings field name."""
+    for arg_attr, settings_attr in mapping:
+        v = getattr(args, arg_attr, None)
+        if v:
+            setattr(settings, settings_attr, v)
+
+
+# Flag/field name lists for _apply_truthy. Booleans with paired --flag /
+# --no-flag args are handled inline in their command functions, since the
+# semantics need is-not-None checks.
+
+_BUILD_FIELDS = (
+    "source_dir", "target_dir", "output_dir",
+    "app_name", "app_note", "version", "description", "copyright",
+    "contact", "company_info", "window_title",
+    "patch_exe_name", "patch_exe_version",
+    "engine", "compression", "threads", "compressor_quality",
+    "verify_method", "find_method",
+    "registry_key", "registry_value",
+    "ini_path", "ini_section", "ini_key",
+    "arch", "icon_path", "extra_diff_args",
+    "run_on_startup", "run_before", "run_after", "run_on_finish",
+    "backup_at", "backup_path", "backdrop_path",
+)
+
+_NEW_PROJECT_FIELDS = (
+    "app_name", "app_note", "version", "description", "copyright",
+    "contact", "company_info", "window_title",
+    "patch_exe_name", "patch_exe_version",
+    "engine", "compression", "threads", "compressor_quality",
+    "verify_method", "arch", "icon_path", "extra_diff_args",
+    "run_before", "run_after",
+    "backup_at", "backup_path", "backdrop_path",
+)
+
+_REPACK_FIELDS = (
+    "game_dir", "output_dir",
+    "app_name", "app_note", "version", "description", "copyright",
+    "contact", "company_info", "window_title",
+    "installer_exe_name", "installer_exe_version",
+    "codec", "compression", "threads", "arch",
+    "icon_path", "backdrop_path",
+    "install_registry_key", "run_after_install", "detect_running_exe",
+    "shortcut_target", "shortcut_name",
+)
+
+_NEW_REPACK_PROJECT_FIELDS = (
+    "app_name", "app_note", "version", "description", "copyright",
+    "contact", "company_info", "window_title",
+    "installer_exe_name", "installer_exe_version",
+    "game_dir", "output_dir",
+    "codec", "compression", "threads", "arch",
+    "icon_path", "backdrop_path",
+    "install_registry_key", "run_after_install", "detect_running_exe",
+    "shortcut_target", "shortcut_name",
+)
