@@ -242,8 +242,14 @@ def _cmd_build(args):
     if args.extra_files:
         parsed = []
         for entry in args.extra_files:
-            if ":" in entry:
-                src, dest = entry.split(":", 1)
+            # On Windows the SRC may begin with a drive letter "X:"; skip the
+            # first 2 chars when scanning for the SRC:DEST separator so the
+            # drive colon isn't mistaken for it.
+            sep_offset = 2 if (len(entry) >= 2 and entry[0].isalpha()
+                               and entry[1] == ":") else 0
+            sep_idx = entry.find(":", sep_offset)
+            if sep_idx >= 0:
+                src, dest = entry[:sep_idx], entry[sep_idx + 1:]
             else:
                 src, dest = entry, Path(entry).name
             parsed.append({"src": src.strip(), "dest": dest.strip()})

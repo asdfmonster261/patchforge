@@ -122,7 +122,7 @@ static long jdiff_read_len(FILE *f)
  *   ESC then next-byte (via the lbEsc flag for unknown-opcode escapes).
  */
 static int apply_jojodiff(const char *old_path, const unsigned char *patch_data,
-                            uint32_t patch_len, const char *new_path)
+                            size_t patch_len, const char *new_path)
 {
     /* Write patch to temp file so we can use FILE* streaming */
     char tmp_dir[MAX_PATH], tmp_patch[MAX_PATH];
@@ -247,7 +247,7 @@ struct DirPatchCtx {
 };
 
 static int jojo_apply_entry(int op, const char *rel_path,
-                              const unsigned char *data, uint32_t data_len,
+                              const unsigned char *data, uint64_t data_len,
                               void *userdata)
 {
     struct DirPatchCtx *ctx = (struct DirPatchCtx *)userdata;
