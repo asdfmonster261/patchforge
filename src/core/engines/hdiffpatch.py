@@ -10,6 +10,7 @@ All sets use stream mode; block size decreases for finer matching:
   Set1 64k → Set2 16k → Set3 4k → Set4 1k → Set5 640b → Set6 64b
 """
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -110,8 +111,11 @@ class HDiffPatchEngine(PatchEngine):
             compressor_quality, qualities[DEFAULT_QUALITY]
         )
 
-        src_arg = str(source).rstrip("/") + "/"
-        tgt_arg = str(target).rstrip("/") + "/"
+        # hdiffz needs a trailing separator to recognise the arg as a directory.
+        # Strip both kinds of separator before re-appending the platform-native
+        # one so the result is correct on Windows ("\") and Linux ("/").
+        src_arg = str(source).rstrip("/\\") + os.sep
+        tgt_arg = str(target).rstrip("/\\") + os.sep
         thread_flag = [f"-p-{threads}"] if threads > 1 else []
         extra = shlex.split(extra_diff_args) if extra_diff_args else []
         cmd = ([str(self._binary()), "-f"]

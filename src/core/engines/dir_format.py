@@ -1,16 +1,19 @@
 """
 PFMD container format — directory-mode patches for xdelta3 and JojoDiff.
 
-Wire format:
+Wire format (version 2):
   4 bytes  magic "PFMD"
-  1 byte   version = 1
+  1 byte   version = 2
   4 bytes  LE uint32 num_entries
   entries:
     1 byte   op  (0=delete, 1=patch, 2=new-file)
     2 bytes  LE uint16 path_len
     N bytes  path (UTF-8, forward slashes, no leading slash)
-    4 bytes  LE uint32 data_len (0 for delete)
+    8 bytes  LE uint64 data_len (0 for delete)
     N bytes  data  (engine patch bytes for op=1, raw file content for op=2)
+
+Version 2 widened data_len from uint32 to uint64 so OP_NEW entries for files
+larger than 4 GB no longer overflow.
 
 Matching C parser: stub/dir_patch_format.h
 """
@@ -21,12 +24,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
+from ..fmt import files_equal
+
 OP_DELETE = 0
 OP_PATCH  = 1
 OP_NEW    = 2
 
 _MAGIC   = b"PFMD"
-_VERSION = 1
+_VERSION = 2
 
 
 def build(
@@ -67,10 +72,12 @@ def build(
         elif not in_src and in_tgt:
             entries.append((OP_NEW, rel, tgt_files[rel].read_bytes()))
         else:
-            if src_files[rel].stat().st_size == tgt_files[rel].stat().st_size and \
-               src_files[rel].read_bytes() == tgt_files[rel].read_bytes():
+            src_f = src_files[rel]
+            tgt_f = tgt_files[rel]
+            if src_f.stat().st_size == tgt_f.stat().st_size and \
+               files_equal(src_f, tgt_f):
                 continue
-            patch_jobs.append((rel, src_files[rel], tgt_files[rel]))
+            patch_jobs.append((rel, src_f, tgt_f))
 
     # Run patch jobs — parallel if workers > 1, sequential otherwise.
     if workers > 1 and patch_jobs:
@@ -97,6 +104,6 @@ def build(
             path_bytes = rel_path.encode("utf-8")
             fh.write(struct.pack("<BH", op, len(path_bytes)))
             fh.write(path_bytes)
-            fh.write(struct.pack("<I", len(data)))
+            fh.write(struct.pack("<Q", len(data)))
             if data:
                 fh.write(data)

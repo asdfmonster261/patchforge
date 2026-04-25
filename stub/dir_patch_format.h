@@ -1,16 +1,20 @@
 /*
  * dir_patch_format.h — PFMD container parser for xdelta3 / JojoDiff directory patches.
  *
- * Wire format:
+ * Wire format (version 2):
  *   4 bytes  magic "PFMD"
- *   1 byte   version = 1
+ *   1 byte   version = 2
  *   4 bytes  LE uint32 num_entries
  *   entries:
  *     1 byte   op  (0=delete, 1=patch, 2=new-file)
  *     2 bytes  LE uint16 path_len
  *     N bytes  path (UTF-8 encoded, forward slashes, no leading slash)
- *     4 bytes  LE uint32 data_len (0 for delete)
+ *     8 bytes  LE uint64 data_len (0 for delete)
  *     N bytes  data (patch bytes for op=1, raw content for op=2)
+ *
+ * Version 2 widened data_len from uint32 to uint64 so OP_NEW entries for
+ * files larger than 4 GB no longer overflow.  This parser refuses earlier
+ * versions; rebuild the prebuilt stubs whenever you bump the format.
  */
 #ifndef DIR_PATCH_FORMAT_H
 #define DIR_PATCH_FORMAT_H
@@ -23,7 +27,18 @@
 #define PFMD_OP_DELETE  0
 #define PFMD_OP_PATCH   1
 #define PFMD_OP_NEW     2
+#define PFMD_VERSION    2
 
+static inline uint64_t pfmd_u64le(const unsigned char *p) {
+    return (uint64_t)p[0]
+         | ((uint64_t)p[1] <<  8)
+         | ((uint64_t)p[2] << 16)
+         | ((uint64_t)p[3] << 24)
+         | ((uint64_t)p[4] << 32)
+         | ((uint64_t)p[5] << 40)
+         | ((uint64_t)p[6] << 48)
+         | ((uint64_t)p[7] << 56);
+}
 static inline uint32_t pfmd_u32le(const unsigned char *p) {
     return (uint32_t)p[0]
          | ((uint32_t)p[1] <<  8)
@@ -46,7 +61,7 @@ static inline uint16_t pfmd_u16le(const unsigned char *p) {
  * Return 1 to continue iterating, 0 to stop with failure.
  */
 typedef int (*pfmd_entry_fn)(int op, const char *rel_path,
-                              const unsigned char *data, uint32_t data_len,
+                              const unsigned char *data, uint64_t data_len,
                               void *userdata);
 
 /* Iterate over a PFMD container in memory, invoking cb for each entry. */
@@ -55,7 +70,7 @@ static int pfmd_iterate(const unsigned char *buf, size_t buf_len,
 {
     if (buf_len < 9) return 0;
     if (memcmp(buf, "PFMD", 4) != 0) return 0;
-    /* buf[4] = version byte — currently ignored */
+    if (buf[4] != PFMD_VERSION) return 0;
     const unsigned char *p   = buf + 5;
     const unsigned char *end = buf + buf_len;
     if (p + 4 > end) return 0;
@@ -74,9 +89,10 @@ static int pfmd_iterate(const unsigned char *buf, size_t buf_len,
         for (int j = 0; j < (int)path_len; j++)
             if (rel_path[j] == '/') rel_path[j] = '\\';
         p += path_len;
-        if (p + 4 > end) return 0;
-        uint32_t data_len = pfmd_u32le(p); p += 4;
-        if (p + data_len > end) return 0;
+        if (p + 8 > end) return 0;
+        uint64_t data_len = pfmd_u64le(p); p += 8;
+        /* Bounds-check additively to avoid overflow in (p + data_len). */
+        if (data_len > (uint64_t)(end - p)) return 0;
         const unsigned char *data = (data_len > 0) ? p : NULL;
         p += data_len;
 

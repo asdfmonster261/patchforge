@@ -1,6 +1,21 @@
-"""Shared formatting + CPU helpers used by both core, CLI, and GUI."""
+"""Shared formatting + CPU + IO helpers used by core, CLI, and GUI."""
 
 import os
+from pathlib import Path
+
+
+def files_equal(a: Path, b: Path, chunk_size: int = 1024 * 1024) -> bool:
+    """Stream-compare two files chunk by chunk. Used to detect whether two
+    same-sized files have identical contents without loading either fully
+    into memory — important for multi-GB game assets."""
+    with open(a, "rb") as fa, open(b, "rb") as fb:
+        while True:
+            ca = fa.read(chunk_size)
+            cb = fb.read(chunk_size)
+            if ca != cb:
+                return False
+            if not ca:
+                return True
 
 
 def format_size(n: int) -> str:
