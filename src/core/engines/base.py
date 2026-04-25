@@ -1,11 +1,14 @@
 """Abstract base class for all patch engines."""
 
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from ..compression import STUB_FULL_REQUIRED
+
+EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
 
 
 @dataclass
