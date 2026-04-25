@@ -8,6 +8,7 @@ Steps:
   4. Clean up temp files
 """
 
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,8 @@ from .engines import HDiffPatchEngine, JojoDiffEngine, XDelta3Engine, PatchEngin
 from .exe_packager import package
 from .project import ProjectSettings
 
-ENGINE_DIR = Path(__file__).parent.parent.parent / "engines" / "linux-x64"
+_ENGINE_ARCH = "win-x64" if sys.platform == "win32" else "linux-x64"
+ENGINE_DIR = Path(__file__).parent.parent.parent / "engines" / _ENGINE_ARCH
 
 _ENGINE_MAP = {
     "hdiffpatch": HDiffPatchEngine,
