@@ -98,6 +98,8 @@ def _parse_ico(data: bytes) -> list[dict]:
     if len(data) < 6:
         raise ValueError("Not a valid .ico file (too short)")
     reserved, img_type, count = struct.unpack_from("<HHH", data, 0)
+    if reserved != 0:
+        raise ValueError(f"Not a valid .ico file (reserved={reserved}, expected 0)")
     if img_type != 1:
         raise ValueError(f"Not an icon file (type={img_type})")
     images = []
@@ -105,6 +107,11 @@ def _parse_ico(data: bytes) -> list[dict]:
         off = 6 + i * 16
         w, h, color_count, res, planes, bit_count, byte_count, img_off = \
             struct.unpack_from("<BBBBHHiI", data, off)
+        if img_off < 0 or byte_count < 0 or img_off + byte_count > len(data):
+            raise ValueError(
+                f"Icon image #{i} out of range (offset={img_off}, "
+                f"size={byte_count}, file_size={len(data)})"
+            )
         # width/height of 0 means 256
         img = {
             "width":       w,
@@ -295,13 +302,15 @@ def inject(pe_bytes: bytes, ico_path: Path) -> bytes:
 
     # Verify there's room for a new section header
     new_hdr_off = sect_tbl_off + num_sections * 40
-    # First section's raw data starts here (header area ends)
-    min_raw = min(
+    # First section's raw data starts here (header area ends).
+    # If every section has PointerToRawData == 0 there is no overlap to
+    # check — the section table itself is the only constraint.
+    raw_starts = [
         struct.unpack_from("<I", buf, sect_tbl_off + i * 40 + 20)[0]
         for i in range(num_sections)
-        if struct.unpack_from("<I", buf, sect_tbl_off + i * 40 + 20)[0] > 0
-    )
-    if new_hdr_off + 40 > min_raw:
+    ]
+    raw_starts = [r for r in raw_starts if r > 0]
+    if raw_starts and new_hdr_off + 40 > min(raw_starts):
         raise ValueError("No room in PE header for an additional section entry")
 
     # Patch PE headers

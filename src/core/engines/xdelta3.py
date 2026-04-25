@@ -83,6 +83,11 @@ class XDelta3Engine(PatchEngine):
                     error=result.stderr.strip() or f"xdelta3 exited {result.returncode}",
                 )
             sz = output.stat().st_size if output.exists() else 0
+            if sz == 0:
+                return EngineResult(
+                    success=False, patch_path=None, patch_size=0,
+                    error="xdelta3 produced empty patch",
+                )
             return EngineResult(success=True, patch_path=output, patch_size=sz)
         except OSError as exc:
             return EngineResult(success=False, patch_path=None, patch_size=0, error=str(exc))

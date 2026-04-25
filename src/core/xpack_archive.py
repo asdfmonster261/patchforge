@@ -533,22 +533,30 @@ def _assemble_xpack(
 
     # Track write position per sidecar file so groups accumulate correctly.
     bin_write_pos: dict[Path, int] = {}
-    # Open each distinct sidecar file once for writing.
     sidecar_handles: dict[Path, object] = {}
-    for comp_idx, _tmp, _csize in streams:
-        if comp_idx in ext_bin_paths:
-            bp = ext_bin_paths[comp_idx]
-            if bp not in sidecar_handles:
-                sidecar_handles[bp] = open(bp, "wb")
-                bin_write_pos[bp] = 0
 
     fd, xpack_name = tempfile.mkstemp(suffix=".xpack01", dir=tmp_dir)
     try:
+        # Open each distinct sidecar file once for writing.  Done inside the
+        # try block so the finally clause below closes any handles opened so
+        # far if a later open() raises mid-loop.
+        for comp_idx, _tmp, _csize in streams:
+            if comp_idx in ext_bin_paths:
+                bp = ext_bin_paths[comp_idx]
+                if bp not in sidecar_handles:
+                    sidecar_handles[bp] = open(bp, "wb")
+                    bin_write_pos[bp] = 0
+
         with os.fdopen(fd, "wb") as out:
             # File table
             out.write(struct.pack("<I", len(files)))
             for f in files:
                 path_b = f["path"].encode("utf-8")
+                if len(path_b) > 0xFFFF:
+                    raise ValueError(
+                        f"Path too long for XPACK01 (UTF-8 byte length "
+                        f"{len(path_b)} exceeds 65535): {f['path']!r}"
+                    )
                 out.write(struct.pack("<H", len(path_b)))
                 out.write(path_b)
                 out.write(struct.pack("<QQII",

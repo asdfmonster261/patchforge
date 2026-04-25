@@ -306,6 +306,15 @@ def build(
                             crc = zlib.crc32(buf, crc)
                             dst.write(buf)
                             remaining -= len(buf)
+                    written = bin_part_size - remaining
+                    if written == 0:
+                        # Source ran out before this part — blob shrank
+                        # mid-build or part count was miscalculated.
+                        raise IOError(
+                            f"Unexpected EOF before writing part {i + 1} of "
+                            f"{bin_num_parts}; source blob may have been "
+                            f"truncated mid-build"
+                        )
                     crcs.append(crc & 0xFFFFFFFF)
                     bin_part_paths.append(part_path)
             bin_path.unlink()

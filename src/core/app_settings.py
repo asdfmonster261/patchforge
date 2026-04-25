@@ -1,10 +1,22 @@
 """app_settings.py — persistent global application preferences."""
 
 import json
+import os
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-_CONFIG_DIR = Path.home() / ".config" / "patchforge"
+
+def _config_dir() -> Path:
+    """Per-platform config dir: %APPDATA%\\PatchForge on Windows, ~/.config/patchforge elsewhere."""
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "PatchForge"
+    return Path.home() / ".config" / "patchforge"
+
+
+_CONFIG_DIR = _config_dir()
 _SETTINGS_FILE = _CONFIG_DIR / "app_settings.json"
 
 
