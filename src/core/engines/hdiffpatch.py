@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 
 from .base import EXE_SUFFIX, EngineResult, PatchEngine
-from ..fmt import THREAD_OPTIONS as THREAD_OPTIONS  # noqa: F401  re-export for GUI
+from ..fmt import THREAD_OPTIONS as THREAD_OPTIONS  # re-export for GUI
 
 # (set_num, stream_flag, size_label)
 _SET_CONFIGS = [
@@ -42,8 +42,6 @@ BZIP2_QUALITIES: dict[str, tuple[str, str]] = {
 }
 
 DEFAULT_QUALITY        = "max"
-_LZMA2_QUALITY_KEYS    = set(LZMA2_QUALITIES)
-_BZIP2_QUALITY_KEYS    = set(BZIP2_QUALITIES)
 
 
 def _build_presets() -> dict[str, tuple[str, list[str]]]:
@@ -59,11 +57,6 @@ def _build_presets() -> dict[str, tuple[str, list[str]]]:
 _PRESETS = _build_presets()
 _DEFAULT_PRESET  = "set6_lzma2"
 _DEFAULT_THREADS = 1
-
-
-def preset_compressor(preset_key: str) -> str:
-    """Return 'lzma2' or 'bzip2' for a given preset key."""
-    return "bzip2" if preset_key.endswith("_bzip2") else "lzma2"
 
 
 class HDiffPatchEngine(PatchEngine):

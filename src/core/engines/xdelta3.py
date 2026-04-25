@@ -58,7 +58,7 @@ class XDelta3Engine(PatchEngine):
         output: Path,
         compression: str = _DEFAULT_PRESET,
         threads: int = 1,
-        compressor_quality: str = "max",
+        compressor_quality: str = "max",  # noqa: ARG002  PatchEngine interface, xdelta3 has no equivalent
         extra_diff_args: str = "",
     ) -> EngineResult:
         if source.is_dir():

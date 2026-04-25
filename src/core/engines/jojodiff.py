@@ -55,7 +55,7 @@ class JojoDiffEngine(PatchEngine):
         output: Path,
         compression: str = _DEFAULT_PRESET,
         threads: int = 1,
-        compressor_quality: str = "max",
+        compressor_quality: str = "max",  # noqa: ARG002  PatchEngine interface, JojoDiff has no equivalent
         extra_diff_args: str = "",
     ) -> EngineResult:
         _label, flags = _PRESETS.get(compression, _PRESETS[_DEFAULT_PRESET])

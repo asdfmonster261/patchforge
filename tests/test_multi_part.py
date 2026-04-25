@@ -60,16 +60,16 @@ def _build(tmp: Path, game_size_bytes: int, max_part_mb: int,
 
 def test_no_split_when_max_part_zero(tmp_path):
     """max_part_size_mb = 0: bin stays as a single file."""
-    exe, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
-                              max_part_mb=0, split_bin=True)
+    _, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
+                            max_part_mb=0, split_bin=True)
     assert "bin_parts" not in meta
     assert parts == []
 
 
 def test_no_split_when_bin_smaller_than_part_size(tmp_path):
     """Bin fits in one part: no split needed."""
-    exe, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
-                              max_part_mb=10, split_bin=True)
+    _, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
+                            max_part_mb=10, split_bin=True)
     assert "bin_parts" not in meta or meta["bin_parts"] == 1
     assert parts == []
 
@@ -134,8 +134,8 @@ def test_split_into_three_parts(tmp_path):
 def test_max_part_size_auto_enables_split_bin(tmp_path):
     """max_part_size_mb > 0 with split_bin=False should still produce parts
     when the compressed bin exceeds the part size (split_bin is auto-enabled)."""
-    exe, meta, parts = _build(tmp_path, game_size_bytes=2_500_000,
-                              max_part_mb=1, split_bin=False)
+    _, meta, parts = _build(tmp_path, game_size_bytes=2_500_000,
+                            max_part_mb=1, split_bin=False)
     assert meta.get("bin_parts", 1) >= 2
     assert len(parts) == meta["bin_parts"]
 
@@ -144,8 +144,8 @@ def test_bin_part_crcs_present_and_match(tmp_path):
     """bin_part_crcs array must be present when splitting, and each entry
     must equal the CRC32 of the corresponding part file."""
     import zlib
-    exe, meta, parts = _build(tmp_path, game_size_bytes=2_500_000,
-                              max_part_mb=1, split_bin=True)
+    _, meta, parts = _build(tmp_path, game_size_bytes=2_500_000,
+                            max_part_mb=1, split_bin=True)
     assert "bin_part_crcs" in meta
     assert len(meta["bin_part_crcs"]) == meta["bin_parts"]
     for part, expected in zip(parts, meta["bin_part_crcs"]):
@@ -159,8 +159,8 @@ def test_bin_part_crcs_present_for_non_multipart(tmp_path):
     should have it so the installer can catch corruption at startup."""
     import zlib
     # split-bin with a single file (no multi-part)
-    exe, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
-                              max_part_mb=0, split_bin=True)
+    exe, meta, _ = _build(tmp_path, game_size_bytes=512 * 1024,
+                          max_part_mb=0, split_bin=True)
     assert "bin_part_crcs" in meta
     assert len(meta["bin_part_crcs"]) == 1
     # The stored CRC should match the CRC of the base_game.bin content
@@ -172,8 +172,8 @@ def test_bin_part_crcs_present_for_single_file_exe(tmp_path):
     """Single-file exe (no split_bin) should also embed a blob CRC covering
     [pack_data_offset, pack_data_offset + pack_data_size)."""
     import zlib
-    exe, meta, parts = _build(tmp_path, game_size_bytes=512 * 1024,
-                              max_part_mb=0, split_bin=False)
+    exe, meta, _ = _build(tmp_path, game_size_bytes=512 * 1024,
+                          max_part_mb=0, split_bin=False)
     assert "bin_part_crcs" in meta
     assert len(meta["bin_part_crcs"]) == 1
     # Verify: read the blob region from inside the exe and CRC it
@@ -319,7 +319,7 @@ def test_patch_repack_metadata_is_atomic_and_streamed(tmp_path):
     """patch_repack_metadata should leave no .tmp or corrupted files if it
     raises mid-rewrite, and should work without loading the whole exe into
     RAM (stream-based so arbitrarily large exes are safe)."""
-    import os, struct
+    import struct
     from src.core.exe_packager import patch_repack_metadata, REPACK_MAGIC
 
     # Build a minimal fake xpack01 exe for the round-trip test.
