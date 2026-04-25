@@ -14,7 +14,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from .base import EngineResult, PatchEngine
+from .base import EXE_SUFFIX, EngineResult, PatchEngine
 from ..fmt import THREAD_OPTIONS as THREAD_OPTIONS  # noqa: F401  re-export for GUI
 
 # (set_num, stream_flag, size_label)
@@ -70,7 +70,7 @@ class HDiffPatchEngine(PatchEngine):
     label = "HDiffPatch 4.12.2"
 
     def _binary(self) -> Path:
-        return self.engine_dir / "hdiffz"
+        return self.engine_dir / f"hdiffz{EXE_SUFFIX}"
 
     @staticmethod
     def presets() -> dict[str, str]:

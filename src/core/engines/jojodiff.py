@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from .base import EngineResult, PatchEngine
+from .base import EXE_SUFFIX, EngineResult, PatchEngine
 from . import dir_format
 
 # (label, extra CLI flags passed before source/target/output)
@@ -34,7 +34,7 @@ class JojoDiffEngine(PatchEngine):
     label = "JojoDiff 0.8.1"
 
     def _binary(self) -> Path:
-        return self.engine_dir / "jdiff"
+        return self.engine_dir / f"jdiff{EXE_SUFFIX}"
 
     @staticmethod
     def presets() -> dict[str, str]:
