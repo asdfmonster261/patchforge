@@ -162,7 +162,7 @@ struct DirPatchCtx {
 };
 
 static int xd3_apply_entry(int op, const char *rel_path,
-                             const unsigned char *data, uint32_t data_len,
+                             const unsigned char *data, uint64_t data_len,
                              void *userdata)
 {
     struct DirPatchCtx *ctx = (struct DirPatchCtx *)userdata;
