@@ -12,6 +12,9 @@ stub/third_party/_build/
 stub/third_party/zlib/*/bin/
 stub/third_party/zlib/*/lib/pkgconfig/
 
+# Engine build artifacts
+engines/_build/
+
 # Patch output
 *.xpatch
 *.patch_tmp
