@@ -536,6 +536,9 @@ def _assemble_xpack(
     sidecar_handles: dict[Path, object] = {}
 
     fd, xpack_name = tempfile.mkstemp(suffix=".xpack01", dir=tmp_dir)
+    # Take ownership of fd immediately so a sidecar-open failure below
+    # can't leak it.  out is closed in the finally clause.
+    out = os.fdopen(fd, "wb")
     try:
         # Open each distinct sidecar file once for writing.  Done inside the
         # try block so the finally clause below closes any handles opened so
@@ -547,41 +550,40 @@ def _assemble_xpack(
                     sidecar_handles[bp] = open(bp, "wb")
                     bin_write_pos[bp] = 0
 
-        with os.fdopen(fd, "wb") as out:
-            # File table
-            out.write(struct.pack("<I", len(files)))
-            for f in files:
-                path_b = f["path"].encode("utf-8")
-                if len(path_b) > 0xFFFF:
-                    raise ValueError(
-                        f"Path too long for XPACK01 (UTF-8 byte length "
-                        f"{len(path_b)} exceeds 65535): {f['path']!r}"
-                    )
-                out.write(struct.pack("<H", len(path_b)))
-                out.write(path_b)
-                out.write(struct.pack("<QQII",
-                                      f["offset"], f["size"],
-                                      f["component"], f["crc32"]))
+        # File table
+        out.write(struct.pack("<I", len(files)))
+        for f in files:
+            path_b = f["path"].encode("utf-8")
+            if len(path_b) > 0xFFFF:
+                raise ValueError(
+                    f"Path too long for XPACK01 (UTF-8 byte length "
+                    f"{len(path_b)} exceeds 65535): {f['path']!r}"
+                )
+            out.write(struct.pack("<H", len(path_b)))
+            out.write(path_b)
+            out.write(struct.pack("<QQII",
+                                  f["offset"], f["size"],
+                                  f["component"], f["crc32"]))
 
-            # Streams
-            out.write(struct.pack("<I", len(streams)))
-            for comp_idx, tmp_path, csize in streams:
-                if comp_idx in ext_bin_paths:
-                    bp  = ext_bin_paths[comp_idx]
-                    off = bin_write_pos[bp]
-                    ext_offsets[comp_idx] = off
-                    ext_csizes[comp_idx]  = csize
-                    bin_write_pos[bp]     = off + csize
-                    # Write csize=0 sentinel in the XPACK01.
-                    out.write(struct.pack("<I", comp_idx))
-                    out.write(struct.pack("<Q", 0))
-                    with open(tmp_path, "rb") as sf:
-                        shutil.copyfileobj(sf, sidecar_handles[bp])
-                else:
-                    out.write(struct.pack("<I", comp_idx))
-                    out.write(struct.pack("<Q", csize))
-                    with open(tmp_path, "rb") as sf:
-                        shutil.copyfileobj(sf, out)
+        # Streams
+        out.write(struct.pack("<I", len(streams)))
+        for comp_idx, tmp_path, csize in streams:
+            if comp_idx in ext_bin_paths:
+                bp  = ext_bin_paths[comp_idx]
+                off = bin_write_pos[bp]
+                ext_offsets[comp_idx] = off
+                ext_csizes[comp_idx]  = csize
+                bin_write_pos[bp]     = off + csize
+                # Write csize=0 sentinel in the XPACK01.
+                out.write(struct.pack("<I", comp_idx))
+                out.write(struct.pack("<Q", 0))
+                with open(tmp_path, "rb") as sf:
+                    shutil.copyfileobj(sf, sidecar_handles[bp])
+            else:
+                out.write(struct.pack("<I", comp_idx))
+                out.write(struct.pack("<Q", csize))
+                with open(tmp_path, "rb") as sf:
+                    shutil.copyfileobj(sf, out)
     except Exception:
         try:
             os.unlink(xpack_name)
@@ -589,6 +591,7 @@ def _assemble_xpack(
             pass
         raise
     finally:
+        out.close()
         for fh in sidecar_handles.values():
             fh.close()
         for _, tmp_path, _ in streams:
