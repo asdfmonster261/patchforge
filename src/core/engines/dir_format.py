@@ -102,6 +102,11 @@ def build(
         fh.write(struct.pack("<I", len(entries)))
         for op, rel_path, data in entries:
             path_bytes = rel_path.encode("utf-8")
+            if len(path_bytes) > 0xFFFF:
+                raise ValueError(
+                    f"Path too long for PFMD (UTF-8 byte length "
+                    f"{len(path_bytes)} exceeds 65535): {rel_path!r}"
+                )
             fh.write(struct.pack("<BH", op, len(path_bytes)))
             fh.write(path_bytes)
             fh.write(struct.pack("<Q", len(data)))

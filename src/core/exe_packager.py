@@ -397,7 +397,10 @@ def patch_repack_metadata(exe_path: Path, extra_fields: dict) -> None:
                     n = min(CHUNK, remaining)
                     buf = src.read(n)
                     if not buf:
-                        break
+                        raise IOError(
+                            f"Unexpected EOF rewriting {exe_path}: "
+                            f"{remaining} bytes still expected"
+                        )
                     dst.write(buf)
                     remaining -= len(buf)
                 dst.write(new_meta)

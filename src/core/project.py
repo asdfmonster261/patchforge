@@ -4,9 +4,17 @@ import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+# Bump this whenever an existing field's semantics change in a
+# non-additive way (renamed values, restructured shapes). Pure additions
+# of new fields don't require a bump — defaults handle backfill.
+_CURRENT_SCHEMA = 1
+
 
 @dataclass
 class ProjectSettings:
+    # Schema version of the on-disk format (see _CURRENT_SCHEMA).
+    schema_version: int = _CURRENT_SCHEMA
+
     # Basic info
     app_name: str = ""
     app_note: str = ""        # short subtitle shown next to app name
@@ -92,6 +100,14 @@ def save(settings: ProjectSettings, path: Path) -> None:
 def load(path: Path) -> ProjectSettings:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    # Files written before the schema_version field existed default to 1.
+    version = int(data.get("schema_version", 1))
+    if version > _CURRENT_SCHEMA:
+        raise ValueError(
+            f"{path} was written by a newer PatchForge "
+            f"(schema {version}, this build supports {_CURRENT_SCHEMA}). "
+            f"Upgrade PatchForge to open this project."
+        )
     # Forward-compat: ignore unknown keys
     known = {k for k in ProjectSettings.__dataclass_fields__}
     filtered = {k: v for k, v in data.items() if k in known}
