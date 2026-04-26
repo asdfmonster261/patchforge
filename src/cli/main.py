@@ -230,7 +230,7 @@ def _cmd_build(args):
             _warn(f"Could not save project: {exc}")
 
     # Build
-    def progress(pct: int, msg: str):
+    def progress(pct: int, msg: str, kind: str = "phase"):  # noqa: ARG001  kind ignored on CLI
         bar_len = 30
         filled = int(bar_len * pct / 100)
         bar = "#" * filled + "-" * (bar_len - filled)
@@ -494,7 +494,7 @@ def _cmd_repack(args):
             _warn(f"Could not save project: {exc}")
 
     # Build
-    def progress(pct: int, msg: str):
+    def progress(pct: int, msg: str, kind: str = "phase"):  # noqa: ARG001  kind ignored on CLI
         bar_len = 30
         filled = int(bar_len * pct / 100)
         bar = "#" * filled + "-" * (bar_len - filled)

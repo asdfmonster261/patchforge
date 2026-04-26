@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QThread, Signal, QObject, QUrl
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QUrl
 from PySide6.QtGui import QTextCursor, QColor, QDesktopServices, QAction
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -41,7 +41,7 @@ from ..core.fmt import format_size as _fmt_size
 # ---------------------------------------------------------------------------
 
 class BuildWorker(QObject):
-    progress = Signal(int, str)
+    progress = Signal(int, str, str)  # pct, msg, kind ("phase"|"file")
     finished = Signal(object)   # BuildResult
 
     def __init__(self, settings: ProjectSettings):
@@ -54,7 +54,7 @@ class BuildWorker(QObject):
 
 
 class RepackWorker(QObject):
-    progress        = Signal(int, str)
+    progress        = Signal(int, str, str)  # pct, msg, kind ("phase"|"file")
     stream_progress = Signal(int, int, str, int, int, str)  # idx, n, label, done, total, file_size
     finished        = Signal(object)   # RepackResult
 
@@ -230,6 +230,12 @@ class MainWindow(QMainWindow):
         self._current_project_path: Optional[Path] = None
         self._current_repack_path: Optional[Path] = None
         self._output_dir: str = ""
+        # Log batching: accumulate _log() calls and flush once per event-loop
+        # tick.  Stops chatty repack runs from triggering a layout pass per
+        # message; everything queued in the same tick gets one cursor + one
+        # ensureCursorVisible call.
+        self._log_queue: list[tuple[str, str]] = []
+        self._log_flush_pending: bool = False
 
         self._build_ui()
         self._build_patch_bindings()
@@ -1368,11 +1374,13 @@ class MainWindow(QMainWindow):
         self._thread.finished.connect(self._on_thread_done)
         self._thread.start()
 
-    def _on_progress(self, pct: int, msg: str):
+    def _on_progress(self, pct: int, msg: str, kind: str):
         self.progress_bar.setValue(pct)
         self.status_lbl.setText(msg)
-        # Per-file stream messages are shown in the stream widget; skip logging them.
-        if msg and "files…" not in msg and ": compressing " not in msg:
+        # Per-file stream messages are shown in the stream widget; skip
+        # logging them. Tag-based filter replaces the prior string-match
+        # heuristic so renaming a status message can't silently break it.
+        if msg and kind != "file":
             self._log(msg)
 
     def _on_stream_progress(self, stream_idx: int, num_streams: int,
@@ -1753,17 +1761,32 @@ class MainWindow(QMainWindow):
         self._apply_settings(ProjectSettings())
 
     def _log(self, msg: str, color: str = ""):
+        # Queue the message and schedule a flush at the next event-loop
+        # tick.  Multiple _log calls within the same tick share one cursor
+        # move + ensureCursorVisible call; the layout cost no longer scales
+        # with message count.
+        self._log_queue.append((msg, color))
+        if not self._log_flush_pending:
+            self._log_flush_pending = True
+            QTimer.singleShot(0, self._flush_log)
+
+    def _flush_log(self):
+        self._log_flush_pending = False
+        if not self._log_queue:
+            return
+        pending, self._log_queue = self._log_queue, []
         cursor = self.log.textCursor()
         cursor.movePosition(QTextCursor.End)
-        if color:
-            fmt = cursor.charFormat()
-            fmt.setForeground(QColor(color))
-            cursor.setCharFormat(fmt)
-        cursor.insertText(msg + "\n")
-        if color:
-            fmt = cursor.charFormat()
-            fmt.setForeground(QColor("#d4d4d4"))
-            cursor.setCharFormat(fmt)
+        default_fmt = cursor.charFormat()
+        for msg, color in pending:
+            if color:
+                fmt = cursor.charFormat()
+                fmt.setForeground(QColor(color))
+                cursor.setCharFormat(fmt)
+                cursor.insertText(msg + "\n")
+                cursor.setCharFormat(default_fmt)
+            else:
+                cursor.insertText(msg + "\n")
         self.log.setTextCursor(cursor)
         self.log.ensureCursorVisible()
 

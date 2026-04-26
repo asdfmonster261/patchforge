@@ -37,20 +37,23 @@ class RepackResult:
 
 def build(
     settings: RepackSettings,
-    progress: Optional[Callable[[int, str], None]] = None,
+    progress: Optional[Callable[[int, str, str], None]] = None,
     stream_progress: Optional[Callable[[int, int, str, int, int, str], None]] = None,
 ) -> RepackResult:
     """
     Build a self-contained Windows installer exe from settings.
 
-    progress(pct, message) is called with 0–100 as the build proceeds.
+    progress(pct, message, kind) is called with 0–100 as the build proceeds.
+    `kind` is "phase" for major step transitions (log-worthy) or "file" for
+    per-file batched progress (noisy — front-ends typically update status
+    displays only and skip the log).
     stream_progress(stream_idx, num_streams, label, files_done, files_total)
     is called once per file during the compression phase.
     """
 
-    def _progress(pct: int, msg: str) -> None:
+    def _progress(pct: int, msg: str, kind: str = "phase") -> None:
         if progress:
-            progress(pct, msg)
+            progress(pct, msg, kind)
 
     # ------------------------------------------------------------------ #
     # 1. Validate                                                          #
@@ -97,9 +100,9 @@ def build(
     output_dir = Path(settings.output_dir) if settings.output_dir else Path.cwd()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    def _archive_prog(pct: int, msg: str) -> None:
+    def _archive_prog(pct: int, msg: str, kind: str = "phase") -> None:
         # Map archive progress (0-100) to overall range 10-75
-        _progress(10 + int(pct * 0.65), msg)
+        _progress(10 + int(pct * 0.65), msg, kind)
 
     # Track every on-disk artifact we create so we can delete them on failure.
     # Populated as the build progresses; cleared on success.
