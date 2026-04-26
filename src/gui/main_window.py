@@ -325,7 +325,7 @@ class MainWindow(QMainWindow):
                 s = load_repack(path)
                 self._apply_repack_settings(s)
                 self._current_repack_path = path
-                self.setWindowTitle(f"PatchForge — {path.name}")
+                self._set_project_title(path)
                 self.status_bar.showMessage(f"Loaded: {path}")
                 _recent.add(path, "repack")
             except Exception as exc:
@@ -336,7 +336,7 @@ class MainWindow(QMainWindow):
                 s = load_project(path)
                 self._apply_settings(s)
                 self._current_project_path = path
-                self.setWindowTitle(f"PatchForge — {path.name}")
+                self._set_project_title(path)
                 self.status_bar.showMessage(f"Loaded: {path}")
                 _recent.add(path, "patch")
             except Exception as exc:
@@ -455,11 +455,11 @@ class MainWindow(QMainWindow):
 
         eg.addWidget(QLabel("Engine:"),      0, 0)
         self.engine_combo = QComboBox()
-        self.engine_combo.addItems([
-            "HDiffPatch 4.12.2",
-            "xdelta3 3.0.8",
-            "JojoDiff 0.8.1",
-        ])
+        # Items carry their settings key as UserRole data so callers can
+        # use currentData() / findData() instead of position-based indexing.
+        self.engine_combo.addItem("HDiffPatch 4.12.2", userData="hdiffpatch")
+        self.engine_combo.addItem("xdelta3 3.0.8",     userData="xdelta3")
+        self.engine_combo.addItem("JojoDiff 0.8.1",    userData="jojodiff")
         eg.addWidget(self.engine_combo, 0, 1)
 
         eg.addWidget(QLabel("Compression:"), 0, 2)
@@ -978,6 +978,15 @@ class MainWindow(QMainWindow):
         self.log.setPlaceholderText("Build output will appear here…")
         og.addWidget(self.log, 1)
 
+        log_btn_row = QHBoxLayout()
+        log_btn_row.setContentsMargins(0, 0, 0, 0)
+        log_btn_row.setSpacing(6)
+        self.clear_log_btn = QPushButton("Clear Log")
+        self.clear_log_btn.clicked.connect(self._on_clear_log)
+        log_btn_row.addWidget(self.clear_log_btn)
+        log_btn_row.addStretch()
+        og.addLayout(log_btn_row)
+
         self.open_folder_btn = QPushButton("Open Output Folder")
         self.open_folder_btn.setVisible(False)
         og.addWidget(self.open_folder_btn)
@@ -1338,7 +1347,11 @@ class MainWindow(QMainWindow):
 
         self.build_btn.setEnabled(False)
         self.progress_bar.setValue(0)
-        self.log.clear()
+        # Don't clear the log automatically — the user can use the
+        # Clear Log button if they want to start fresh.  Insert a thin
+        # separator so the new run is visually distinct from the prior.
+        if self.log.toPlainText():
+            self._log("─" * 60)
         self._log("Starting patch build…")
 
         if self._thread:
@@ -1361,7 +1374,8 @@ class MainWindow(QMainWindow):
         self.build_btn.setEnabled(False)
         self.progress_bar.setValue(0)
         self.stream_widget.setVisible(False)
-        self.log.clear()
+        if self.log.toPlainText():
+            self._log("─" * 60)
         self._log("Starting repack build…")
 
         if self._thread:
@@ -1451,7 +1465,7 @@ class MainWindow(QMainWindow):
         else:
             self._clear_fields()
             self._current_project_path = None
-        self.setWindowTitle("PatchForge")
+        self._set_project_title()
         self.status_bar.showMessage("New project")
 
     def _on_load_project(self):
@@ -1465,7 +1479,7 @@ class MainWindow(QMainWindow):
                 s = load_repack(Path(path))
                 self._apply_repack_settings(s)
                 self._current_repack_path = Path(path)
-                self.setWindowTitle(f"PatchForge — {Path(path).name}")
+                self._set_project_title(path)
                 self.status_bar.showMessage(f"Loaded: {path}")
                 _recent.add(path, "repack")
             except Exception as exc:
@@ -1480,7 +1494,7 @@ class MainWindow(QMainWindow):
                 s = load_project(Path(path))
                 self._apply_settings(s)
                 self._current_project_path = Path(path)
-                self.setWindowTitle(f"PatchForge — {Path(path).name}")
+                self._set_project_title(path)
                 self.status_bar.showMessage(f"Loaded: {path}")
                 _recent.add(path, "patch")
             except Exception as exc:
@@ -1498,7 +1512,7 @@ class MainWindow(QMainWindow):
                 s = self._collect_repack_settings(validate=False)
                 save_repack(s, Path(path))
                 self._current_repack_path = Path(path)
-                self.setWindowTitle(f"PatchForge — {Path(path).name}")
+                self._set_project_title(path)
                 self.status_bar.showMessage(f"Saved: {path}")
                 _recent.add(path, "repack")
             except Exception as exc:
@@ -1514,7 +1528,7 @@ class MainWindow(QMainWindow):
                 s = self._collect_settings(validate=False)
                 save_project(s, Path(path))
                 self._current_project_path = Path(path)
-                self.setWindowTitle(f"PatchForge — {Path(path).name}")
+                self._set_project_title(path)
                 self.status_bar.showMessage(f"Saved: {path}")
                 _recent.add(path, "patch")
                 missing = [f for f, v in [("app name", s.app_name),
@@ -1531,8 +1545,15 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def _engine_key(self) -> str:
-        idx = self.engine_combo.currentIndex()
-        return ["hdiffpatch", "xdelta3", "jojodiff"][idx]
+        return self.engine_combo.currentData() or "hdiffpatch"
+
+    def _set_project_title(self, path=None) -> None:
+        """Set the window title to "PatchForge" (no file open) or
+        "PatchForge — <basename>" when a project file is current."""
+        if path is None:
+            self.setWindowTitle("PatchForge")
+        else:
+            self.setWindowTitle(f"PatchForge — {Path(path).name}")
 
     def _compression_key(self) -> str:
         data = self.comp_combo.currentData()
@@ -1720,11 +1741,12 @@ class MainWindow(QMainWindow):
         return s
 
     def _apply_settings(self, s: ProjectSettings):
-        # Engine combo has no UserRole data — set by index, then fire the
-        # on-change handler so the compression combo repopulates before the
-        # compression binder applies the saved value.
-        engine_map = {"hdiffpatch": 0, "xdelta3": 1, "jojodiff": 2}
-        self.engine_combo.setCurrentIndex(engine_map.get(s.engine, 0))
+        # Engine combo carries the settings key as UserRole data; look it
+        # up by data so reordering the combo can't break apply().  Then
+        # fire the on-change handler so the compression combo repopulates
+        # before the compression binder applies the saved value.
+        idx = self.engine_combo.findData(s.engine)
+        self.engine_combo.setCurrentIndex(idx if idx >= 0 else 0)
         self._on_engine_changed()
 
         # Backup combo's on-change handler enables/disables the path field;
@@ -1792,6 +1814,14 @@ class MainWindow(QMainWindow):
                 cursor.insertText(msg + "\n")
         self.log.setTextCursor(cursor)
         self.log.ensureCursorVisible()
+
+    def _on_clear_log(self) -> None:
+        # Drop any queued messages too — they belong to the run the user
+        # is dismissing, and would otherwise reappear after the next event-
+        # loop tick fires _flush_log.
+        self._log_queue.clear()
+        self._log_flush_pending = False
+        self.log.clear()
 
 
 def run_gui():
