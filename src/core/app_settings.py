@@ -3,7 +3,7 @@
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -27,6 +27,14 @@ class AppSettings:
     # data inside the exe.  Per-project split_bin=True forces the split
     # regardless of size.
     bin_split_threshold_gb: float = 3.5
+
+    # Persisted GUI state — restored on next launch.  Defaults match the
+    # values previously hardcoded in MainWindow.__init__ / _build_ui so
+    # first-run users see identical layout to before G5.
+    window_width:    int       = 1100
+    window_height:   int       = 780
+    splitter_sizes:  list[int] = field(default_factory=lambda: [580, 480])
+    mode_tab_index:  int       = 0  # 0 = Update Patch, 1 = Repack
 
 
 def load() -> AppSettings:

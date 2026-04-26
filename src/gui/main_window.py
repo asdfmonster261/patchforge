@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QUrl
-from PySide6.QtGui import QTextCursor, QColor, QDesktopServices, QAction
+from PySide6.QtGui import QTextCursor, QColor, QDesktopServices, QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QGridLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QFileDialog, QSplitter, QFrame, QStatusBar,
     QCheckBox, QListWidget, QListWidgetItem, QScrollArea, QInputDialog,
     QSpinBox, QDoubleSpinBox, QTabWidget,
-    QDialog, QDialogButtonBox, QFormLayout, QMenu,
+    QDialog, QDialogButtonBox, QFormLayout, QMenu, QMessageBox,
 )
 
 from .theme import QSS, SUCCESS, ERROR, WARN
@@ -33,6 +33,7 @@ from ..core.xpack_archive import (
     THREAD_OPTIONS as REPACK_THREAD_OPTIONS,
 )
 from ..core import recent_files as _recent
+from ..core import app_settings as _app_settings
 from ..core.fmt import format_size as _fmt_size
 
 
@@ -221,7 +222,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("PatchForge")
         self.setMinimumSize(960, 680)
-        self.resize(1100, 780)
+        # Window size is restored from app_settings (G5) — but only if it
+        # honours the current minimum.  splitter_sizes / mode_tab_index are
+        # applied below in _build_ui after the widgets exist.
+        self._app_settings = _app_settings.load()
+        w = max(self._app_settings.window_width,  960)
+        h = max(self._app_settings.window_height, 680)
+        self.resize(w, h)
         # Stylesheet is set once on QApplication in run_gui() so the
         # cascade resolves once across the whole widget tree instead of
         # per-widget on each show. Anything that needs targeted styling
@@ -263,15 +270,26 @@ class MainWindow(QMainWindow):
         self.mode_tabs = QTabWidget()
         self.mode_tabs.addTab(self._build_patch_panel(), "Update Patch")
         self.mode_tabs.addTab(self._build_repack_panel(), "Repack")
+        # Restore the last-used mode tab (G5).  Bounded to valid range in
+        # case the saved value is stale after a UI change.
+        self.mode_tabs.setCurrentIndex(
+            max(0, min(self._app_settings.mode_tab_index, self.mode_tabs.count() - 1))
+        )
 
         # ── Splitter: left tabs / right log ──
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        root.addWidget(splitter, 1)
+        self._splitter = QSplitter(Qt.Horizontal)
+        self._splitter.setChildrenCollapsible(False)
+        root.addWidget(self._splitter, 1)
 
-        splitter.addWidget(self.mode_tabs)
-        splitter.addWidget(self._build_output_panel())
-        splitter.setSizes([580, 480])
+        self._splitter.addWidget(self.mode_tabs)
+        self._splitter.addWidget(self._build_output_panel())
+        # Restore splitter ratio (G5).  Sanity-check we got two ints summing
+        # to something positive; fall back to defaults otherwise.
+        sizes = self._app_settings.splitter_sizes
+        if isinstance(sizes, list) and len(sizes) == 2 and all(isinstance(s, int) and s > 0 for s in sizes):
+            self._splitter.setSizes(sizes)
+        else:
+            self._splitter.setSizes([580, 480])
 
         # ── Bottom button bar ──
         root.addWidget(HSep())
@@ -1000,10 +1018,14 @@ class MainWindow(QMainWindow):
 
         self.build_btn = QPushButton("⚡  Build Patch")
         self.build_btn.setObjectName("accent")
+        self.build_btn.setToolTip("Build the output exe (Ctrl+B)")
 
         self.new_btn   = QPushButton("New Project")
+        self.new_btn.setToolTip("Reset all fields to defaults (Ctrl+N)")
         self.load_btn  = QPushButton("Load Project")
+        self.load_btn.setToolTip("Open a .xpm or .xpr project file (Ctrl+O)")
         self.save_btn  = QPushButton("Save Project")
+        self.save_btn.setToolTip("Save current settings to a project file (Ctrl+S)")
 
         bar.addWidget(self.build_btn)
         bar.addStretch()
@@ -1038,6 +1060,19 @@ class MainWindow(QMainWindow):
         self.load_btn.clicked.connect(self._on_load_project)
         self.save_btn.clicked.connect(self._on_save_project)
         self.open_folder_btn.clicked.connect(self._on_open_output_folder)
+
+        # G6: keyboard shortcuts.  Bound at the window level so they fire
+        # regardless of which child widget has focus.  Each routes through
+        # the button's clicked signal so disabled-state and connected
+        # handlers all behave identically to a click.
+        for keyseq, btn in (
+            ("Ctrl+B", self.build_btn),
+            ("Ctrl+N", self.new_btn),
+            ("Ctrl+O", self.load_btn),
+            ("Ctrl+S", self.save_btn),
+        ):
+            sc = QShortcut(QKeySequence(keyseq), self)
+            sc.activated.connect(btn.click)
 
     def _on_open_output_folder(self) -> None:
         if self._output_dir:
@@ -1449,9 +1484,36 @@ class MainWindow(QMainWindow):
             self.open_folder_btn.setVisible(False)
 
     def closeEvent(self, event):
+        # G4: if a build is in progress, ask before exiting.  We don't have
+        # a clean cancellation channel into core (engines run as
+        # subprocesses), so the choice is "let it run to completion" or
+        # "abandon it and let the OS reap subprocesses on exit".
         if self._thread and self._thread.isRunning():
+            reply = QMessageBox.question(
+                self,
+                "Build in progress",
+                "A build is still running.\n\n"
+                "Closing now will abandon the in-progress build (any\n"
+                "partial output may be incomplete).  Close anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
             self._thread.quit()
             self._thread.wait(3000)
+
+        # G5: persist current window/splitter/tab state for next launch.
+        self._app_settings.window_width    = self.width()
+        self._app_settings.window_height   = self.height()
+        self._app_settings.splitter_sizes  = list(self._splitter.sizes())
+        self._app_settings.mode_tab_index  = self.mode_tabs.currentIndex()
+        try:
+            _app_settings.save(self._app_settings)
+        except Exception:
+            # Best-effort — don't block close on a settings write failure.
+            pass
         event.accept()
 
     def _on_thread_done(self):
