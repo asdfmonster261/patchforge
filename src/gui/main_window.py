@@ -222,7 +222,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PatchForge")
         self.setMinimumSize(960, 680)
         self.resize(1100, 780)
-        self.setStyleSheet(QSS)
+        # Stylesheet is set once on QApplication in run_gui() so the
+        # cascade resolves once across the whole widget tree instead of
+        # per-widget on each show. Anything that needs targeted styling
+        # uses object names + selectors in theme.QSS.
 
         self._worker: Optional[BuildWorker] = None
         self._repack_worker: Optional[RepackWorker] = None
@@ -1794,6 +1797,7 @@ class MainWindow(QMainWindow):
 def run_gui():
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("PatchForge")
+    app.setStyleSheet(QSS)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
