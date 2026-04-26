@@ -40,17 +40,20 @@ class BuildResult:
 
 def build(
     settings: ProjectSettings,
-    progress: Optional[Callable[[int, str], None]] = None,
+    progress: Optional[Callable[[int, str, str], None]] = None,
 ) -> BuildResult:
     """
     Build a self-contained Windows patcher exe from settings.
 
-    progress(pct, message) is called with 0–100 as the build proceeds.
+    progress(pct, message, kind) is called with 0–100 as the build proceeds.
+    `kind` is one of "phase" (major step transition, log-worthy) or
+    "file" (per-file batched progress; noisy — front-ends typically update
+    status displays only and skip the log).
     """
 
-    def _progress(pct: int, msg: str) -> None:
+    def _progress(pct: int, msg: str, kind: str = "phase") -> None:
         if progress:
-            progress(pct, msg)
+            progress(pct, msg, kind)
 
     # ------------------------------------------------------------------ #
     # 1. Validate                                                          #
