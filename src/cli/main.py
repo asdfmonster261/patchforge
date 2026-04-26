@@ -10,6 +10,15 @@ from ..core.fmt import format_size as _fmt_size
 
 def run_cli():
     parser = _build_parser()
+    # Optional shell-completion hook.  If `argcomplete` is installed and the
+    # user has run `eval "$(register-python-argcomplete patchforge)"` in
+    # their shell rc, this short-circuits the call when the shell is asking
+    # for completions.  No-op otherwise.
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
     args = parser.parse_args()
 
     if not hasattr(args, "func"):
@@ -184,6 +193,10 @@ def _add_build(sub):
     p.add_argument("--save-project", metavar="FILE",
                    help="Save resolved settings to a .xpm project file after building")
 
+    # Validate without building
+    p.add_argument("--check", action="store_true",
+                   help="Validate inputs and resolved settings without running the engine")
+
     p.set_defaults(func=_cmd_build)
 
 
@@ -196,7 +209,7 @@ def _cmd_build(args):
         try:
             settings = load(Path(args.project))
         except Exception as exc:
-            _die(f"Failed to load project '{args.project}': {exc}")
+            _die(f"Failed to load project '{args.project}': {exc}", EXIT_INPUT)
     else:
         settings = ProjectSettings()
 
@@ -229,19 +242,36 @@ def _cmd_build(args):
         except Exception as exc:
             _warn(f"Could not save project: {exc}")
 
+    # --check: validate inputs without invoking the engine.
+    if args.check:
+        errors = _validate_build_inputs(settings)
+        if errors:
+            for e in errors:
+                print(f"error: {e}", file=sys.stderr)
+            sys.exit(EXIT_INPUT)
+        print(f"OK — settings valid for '{settings.app_name}' using {settings.engine}.")
+        print(f"  source:      {settings.source_dir}")
+        print(f"  target:      {settings.target_dir}")
+        print(f"  output_dir:  {settings.output_dir or '(current dir)'}")
+        print(f"  engine:      {settings.engine}")
+        print(f"  compression: {settings.compression}")
+        return
+
     # Build
     def progress(pct: int, msg: str, kind: str = "phase"):  # noqa: ARG001  kind ignored on CLI
         bar_len = 30
         filled = int(bar_len * pct / 100)
         bar = "#" * filled + "-" * (bar_len - filled)
-        print(f"\r[{bar}] {pct:3d}%  {msg:<45}", end="", flush=True)
+        # U7: ANSI clear-to-EOL after the message so a long-then-short
+        # message sequence doesn't leave trailing chars from the prior line.
+        print(f"\r[{bar}] {pct:3d}%  {msg}\033[K", end="", flush=True)
 
     print(f"Building patch for '{settings.app_name}' using {settings.engine}...")
     result = build(settings, progress=progress)
     print()  # newline after progress bar
 
     if not result.success:
-        _die(f"Build failed: {result.error}")
+        _die(f"Build failed: {result.error}", EXIT_BUILD)
 
     print(f"\nOutput:      {result.output_path}")
     print(f"Patch size:  {_fmt_size(result.patch_size)}")
@@ -318,12 +348,22 @@ def _cmd_show_project(args):
     try:
         s = load(Path(args.project))
     except Exception as exc:
-        _die(f"Failed to load project: {exc}")
+        _die(f"Failed to load project: {exc}", EXIT_INPUT)
 
     print(f"Project: {args.project}")
+    extra_files = asdict(s).pop("extra_files", [])
     for key, val in asdict(s).items():
+        if key == "extra_files":
+            continue
         if val is not None and val != "" and val != []:
             print(f"  {key:<20} {val}")
+    # U9: pretty-print extra_files instead of dumping the raw dict list.
+    if extra_files:
+        print(f"  {'extra_files':<20} ({len(extra_files)})")
+        for ef in extra_files:
+            src = ef.get("src", "")
+            dest = ef.get("dest", "")
+            print(f"    {dest}  ←  {src}")
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +481,10 @@ def _add_repack(sub):
     p.add_argument("--save-project", metavar="FILE",
                    help="Save resolved settings to a .xpr project file after building")
 
+    # Validate without building
+    p.add_argument("--check", action="store_true",
+                   help="Validate inputs and resolved settings without running the engine")
+
     p.set_defaults(func=_cmd_repack)
 
 
@@ -453,7 +497,7 @@ def _cmd_repack(args):
         try:
             settings = load_repack(Path(args.project))
         except Exception as exc:
-            _die(f"Failed to load project '{args.project}': {exc}")
+            _die(f"Failed to load project '{args.project}': {exc}", EXIT_INPUT)
     else:
         settings = RepackSettings()
 
@@ -473,9 +517,9 @@ def _cmd_repack(args):
             try:
                 c = json.loads(raw)
             except json.JSONDecodeError as exc:
-                _die(f"Invalid --component JSON: {exc}\n  value: {raw}")
+                _die(f"Invalid --component JSON: {exc}\n  value: {raw}", EXIT_INPUT)
             if "label" not in c or "folder" not in c:
-                _die(f"--component JSON must have 'label' and 'folder' keys: {raw}")
+                _die(f"--component JSON must have 'label' and 'folder' keys: {raw}", EXIT_INPUT)
             parsed.append({
                 "label":            str(c["label"]),
                 "folder":           str(c["folder"]),
@@ -493,19 +537,36 @@ def _cmd_repack(args):
         except Exception as exc:
             _warn(f"Could not save project: {exc}")
 
+    # --check: validate inputs without invoking the engine.
+    if args.check:
+        errors = _validate_repack_inputs(settings)
+        if errors:
+            for e in errors:
+                print(f"error: {e}", file=sys.stderr)
+            sys.exit(EXIT_INPUT)
+        print(f"OK — settings valid for '{settings.app_name}'.")
+        print(f"  game_dir:    {settings.game_dir}")
+        print(f"  output_dir:  {settings.output_dir or '(current dir)'}")
+        print(f"  codec:       {settings.codec}")
+        print(f"  compression: {settings.compression}")
+        print(f"  threads:     {settings.threads}")
+        print(f"  components:  {len(settings.components or [])}")
+        return
+
     # Build
     def progress(pct: int, msg: str, kind: str = "phase"):  # noqa: ARG001  kind ignored on CLI
         bar_len = 30
         filled = int(bar_len * pct / 100)
         bar = "#" * filled + "-" * (bar_len - filled)
-        print(f"\r[{bar}] {pct:3d}%  {msg:<55}", end="", flush=True)
+        # U7: ANSI clear-to-EOL.
+        print(f"\r[{bar}] {pct:3d}%  {msg}\033[K", end="", flush=True)
 
     print(f"Building repack installer for '{settings.app_name}'...")
     result = build_repack(settings, progress=progress)
     print()  # newline after progress bar
 
     if not result.success:
-        _die(f"Repack failed: {result.error}")
+        _die(f"Repack failed: {result.error}", EXIT_BUILD)
 
     print(f"\nOutput:       {result.output_path}")
     if result.bin_path:
@@ -583,9 +644,9 @@ def _cmd_new_repack_project(args):
             try:
                 c = json.loads(raw)
             except json.JSONDecodeError as exc:
-                _die(f"Invalid --component JSON: {exc}\n  value: {raw}")
+                _die(f"Invalid --component JSON: {exc}\n  value: {raw}", EXIT_INPUT)
             if "label" not in c or "folder" not in c:
-                _die(f"--component JSON must have 'label' and 'folder' keys: {raw}")
+                _die(f"--component JSON must have 'label' and 'folder' keys: {raw}", EXIT_INPUT)
             parsed.append({
                 "label":           str(c["label"]),
                 "folder":          str(c["folder"]),
@@ -621,7 +682,7 @@ def _cmd_show_repack_project(args):
     try:
         s = load_repack(Path(args.project))
     except Exception as exc:
-        _die(f"Failed to load project: {exc}")
+        _die(f"Failed to load project: {exc}", EXIT_INPUT)
 
     print(f"Repack project: {args.project}")
     d = asdict(s)
@@ -641,9 +702,20 @@ def _cmd_show_repack_project(args):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _die(msg: str):
+# Exit-code conventions for callers driving the CLI from scripts:
+#   1 — generic / unspecified runtime error
+#   2 — argparse uses this for command-line usage errors (untouched)
+#   3 — input error: missing file/dir, malformed project, malformed
+#       --component JSON, or any failure while reading user-supplied data
+#   4 — build error: engine ran but produced an error or non-zero output
+EXIT_GENERIC = 1
+EXIT_INPUT   = 3
+EXIT_BUILD   = 4
+
+
+def _die(msg: str, code: int = EXIT_GENERIC):
     print(f"error: {msg}", file=sys.stderr)
-    sys.exit(1)
+    sys.exit(code)
 
 
 def _warn(msg: str):
@@ -676,6 +748,56 @@ def _apply_renamed(settings, args, mapping):
         v = getattr(args, arg_attr, None)
         if v:
             setattr(settings, settings_attr, v)
+
+
+def _validate_build_inputs(settings) -> list[str]:
+    """Front-loaded path/field validation for `build` (and `build --check`).
+    Returns a list of human-readable error messages; empty means OK.
+    Mirrors the early checks in core.patch_builder.build()."""
+    errors: list[str] = []
+    if not settings.app_name.strip():
+        errors.append("App name is required")
+    if not settings.source_dir or not Path(settings.source_dir).is_dir():
+        errors.append(f"Source directory not found or not a directory: {settings.source_dir!r}")
+    if not settings.target_dir or not Path(settings.target_dir).is_dir():
+        errors.append(f"Target directory not found or not a directory: {settings.target_dir!r}")
+    if settings.icon_path and not Path(settings.icon_path).is_file():
+        errors.append(f"Icon file not found: {settings.icon_path}")
+    if settings.backdrop_path and not Path(settings.backdrop_path).is_file():
+        errors.append(f"Backdrop file not found: {settings.backdrop_path}")
+    for ef in (settings.extra_files or []):
+        src = ef.get("src", "")
+        if not src or not Path(src).exists():
+            errors.append(f"Extra file source not found: {src!r}")
+    if settings.arch not in ("x64", "x86"):
+        errors.append(f"Invalid architecture: {settings.arch!r} (expected x64 or x86)")
+    return errors
+
+
+def _validate_repack_inputs(settings) -> list[str]:
+    """Front-loaded validation for `repack` (and `repack --check`)."""
+    errors: list[str] = []
+    if not settings.app_name.strip():
+        errors.append("App name is required")
+    if not settings.game_dir or not Path(settings.game_dir).is_dir():
+        errors.append(f"Game directory not found or not a directory: {settings.game_dir!r}")
+    if settings.icon_path and not Path(settings.icon_path).is_file():
+        errors.append(f"Icon file not found: {settings.icon_path}")
+    if settings.backdrop_path and not Path(settings.backdrop_path).is_file():
+        errors.append(f"Backdrop file not found: {settings.backdrop_path}")
+    for i, c in enumerate(settings.components or []):
+        folder = c.get("folder", "")
+        if not folder or not Path(folder).is_dir():
+            errors.append(f"Component {i + 1} folder not found: {folder!r}")
+    if settings.codec not in ("lzma", "zstd"):
+        errors.append(f"Invalid codec: {settings.codec!r} (expected lzma or zstd)")
+    if settings.arch not in ("x64", "x86"):
+        errors.append(f"Invalid architecture: {settings.arch!r} (expected x64 or x86)")
+    if settings.threads < 1 or settings.threads > 256:
+        errors.append(f"Invalid thread count: {settings.threads} (must be 1–256)")
+    if settings.max_part_size_mb < 0:
+        errors.append(f"max_part_size_mb must be ≥ 0, got {settings.max_part_size_mb}")
+    return errors
 
 
 # Flag/field name lists for _apply_truthy. Booleans with paired --flag /
