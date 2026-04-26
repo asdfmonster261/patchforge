@@ -311,7 +311,7 @@ def build(
     components: Optional[list] = None,
     threads: int = 1,
     codec: str = "lzma",
-    progress: Optional[Callable[[int, str], None]] = None,
+    progress: Optional[Callable[[int, str, str], None]] = None,
     tmp_dir: Optional[Path] = None,
     stream_progress: Optional[Callable[[int, int, str, int, int, str], None]] = None,
 ) -> tuple[Path, int, int, list[dict], dict[int, dict]]:
@@ -332,11 +332,13 @@ def build(
     sidecar .bin files are permanent outputs.
 
     file_list is [{"path": str, "component": int, "offset": int, "size": int}].
-    progress(pct 0-100, message) is called throughout.
+    progress(pct 0-100, message, kind) is called throughout, where `kind` is
+    "phase" for top-level transitions or "file" for per-file batched updates
+    (noisy — front-ends typically suppress these from the log).
     """
-    def _prog(pct: int, msg: str) -> None:
+    def _prog(pct: int, msg: str, kind: str = "phase") -> None:
         if progress:
-            progress(pct, msg)
+            progress(pct, msg, kind)
 
     game_dir = Path(game_dir)
     components = components or []
@@ -472,8 +474,11 @@ def _compress_sequential(
         s_range = s_end - s_start
         total = len(specs)
 
+        # "compressing N files…" is per-stream noise (one line per stream),
+        # tag as "file" so the GUI keeps the status bar in sync without
+        # logging it.  The "done — N compressed" summary below stays "phase".
         _prog(5 + int(s_start * 88),
-              f"{label}: compressing {total} file(s)…")
+              f"{label}: compressing {total} file(s)…", "file")
         if stream_progress:
             stream_progress(stream_idx, num_streams, label, 0, max(total, 1), "")
 
@@ -483,7 +488,7 @@ def _compress_sequential(
                        _lbl=label, _ss=s_start, _sr=s_range,
                        _si=stream_idx, _ns=num_streams) -> None:
             pct = 5 + int((_ss + done / tot * _sr) * 88)
-            _prog(pct, f"{_lbl}: {done}/{tot} files…")
+            _prog(pct, f"{_lbl}: {done}/{tot} files…", "file")
             if stream_progress:
                 size_str = _fmt_size(file_size) if file_size else ""
                 stream_progress(_si, _ns, _lbl, done, tot, size_str)

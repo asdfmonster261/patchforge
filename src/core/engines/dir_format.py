@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
-from ..fmt import files_equal
+from ..fmt import files_equal, walk_file_pair
 
 OP_DELETE = 0
 OP_PATCH  = 1
@@ -49,31 +49,17 @@ def build(
         New files (OP_NEW) bypass make_patch — their raw content is stored directly.
     Raises on any error (engine failure, I/O).
     """
-    src_files: dict[str, Path] = {
-        f.relative_to(source).as_posix(): f
-        for f in source.rglob("*") if f.is_file()
-    }
-    tgt_files: dict[str, Path] = {
-        f.relative_to(target).as_posix(): f
-        for f in target.rglob("*") if f.is_file()
-    }
-
     entries: list[tuple[int, str, bytes]] = []
 
     # Collect which files need patching (OP_PATCH) so we can parallelise them.
     patch_jobs: list[tuple[str, Path, Path]] = []
 
-    for rel in sorted(set(src_files) | set(tgt_files)):
-        in_src = rel in src_files
-        in_tgt = rel in tgt_files
-
-        if in_src and not in_tgt:
+    for rel, src_f, tgt_f in walk_file_pair(source, target):
+        if tgt_f is None:
             entries.append((OP_DELETE, rel, b""))
-        elif not in_src and in_tgt:
-            entries.append((OP_NEW, rel, tgt_files[rel].read_bytes()))
+        elif src_f is None:
+            entries.append((OP_NEW, rel, tgt_f.read_bytes()))
         else:
-            src_f = src_files[rel]
-            tgt_f = tgt_files[rel]
             if src_f.stat().st_size == tgt_f.stat().st_size and \
                files_equal(src_f, tgt_f):
                 continue
