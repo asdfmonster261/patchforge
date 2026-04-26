@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from .engines import HDiffPatchEngine, JojoDiffEngine, XDelta3Engine, PatchEngine
 from .exe_packager import package
-from .fmt import files_equal
+from .fmt import files_equal, walk_file_pair
 from .project import ProjectSettings
 
 _ENGINE_ARCH = "win-x64" if sys.platform == "win32" else "linux-x64"
@@ -169,28 +169,23 @@ def build(
         "preserve_timestamps":     1 if settings.preserve_timestamps else 0,
     }
 
-    # Always compute file trees so change counts are available for the UI
-    src_files = {
-        f.relative_to(source).as_posix(): f
-        for f in source.rglob("*") if f.is_file()
-    }
-    tgt_files = {
-        f.relative_to(target).as_posix(): f
-        for f in target.rglob("*") if f.is_file()
-    }
+    # Walk src and tgt in a single pass; entries holds (rel, tgt_path,
+    # src_path_or_None) for added + modified files. Removed files don't
+    # land in entries — they're counted separately for the UI summary.
     entries = []
-    for rel, tgt_f in sorted(tgt_files.items()):
-        if rel not in src_files:
+    files_removed = 0
+    for rel, src_f, tgt_f in walk_file_pair(source, target):
+        if tgt_f is None:
+            files_removed += 1
+        elif src_f is None:
             entries.append((rel, tgt_f, None))
         else:
-            src_f = src_files[rel]
             if src_f.stat().st_size != tgt_f.stat().st_size or \
                not files_equal(src_f, tgt_f):
                 entries.append((rel, tgt_f, src_f))
 
     files_modified = sum(1 for _, _, src_f in entries if src_f is not None)
     files_added    = sum(1 for _, _, src_f in entries if src_f is None)
-    files_removed  = sum(1 for rel in src_files if rel not in tgt_files)
     metadata["files_modified"] = files_modified
     metadata["files_added"]    = files_added
     metadata["files_removed"]  = files_removed

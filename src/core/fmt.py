@@ -2,6 +2,39 @@
 
 import os
 from pathlib import Path
+from typing import Iterator, Optional
+
+
+def walk_files(root: Path) -> Iterator[tuple[str, Path]]:
+    """Yield (rel_posix_path, abs_path) for every regular file under root.
+
+    Uses os.walk (scandir-backed) so we don't pay an extra is_file() stat
+    per entry the way Path.rglob('*') + is_file() does. Order within each
+    directory is deterministic (sorted) so callers can rely on stable
+    output across runs."""
+    root_str = str(root)
+    root_path = Path(root_str)
+    for dirpath, dirnames, filenames in os.walk(root_str):
+        dirnames.sort()
+        rel_dir = Path(dirpath).relative_to(root_path).as_posix()
+        for fn in sorted(filenames):
+            rel = fn if rel_dir == "." else f"{rel_dir}/{fn}"
+            yield rel, Path(dirpath) / fn
+
+
+def walk_file_pair(
+    src: Path, tgt: Path
+) -> Iterator[tuple[str, Optional[Path], Optional[Path]]]:
+    """Walk src and tgt directory trees and yield one record per unique
+    relative path: (rel, src_path_or_None, tgt_path_or_None).
+
+    Used by patch_builder and engines/dir_format to compute file deltas
+    in one consolidated pass instead of each consumer rebuilding its own
+    src_files / tgt_files dicts."""
+    src_files = dict(walk_files(src))
+    tgt_files = dict(walk_files(tgt))
+    for rel in sorted(set(src_files) | set(tgt_files)):
+        yield rel, src_files.get(rel), tgt_files.get(rel)
 
 
 def files_equal(a: Path, b: Path, chunk_size: int = 1024 * 1024) -> bool:
