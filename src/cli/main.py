@@ -197,6 +197,15 @@ def _add_build(sub):
     p.add_argument("--check", action="store_true",
                    help="Validate inputs and resolved settings without running the engine")
 
+    # Output verbosity
+    out_grp = p.add_mutually_exclusive_group()
+    out_grp.add_argument("--quiet", "-q", action="store_true",
+                         help="Suppress progress output (errors still go to stderr)")
+    out_grp.add_argument("--verbose", "-v", action="store_true",
+                         help="Verbose output (reserved for future debug logging)")
+    p.add_argument("--json", action="store_true",
+                   help="Emit a JSON result object on stdout (implies --quiet for progress)")
+
     p.set_defaults(func=_cmd_build)
 
 
@@ -238,23 +247,40 @@ def _cmd_build(args):
     if args.save_project:
         try:
             save(settings, Path(args.save_project))
-            print(f"Project saved: {args.save_project}")
+            if not (args.quiet or args.json):
+                print(f"Project saved: {args.save_project}")
         except Exception as exc:
             _warn(f"Could not save project: {exc}")
 
-    # --check: validate inputs without invoking the engine.
+    # --json implies --quiet for progress (we still emit one JSON object on stdout).
+    quiet = args.quiet or args.json
+
+    # U5: front-loaded validation runs on the normal build path too, not
+    # just under --check.  Bad inputs fail before the engine is invoked.
+    errors = _validate_build_inputs(settings)
+    if errors:
+        _emit_validation_errors(errors, args.json)
+
+    # --check: short-circuit before running the engine.
     if args.check:
-        errors = _validate_build_inputs(settings)
-        if errors:
-            for e in errors:
-                print(f"error: {e}", file=sys.stderr)
-            sys.exit(EXIT_INPUT)
-        print(f"OK — settings valid for '{settings.app_name}' using {settings.engine}.")
-        print(f"  source:      {settings.source_dir}")
-        print(f"  target:      {settings.target_dir}")
-        print(f"  output_dir:  {settings.output_dir or '(current dir)'}")
-        print(f"  engine:      {settings.engine}")
-        print(f"  compression: {settings.compression}")
+        if args.json:
+            print(json.dumps({
+                "success":     True,
+                "checked":     True,
+                "app_name":    settings.app_name,
+                "engine":      settings.engine,
+                "compression": settings.compression,
+                "source_dir":  settings.source_dir,
+                "target_dir":  settings.target_dir,
+                "output_dir":  settings.output_dir or "",
+            }))
+        elif not args.quiet:
+            print(f"OK — settings valid for '{settings.app_name}' using {settings.engine}.")
+            print(f"  source:      {settings.source_dir}")
+            print(f"  target:      {settings.target_dir}")
+            print(f"  output_dir:  {settings.output_dir or '(current dir)'}")
+            print(f"  engine:      {settings.engine}")
+            print(f"  compression: {settings.compression}")
         return
 
     # Build
@@ -266,16 +292,33 @@ def _cmd_build(args):
         # message sequence doesn't leave trailing chars from the prior line.
         print(f"\r[{bar}] {pct:3d}%  {msg}\033[K", end="", flush=True)
 
-    print(f"Building patch for '{settings.app_name}' using {settings.engine}...")
-    result = build(settings, progress=progress)
-    print()  # newline after progress bar
+    if not quiet:
+        print(f"Building patch for '{settings.app_name}' using {settings.engine}...")
+    result = build(settings, progress=None if quiet else progress)
+    if not quiet:
+        print()  # newline after progress bar
+
+    if args.json:
+        out = {
+            "success":     result.success,
+            "output_path": str(result.output_path) if result.output_path else None,
+            "patch_size":  result.patch_size,
+            "output_size": result.output_size,
+        }
+        if not result.success:
+            out["error"] = result.error
+        print(json.dumps(out))
+        if not result.success:
+            sys.exit(EXIT_BUILD)
+        return
 
     if not result.success:
         _die(f"Build failed: {result.error}", EXIT_BUILD)
 
-    print(f"\nOutput:      {result.output_path}")
-    print(f"Patch size:  {_fmt_size(result.patch_size)}")
-    print(f"Output size: {_fmt_size(result.output_size)}")
+    if not quiet:
+        print(f"\nOutput:      {result.output_path}")
+        print(f"Patch size:  {_fmt_size(result.patch_size)}")
+        print(f"Output size: {_fmt_size(result.output_size)}")
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +528,15 @@ def _add_repack(sub):
     p.add_argument("--check", action="store_true",
                    help="Validate inputs and resolved settings without running the engine")
 
+    # Output verbosity
+    out_grp = p.add_mutually_exclusive_group()
+    out_grp.add_argument("--quiet", "-q", action="store_true",
+                         help="Suppress progress output (errors still go to stderr)")
+    out_grp.add_argument("--verbose", "-v", action="store_true",
+                         help="Verbose output (reserved for future debug logging)")
+    p.add_argument("--json", action="store_true",
+                   help="Emit a JSON result object on stdout (implies --quiet for progress)")
+
     p.set_defaults(func=_cmd_repack)
 
 
@@ -533,24 +585,41 @@ def _cmd_repack(args):
     if args.save_project:
         try:
             save_repack(settings, Path(args.save_project))
-            print(f"Project saved: {args.save_project}")
+            if not (args.quiet or args.json):
+                print(f"Project saved: {args.save_project}")
         except Exception as exc:
             _warn(f"Could not save project: {exc}")
 
-    # --check: validate inputs without invoking the engine.
+    # --json implies --quiet for progress (we still emit one JSON object on stdout).
+    quiet = args.quiet or args.json
+
+    # U5: front-loaded validation runs on the normal repack path too.
+    errors = _validate_repack_inputs(settings)
+    if errors:
+        _emit_validation_errors(errors, args.json)
+
+    # --check: short-circuit before running the engine.
     if args.check:
-        errors = _validate_repack_inputs(settings)
-        if errors:
-            for e in errors:
-                print(f"error: {e}", file=sys.stderr)
-            sys.exit(EXIT_INPUT)
-        print(f"OK — settings valid for '{settings.app_name}'.")
-        print(f"  game_dir:    {settings.game_dir}")
-        print(f"  output_dir:  {settings.output_dir or '(current dir)'}")
-        print(f"  codec:       {settings.codec}")
-        print(f"  compression: {settings.compression}")
-        print(f"  threads:     {settings.threads}")
-        print(f"  components:  {len(settings.components or [])}")
+        if args.json:
+            print(json.dumps({
+                "success":     True,
+                "checked":     True,
+                "app_name":    settings.app_name,
+                "codec":       settings.codec,
+                "compression": settings.compression,
+                "threads":     settings.threads,
+                "game_dir":    settings.game_dir,
+                "output_dir":  settings.output_dir or "",
+                "components":  len(settings.components or []),
+            }))
+        elif not args.quiet:
+            print(f"OK — settings valid for '{settings.app_name}'.")
+            print(f"  game_dir:    {settings.game_dir}")
+            print(f"  output_dir:  {settings.output_dir or '(current dir)'}")
+            print(f"  codec:       {settings.codec}")
+            print(f"  compression: {settings.compression}")
+            print(f"  threads:     {settings.threads}")
+            print(f"  components:  {len(settings.components or [])}")
         return
 
     # Build
@@ -561,21 +630,40 @@ def _cmd_repack(args):
         # U7: ANSI clear-to-EOL.
         print(f"\r[{bar}] {pct:3d}%  {msg}\033[K", end="", flush=True)
 
-    print(f"Building repack installer for '{settings.app_name}'...")
-    result = build_repack(settings, progress=progress)
-    print()  # newline after progress bar
+    if not quiet:
+        print(f"Building repack installer for '{settings.app_name}'...")
+    result = build_repack(settings, progress=None if quiet else progress)
+    if not quiet:
+        print()  # newline after progress bar
+
+    if args.json:
+        out = {
+            "success":           result.success,
+            "output_path":       str(result.output_path) if result.output_path else None,
+            "bin_path":          str(result.bin_path) if result.bin_path else None,
+            "total_files":       result.total_files,
+            "uncompressed_size": result.uncompressed_size,
+            "output_size":       result.output_size,
+        }
+        if not result.success:
+            out["error"] = result.error
+        print(json.dumps(out))
+        if not result.success:
+            sys.exit(EXIT_BUILD)
+        return
 
     if not result.success:
         _die(f"Repack failed: {result.error}", EXIT_BUILD)
 
-    print(f"\nOutput:       {result.output_path}")
-    if result.bin_path:
-        print(f"Data file:    {result.bin_path}")
-    print(f"Files packed: {result.total_files}")
-    print(f"Game size:    {_fmt_size(result.uncompressed_size)}")
-    print(f"Installer:    {_fmt_size(result.output_size)}")
-    ratio = result.output_size / result.uncompressed_size * 100 if result.uncompressed_size else 0
-    print(f"Compression:  {ratio:.1f}% of original")
+    if not quiet:
+        print(f"\nOutput:       {result.output_path}")
+        if result.bin_path:
+            print(f"Data file:    {result.bin_path}")
+        print(f"Files packed: {result.total_files}")
+        print(f"Game size:    {_fmt_size(result.uncompressed_size)}")
+        print(f"Installer:    {_fmt_size(result.output_size)}")
+        ratio = result.output_size / result.uncompressed_size * 100 if result.uncompressed_size else 0
+        print(f"Compression:  {ratio:.1f}% of original")
 
 
 # ---------------------------------------------------------------------------
@@ -748,6 +836,18 @@ def _apply_renamed(settings, args, mapping):
         v = getattr(args, arg_attr, None)
         if v:
             setattr(settings, settings_attr, v)
+
+
+def _emit_validation_errors(errors: list[str], json_mode: bool) -> None:
+    """Print validation errors and exit EXIT_INPUT.  In --json mode the
+    errors come out as a single object on stdout; otherwise each error is
+    written to stderr with the standard `error: ` prefix."""
+    if json_mode:
+        print(json.dumps({"success": False, "errors": errors}))
+    else:
+        for e in errors:
+            print(f"error: {e}", file=sys.stderr)
+    sys.exit(EXIT_INPUT)
 
 
 def _validate_build_inputs(settings) -> list[str]:
