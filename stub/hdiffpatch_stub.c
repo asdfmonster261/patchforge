@@ -41,8 +41,6 @@ HWND g_hwnd_log      = NULL;
 HWND g_hwnd_btn_patch = NULL;
 static int g_close_countdown = 0;
 #define TIMER_CLOSE 1
-HWND g_hwnd_chk_backup  = NULL;
-HWND g_hwnd_chk_verify  = NULL;
 HBRUSH g_brush_bg    = NULL;
 HBRUSH g_brush_light = NULL;
 HBRUSH g_brush_log   = NULL;
@@ -391,142 +389,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_CREATE: {
         g_hwnd = hwnd;
         enable_dark_titlebar(hwnd);
-
-        /* Title */
-        HWND lbl = CreateWindowExA(0, "STATIC",
-            g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher",
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 16, 680, 30, hwnd, NULL, NULL, NULL);
-        SendMessageA(lbl, WM_SETFONT, (WPARAM)g_font_title, TRUE);
-
-        /* Change summary */
-        {
-            int m = g_meta.files_modified, a = g_meta.files_added, r = g_meta.files_removed;
-            if (m + a + r > 0) {
-                char cbuf[128] = {0};
-                int pos = 0;
-                if (m) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos, "%d modified", m);
-                if (a) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos, "%s%d added",
-                                       pos ? "  \xB7  " : "", a);
-                if (r) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos, "%s%d removed",
-                                       pos ? "  \xB7  " : "", r);
-                HWND clbl = CreateWindowExA(0, "STATIC", cbuf,
-                    WS_CHILD | WS_VISIBLE | SS_LEFT,
-                    20, 50, 680, 16, hwnd, NULL, NULL, NULL);
-                SendMessageA(clbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-            }
-        }
-
-        /* Description */
-        if (g_meta.description[0]) {
-            HWND desc = CreateWindowExA(0, "STATIC", g_meta.description,
-                WS_CHILD | WS_VISIBLE | SS_LEFT,
-                20, 68, 680, 16, hwnd, NULL, NULL, NULL);
-            SendMessageA(desc, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        }
-
-        /* Game folder row */
-        HWND flbl = CreateWindowExA(0, "STATIC", "Game folder:",
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 102, 90, 18, hwnd, NULL, NULL, NULL);
-        SendMessageA(flbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-
-        g_hwnd_filepath = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-            WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            115, 100, 499, 22, hwnd, (HMENU)IDC_FILEPATH, NULL, NULL);
-        SendMessageA(g_hwnd_filepath, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-
-        CreateWindowExA(0, "BUTTON", "Browse...",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            622, 100, 78, 22, hwnd, (HMENU)IDC_BTN_BROWSE, NULL, NULL);
-
-        /* Backup checkbox */
-        g_hwnd_chk_backup = CreateWindowExA(0, "BUTTON", "Create backup before patching",
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            20, 134, 260, 20, hwnd, (HMENU)IDC_CHK_BACKUP, NULL, NULL);
-        SendMessageA(g_hwnd_chk_backup, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        SendMessageA(g_hwnd_chk_backup, BM_SETCHECK, BST_CHECKED, 0);
-
-        /* Verify checkbox */
-        g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON", "Verify after patching",
-            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-            20, 158, 260, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
-        SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-        SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
-
-        /* Log area */
-        g_hwnd_log = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-            WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
-            ES_READONLY | WS_VSCROLL,
-            20, 192, 680, 110, hwnd, (HMENU)IDC_LOG, NULL, NULL);
-        SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-
-        /* Progress bar */
-        g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
-            WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-            20, 310, 680, 8, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
-
-        /* Status */
-        g_hwnd_status = CreateWindowExA(0, "STATIC",
-            "Select the game folder and click Patch.",
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 326, 510, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
-        SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-
-        /* Patch / Cancel buttons */
-        g_hwnd_btn_patch = CreateWindowExA(0, "BUTTON", "Patch",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            530, 354, 80, 28, hwnd, (HMENU)IDC_BTN_PATCH, NULL, NULL);
-        CreateWindowExA(0, "BUTTON", "Cancel",
-            WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-            620, 354, 72, 28, hwnd, (HMENU)IDC_BTN_CANCEL, NULL, NULL);
-
-        /* Bottom-left info: company · copyright · contact, then version on the line below */
-        {
-            char info[512] = {0};
-            const char * const info_parts[3] = {
-                g_meta.company_info, g_meta.copyright, g_meta.contact
-            };
-            for (int i = 0; i < 3; i++) {
-                if (info_parts[i][0]) {
-                    if (info[0]) {
-                        size_t l = strlen(info);
-                        snprintf(info + l, sizeof(info) - l, "  \xB7  %s", info_parts[i]);
-                    } else {
-                        snprintf(info, sizeof(info), "%s", info_parts[i]);
-                    }
-                }
-            }
-            if (info[0]) {
-                HWND infolbl = CreateWindowExA(0, "STATIC", info,
-                    WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
-                    20, 360, 500, 16, hwnd, NULL, NULL, NULL);
-                SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-            }
-            if (g_meta.version[0]) {
-                char verbuf[80] = {0};
-                snprintf(verbuf, sizeof(verbuf), "Version: %s", g_meta.version);
-                HWND verlbl = CreateWindowExA(0, "STATIC", verbuf,
-                    WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
-                    20, 384, 500, 16, hwnd, NULL, NULL, NULL);
-                SendMessageA(verlbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
-            }
-        }
-
-        /* Run on-startup command asynchronously */
-        pfg_run_async(g_meta.run_on_startup);
-
-        /* Auto-detect game folder; preset path (from UAC relaunch) takes priority */
-        char auto_path[MAX_PATH] = {0};
-        if (strcmp(g_meta.find_method, "registry") == 0)
-            find_via_registry(&g_meta, auto_path, MAX_PATH);
-        else if (strcmp(g_meta.find_method, "ini") == 0)
-            find_via_ini(&g_meta, auto_path, MAX_PATH);
-        {
-            const char *init = g_preset_path[0] ? g_preset_path : auto_path;
-            if (init[0]) SetWindowTextA(g_hwnd_filepath, init);
-        }
-
+        pfg_build_patcher_gui(hwnd);
         break;
     }
 
@@ -660,16 +523,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         break;
     }
 
-    case WM_PAINT: {
-        PAINTSTRUCT ps;
-        HDC dc = BeginPaint(hwnd, &ps);
-        pfg_paint_background(hwnd, dc);
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-
     case WM_ERASEBKGND:
-        return 1;
+        return pfg_paint_band_background(hwnd, (HDC)wp);
 
     case WM_DESTROY:
         PostQuitMessage(0);
@@ -738,6 +593,7 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     }
 
     pfg_load_backdrop();
+    pfg_compute_img_h();
 
     g_brush_bg    = CreateSolidBrush(COL_BG);
     g_brush_light = CreateSolidBrush(COL_BG_LIGHT);
@@ -764,9 +620,16 @@ int WINAPI WinMain(HINSTANCE hi, HINSTANCE hp, LPSTR cmd, int show)
     const char *title = g_meta.window_title[0] ? g_meta.window_title :
                         (g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher");
     /* Compute outer window size from desired client area so the non-client
-       frame (title bar + borders) never clips controls at the bottom. */
+       frame (title bar + borders) never clips controls at the bottom.
+       Mirrors the layout chained inside pfg_build_patcher_gui:
+         g_img_h + 380 base + 18 per optional subtitle/desc/summary line. */
     DWORD wstyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-    RECT wr = {0, 0, 720, 412};
+    int hdr_extra = (g_meta.app_note[0]    ? 18 : 0)
+                  + (g_meta.description[0] ? 18 : 0);
+    int sum_extra = (g_meta.files_modified + g_meta.files_added
+                     + g_meta.files_removed > 0) ? 18 : 0;
+    int client_h  = g_img_h + 380 + hdr_extra + sum_extra + 12;
+    RECT wr = {0, 0, 720, client_h};
     AdjustWindowRect(&wr, wstyle, FALSE);
     HWND hwnd = CreateWindowExA(
         0, "PatchForgeStub", title, wstyle,

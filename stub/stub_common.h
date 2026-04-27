@@ -148,6 +148,22 @@ static char g_preset_path[MAX_PATH] = {0};
 /* Cached backdrop bitmap (NULL if no backdrop) */
 static HBITMAP g_backdrop_bmp = NULL;
 
+/* ---- Image-band sizing (matches installer/uninstaller chrome) ---- */
+#define BACKDROP_ASPECT_W 616
+#define BACKDROP_ASPECT_H 353
+#define IMG_MAX_H         480
+
+/* Layout state used by patcher chrome: image band height + footer
+ * separator y. Set by pfg_build_patcher_gui / pfg_compute_img_h, read
+ * by pfg_paint_band_background. */
+static int g_img_h      = 0;
+static int g_foot_sep_y = 0;
+
+/* Patcher checkbox handles (set by pfg_build_patcher_gui, read by
+ * each patcher stub's WM_COMMAND when launching the patch thread). */
+static HWND g_hwnd_chk_backup = NULL;
+static HWND g_hwnd_chk_verify = NULL;
+
 /* ---- Forward declarations ---- */
 LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void log_message(const char *fmt, ...);
@@ -1030,28 +1046,52 @@ static void pfg_draw_progress(HDC dc, RECT r, int pct)
     DeleteObject(ac_pen);
 }
 
-/* ---- Render backdrop (or solid fill) for WM_PAINT ---- */
-static void pfg_paint_background(HWND hwnd, HDC dc)
+/* ---- Compute image-band height from backdrop aspect ratio ----
+ * Mirrors installer_stub.c so patcher chrome matches installer chrome.
+ * Call after pfg_load_backdrop. */
+static void pfg_compute_img_h(void)
 {
-    RECT r;
-    GetClientRect(hwnd, &r);
-    if (g_backdrop_bmp) {
-        HDC mem = CreateCompatibleDC(dc);
-        HGDIOBJ old = SelectObject(mem, g_backdrop_bmp);
-        BITMAP bm;
-        GetObjectA(g_backdrop_bmp, sizeof(bm), &bm);
-        StretchBlt(dc, r.left, r.top, r.right - r.left, r.bottom - r.top,
-                   mem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
-        SelectObject(mem, old);
-        DeleteDC(mem);
-    } else {
-        FillRect(dc, &r, g_brush_bg);
+    if (!g_backdrop_bmp) { g_img_h = 0; return; }
+    g_img_h = (int)((720 * BACKDROP_ASPECT_H + BACKDROP_ASPECT_W / 2)
+                    / BACKDROP_ASPECT_W);
+    if (g_img_h > IMG_MAX_H) g_img_h = IMG_MAX_H;
+    if (g_img_h < 60)        g_img_h = 60;
+}
+
+/* ---- Installer-style background paint ----
+ * Solid bg + image band (height g_img_h) + accent separator under
+ * the image + 1px footer separator at g_foot_sep_y. Drive from
+ * WM_ERASEBKGND. Returns 1 (handled). */
+static int pfg_paint_band_background(HWND hwnd, HDC dc)
+{
+    RECT r; GetClientRect(hwnd, &r);
+    FillRect(dc, &r, g_brush_bg);
+
+    if (g_backdrop_bmp && g_img_h > 0) {
+        HDC mdc = CreateCompatibleDC(dc);
+        if (mdc) {
+            SelectObject(mdc, g_backdrop_bmp);
+            BITMAP bm = {0};
+            GetObjectA(g_backdrop_bmp, sizeof(bm), &bm);
+            SetStretchBltMode(dc, HALFTONE);
+            SetBrushOrgEx(dc, 0, 0, NULL);
+            StretchBlt(dc, 0, 0, r.right, g_img_h,
+                       mdc, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+            DeleteDC(mdc);
+            HBRUSH sep = CreateSolidBrush(COL_ACCENT);
+            RECT   sep_r = {0, g_img_h, r.right, g_img_h + 2};
+            FillRect(dc, &sep_r, sep);
+            DeleteObject(sep);
+        }
     }
-    /* Accent top stripe — always drawn (anchors visual hierarchy) */
-    RECT stripe = {r.left, r.top, r.right, r.top + 3};
-    HBRUSH ac = CreateSolidBrush(COL_ACCENT);
-    FillRect(dc, &stripe, ac);
-    DeleteObject(ac);
+
+    if (g_foot_sep_y > 0) {
+        HBRUSH fsep = CreateSolidBrush(COL_BORDER);
+        RECT   fsep_r = {20, g_foot_sep_y, r.right - 20, g_foot_sep_y + 1};
+        FillRect(dc, &fsep_r, fsep);
+        DeleteObject(fsep);
+    }
+    return 1;
 }
 
 /* ---- Smart UAC elevation ---- */
@@ -1226,6 +1266,190 @@ static void pfg_restore_timestamps(FileStamp *snap, int count)
             CloseHandle(h);
         }
     }
+}
+
+/* ---- Build patcher window contents (matches installer chrome) ----
+ * Creates every static/control inside the patcher window: title row,
+ * subtitle / description / change-summary lines, "Game folder:" path
+ * row, SETTINGS section header, backup + verify checkboxes, log,
+ * progress bar, status, footer separator (via g_foot_sep_y), footer
+ * info label, and Cancel / Patch buttons. Pre-populates the path edit
+ * from preset/UAC arg or registry/ini auto-detect, and kicks off the
+ * run_on_startup command. Returns the y of the bottom of the last
+ * control so WinMain can size the window to fit. */
+static int pfg_build_patcher_gui(HWND hwnd)
+{
+    const int lx   = 20;
+    const int crw  = 680;
+    const int rmax = 700;
+
+    int cy = g_img_h + 2;
+    int title_y = cy + 14;
+
+    HWND lbl_title = CreateWindowExA(0, "STATIC",
+        g_meta.app_name[0] ? g_meta.app_name : "PatchForge Patcher",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        lx, title_y, 500, 28, hwnd, NULL, NULL, NULL);
+    SendMessageA(lbl_title, WM_SETFONT, (WPARAM)g_font_title, TRUE);
+
+    if (g_meta.version[0]) {
+        HWND lbl_ver = CreateWindowExA(0, "STATIC", g_meta.version,
+            WS_CHILD | WS_VISIBLE | SS_RIGHT,
+            rmax - 150, title_y + 8, 150, 16, hwnd, NULL, NULL, NULL);
+        SendMessageA(lbl_ver, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+    }
+
+    int subtitle_h = 0;
+    if (g_meta.app_note[0]) {
+        HWND s = CreateWindowExA(0, "STATIC", g_meta.app_note,
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            lx, title_y + 30, crw, 16, hwnd, NULL, NULL, NULL);
+        SendMessageA(s, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        subtitle_h = 18;
+    }
+    int desc_h = 0;
+    if (g_meta.description[0]) {
+        HWND d = CreateWindowExA(0, "STATIC", g_meta.description,
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            lx, title_y + 30 + subtitle_h, crw, 16, hwnd, NULL, NULL, NULL);
+        SendMessageA(d, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        desc_h = 18;
+    }
+
+    int summary_h = 0;
+    {
+        int m = g_meta.files_modified;
+        int a = g_meta.files_added;
+        int rem = g_meta.files_removed;
+        if (m + a + rem > 0) {
+            char cbuf[128] = {0};
+            int pos = 0;
+            if (m) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos,
+                                   "%d modified", m);
+            if (a) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos,
+                                   "%s%d added", pos ? "  \xB7  " : "", a);
+            if (rem) pos += snprintf(cbuf + pos, sizeof(cbuf) - pos,
+                                     "%s%d removed", pos ? "  \xB7  " : "", rem);
+            HWND sum = CreateWindowExA(0, "STATIC", cbuf,
+                WS_CHILD | WS_VISIBLE | SS_LEFT,
+                lx, title_y + 30 + subtitle_h + desc_h, crw, 16,
+                hwnd, NULL, NULL, NULL);
+            SendMessageA(sum, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+            summary_h = 18;
+        }
+    }
+
+    int path_y = title_y + 30 + subtitle_h + desc_h + summary_h + 12;
+
+    HWND lbl_path = CreateWindowExA(0, "STATIC", "Game folder:",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        lx, path_y, 100, 16, hwnd, NULL, NULL, NULL);
+    SendMessageA(lbl_path, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+
+    g_hwnd_filepath = CreateWindowExA(0, "EDIT", "",
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+        lx, path_y + 18, 568, 26, hwnd, (HMENU)IDC_FILEPATH, NULL, NULL);
+    SendMessageA(g_hwnd_filepath, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+
+    CreateWindowExA(0, "BUTTON", "Browse...",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        lx + 572, path_y + 18, 108, 26, hwnd,
+        (HMENU)IDC_BTN_BROWSE, NULL, NULL);
+
+    /* SETTINGS section */
+    int sec_y = path_y + 18 + 26 + 10;
+    HWND sec = CreateWindowExA(0, "STATIC", "SETTINGS",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        lx, sec_y, crw, 16, hwnd, NULL, NULL, NULL);
+    SendMessageA(sec, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+
+    int chk_y = sec_y + 20;
+    g_hwnd_chk_backup = CreateWindowExA(0, "BUTTON",
+        "Create backup before patching",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        lx, chk_y, crw, 20, hwnd, (HMENU)IDC_CHK_BACKUP, NULL, NULL);
+    SendMessageA(g_hwnd_chk_backup, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+    SendMessageA(g_hwnd_chk_backup, BM_SETCHECK, BST_CHECKED, 0);
+    chk_y += 24;
+
+    g_hwnd_chk_verify = CreateWindowExA(0, "BUTTON",
+        "Verify after patching",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        lx, chk_y, crw, 20, hwnd, (HMENU)IDC_CHK_VERIFY, NULL, NULL);
+    SendMessageA(g_hwnd_chk_verify, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+    SendMessageA(g_hwnd_chk_verify, BM_SETCHECK, BST_CHECKED, 0);
+    chk_y += 24;
+
+    int log_y = chk_y + 6;
+    g_hwnd_log = CreateWindowExA(0, "EDIT", "",
+        WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL |
+        ES_READONLY | WS_VSCROLL,
+        lx, log_y, crw, 120, hwnd, (HMENU)IDC_LOG, NULL, NULL);
+    SendMessageA(g_hwnd_log, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+    SendMessageA(g_hwnd_log, EM_SETLIMITTEXT, 0, 0);
+
+    int prog_y = log_y + 124;
+    g_hwnd_progress = CreateWindowExA(0, "STATIC", "",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
+        lx, prog_y, crw, 10, hwnd, (HMENU)IDC_PROGRESS, NULL, NULL);
+    SetWindowLongA(g_hwnd_progress, GWLP_USERDATA, 0);
+
+    int stat_y = prog_y + 14;
+    g_hwnd_status = CreateWindowExA(0, "STATIC",
+        "Select the game folder and click Patch.",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        lx, stat_y, 500, 16, hwnd, (HMENU)IDC_STATUS, NULL, NULL);
+    SendMessageA(g_hwnd_status, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+
+    g_foot_sep_y = stat_y + 20;
+
+    int foot_y = g_foot_sep_y + 8;
+    {
+        char info[512] = {0};
+        int pos = 0;
+        const char *parts[] = {
+            g_meta.company_info[0] ? g_meta.company_info : NULL,
+            g_meta.copyright[0]    ? g_meta.copyright    : NULL,
+            g_meta.contact[0]      ? g_meta.contact      : NULL,
+        };
+        for (int i = 0; i < 3; i++) {
+            if (!parts[i]) continue;
+            if (pos > 0) pos += snprintf(info + pos, sizeof(info) - pos,
+                                         "  \xB7  ");
+            pos += snprintf(info + pos, sizeof(info) - pos, "%s", parts[i]);
+        }
+        if (pos > 0) {
+            HWND infolbl = CreateWindowExA(0, "STATIC", info,
+                WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+                lx, foot_y + 7, 400, 14, hwnd, NULL, NULL, NULL);
+            SendMessageA(infolbl, WM_SETFONT, (WPARAM)g_font_normal, TRUE);
+        }
+    }
+
+    g_hwnd_btn_patch = CreateWindowExA(0, "BUTTON", "Patch",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        rmax - 88, foot_y, 88, 28, hwnd,
+        (HMENU)IDC_BTN_PATCH, NULL, NULL);
+    CreateWindowExA(0, "BUTTON", "Cancel",
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        rmax - 88 - 8 - 80, foot_y, 80, 28, hwnd,
+        (HMENU)IDC_BTN_CANCEL, NULL, NULL);
+
+    /* Run on-startup command async */
+    pfg_run_async(g_meta.run_on_startup);
+
+    /* Pre-populate path: preset (UAC relaunch) > auto-detect */
+    char auto_path[MAX_PATH] = {0};
+    if (strcmp(g_meta.find_method, "registry") == 0)
+        find_via_registry(&g_meta, auto_path, MAX_PATH);
+    else if (strcmp(g_meta.find_method, "ini") == 0)
+        find_via_ini(&g_meta, auto_path, MAX_PATH);
+    {
+        const char *init = g_preset_path[0] ? g_preset_path : auto_path;
+        if (init[0]) SetWindowTextA(g_hwnd_filepath, init);
+    }
+
+    return foot_y + 28;
 }
 
 #endif /* STUB_COMMON_H */
