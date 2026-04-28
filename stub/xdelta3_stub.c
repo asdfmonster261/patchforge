@@ -447,7 +447,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (g_meta.close_delay > 0) {
                 g_close_countdown = g_meta.close_delay;
                 char buf[64];
-                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds…", g_close_countdown);
+                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds...", g_close_countdown);
                 set_status(buf, COL_SUCCESS);
                 SetTimer(hwnd, TIMER_CLOSE, 1000, NULL);
             } else {
@@ -471,7 +471,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 DestroyWindow(hwnd);
             } else {
                 char buf[64];
-                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds…", g_close_countdown);
+                snprintf(buf, sizeof(buf), "Done! Closing in %d seconds...", g_close_countdown);
                 set_status(buf, COL_SUCCESS);
             }
         }

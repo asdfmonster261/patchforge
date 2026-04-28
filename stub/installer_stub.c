@@ -1344,7 +1344,7 @@ static int verify_bin_parts(void)
             if (!f) { free(buf); return i + 1; }
             if (g_hwnd) {
                 char status[128];
-                snprintf(status, sizeof(status), "Verifying part %d of %d…", i + 1, num);
+                snprintf(status, sizeof(status), "Verifying part %d of %d...", i + 1, num);
                 set_status(status);
             }
             uint32_t crc = 0xFFFFFFFFu;
@@ -1362,7 +1362,7 @@ static int verify_bin_parts(void)
         if (!mpf_seek(&m, g_meta.pack_data_offset, SEEK_SET)) {
             mpf_close(&m); free(buf); return 1;
         }
-        if (g_hwnd) set_status("Verifying data…");
+        if (g_hwnd) set_status("Verifying data...");
         uint32_t crc = 0xFFFFFFFFu;
         int64_t remaining = g_meta.pack_data_size;
         while (remaining > 0) {
