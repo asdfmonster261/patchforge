@@ -262,6 +262,57 @@ def test_resolve_user_config_skips_listen_port_without_lan():
 # download_app crack plumbing
 # ---------------------------------------------------------------------------
 
+def test_download_app_forwards_crack_identity_on_single_platform(monkeypatch):
+    """Regression: download_app's single-platform branch (the default
+    --platform != 'all' path) must forward crack_identity to
+    _download_platform.  When this kwarg goes missing, every download
+    with --crack fails up front with 'crack=... requires crack_identity'."""
+    from src.core.archive import download as dl_mod
+    from src.core.archive.project import CrackIdentity
+
+    captured: dict = {}
+
+    def fake_download_platform(*args, **kwargs):
+        # crack is the 12th positional arg (index 11) in download.py's
+        # call, while crack_identity is passed as a keyword.  Check both
+        # paths since the bug we're guarding against is "kwarg silently
+        # dropped on the single-platform branch".
+        captured["crack"]          = args[11] if len(args) > 11 else kwargs.get("crack")
+        captured["crack_identity"] = kwargs.get("crack_identity")
+        return [], []
+
+    monkeypatch.setattr(dl_mod, "_download_platform", fake_download_platform)
+
+    # Stub _import_steam so download_app gets past the gevent monkey-patch
+    # call.  Only GeventTimeout is unpacked at top-level — supply Exception
+    # so the retry loop's `except GeventTimeout` clause is well-formed.
+    monkeypatch.setattr(
+        dl_mod, "_import_steam",
+        lambda: (object(), Exception, object(), object(), object(), Exception),
+    )
+
+    fake_client = mock.Mock()
+    fake_client.get_product_info.return_value = {
+        "apps": {
+            730: {
+                "common": {"name": "T", "oslist": "windows"},
+                "config": {"installdir": "T"},
+                "depots": {"branches": {"public": {"buildid": "1"}}},
+            },
+        },
+    }
+
+    identity = CrackIdentity(steam_id=42, username="alice")
+    dl_mod.download_app(
+        fake_client, mock.Mock(), 730, Path("/tmp/x"),
+        platform="windows",
+        crack="gse",
+        crack_identity=identity,
+    )
+    assert captured["crack"] == "gse"
+    assert captured["crack_identity"] is identity
+
+
 def test_download_platform_known_crack_modes_pass_validation_gate(monkeypatch):
     """When --crack is set and crack_identity is provided, the up-front
     validation in _download_platform must NOT raise the

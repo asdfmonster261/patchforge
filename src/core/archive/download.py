@@ -547,7 +547,8 @@ def download_app(client, cdn, app_id: int, output_dir: Path,
             branch, workers, password, compression_level, volume_size,
             crack, experimental, unstub_options,
             depot_names=depot_names, max_retries=max_retries,
-            language=language, on_event=on_event,
+            language=language, crack_identity=crack_identity,
+            on_event=on_event,
         )
         _move_archives(archives, output_dir, on_event)
         all_archives.extend(output_dir / a.name for a in archives)
