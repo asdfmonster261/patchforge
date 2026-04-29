@@ -1,11 +1,26 @@
 """PatchForge CLI — mirrors all GUI options."""
 
-import argparse
-import json
 import sys
-from pathlib import Path
 
-from ..core.fmt import format_size as _fmt_size
+# Archive-mode early monkey-patch: `steam[client]` requires gevent's
+# socket/ssl monkey-patches to be applied BEFORE anything else imports
+# urllib3 / ssl.  Sniff sys.argv directly so we can patch before argparse
+# (which imports os, which is fine) but more importantly before
+# src.core.archive._extras runs its missing_extras() probe (which imports
+# steam.client → urllib3 → ssl).  No-op when the archive extras aren't
+# installed or when the user isn't running an archive subcommand.
+if len(sys.argv) >= 2 and sys.argv[1] == "archive":
+    try:
+        import steam.monkey  # type: ignore
+        steam.monkey.patch_minimal()
+    except ImportError:
+        pass
+
+import argparse                              # noqa: E402
+import json                                  # noqa: E402
+from pathlib import Path                     # noqa: E402
+
+from ..core.fmt import format_size as _fmt_size   # noqa: E402
 
 
 def run_cli():

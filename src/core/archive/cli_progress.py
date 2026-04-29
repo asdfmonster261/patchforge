@@ -1,8 +1,8 @@
 """CLI display layer for archive-mode download progress.
 
 Subscribes to DownloadEvent objects emitted by download.download_app() and
-renders them either as a tqdm multi-bar (default) or a structured one-line-
-per-event log (--no-progress).
+renders them as a multi-line live display ported from SteamArchiver, or as
+a structured one-line-per-event log (--no-progress) for CI / log capture.
 
 The same event stream feeds Phase 6's GUI via Qt signals — this module is
 purely a CLI implementation detail.
@@ -10,130 +10,219 @@ purely a CLI implementation detail.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
-from typing import Optional
+from collections import deque
 
 
-class TqdmSubscriber:
-    """Renders DownloadEvents as a tqdm multi-bar.
+# ---------------------------------------------------------------------------
+# ANSI codes
+# ---------------------------------------------------------------------------
 
-    One bar per active file, plus a single aggregate bar showing total bytes
-    transferred.  Bars close on file_finished/file_skipped.
+_TTY = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
+def _c(*codes: int) -> str:
+    return f"\033[{';'.join(map(str, codes))}m" if _TTY else ""
+
+
+_RESET  = _c(0)
+_BOLD   = _c(1)
+_DIM    = _c(2)
+_GREEN  = _c(32)
+_CYAN   = _c(36)
+
+
+# ---------------------------------------------------------------------------
+# Live multi-line display (default subscriber, ported from SteamArchiver)
+# ---------------------------------------------------------------------------
+
+class LiveDisplaySubscriber:
+    """Multi-line ANSI live display: per-active-file lines + aggregate footer.
+
+    Spawns a gevent greenlet that redraws every _REFRESH seconds.  Per-file
+    speed comes from a rolling window of (timestamp, bytes_done) samples.
+
+    Falls back to a single-line aggregate summary when stdout is not a TTY.
     """
 
+    _WINDOW  = 8.0    # rolling speed window in seconds
+    _REFRESH = 0.25   # redraw interval in seconds
+
     def __init__(self):
-        from tqdm import tqdm
-        self._tqdm = tqdm
-        self._bars: dict[str, object] = {}
-        self._aggregate: Optional[object] = None
-        self._agg_done = 0
-        self._agg_total = 0
-        # Reserve position 0 for the aggregate bar.  Per-file bars take the
-        # next free integer position.
-        self._next_position = 1
-        self._free_positions: list[int] = []
+        self._files: dict[str, dict] = {}
+        self._downloaded = 0
+        self._skipped    = 0
+        self._prev_lines = 0
+        self._greenlet   = None
+        self._closed     = False
 
     def __call__(self, ev) -> None:
         kind = ev.kind
         if kind == "file_started":
-            self._start_bar(ev.name, ev.total)
-            self._agg_total += ev.total
-            self._ensure_aggregate()
+            self._ensure_started()
+            self._files[ev.name] = {
+                "total":   ev.total,
+                "done":    0,
+                "samples": deque(),
+                "active":  True,
+            }
 
         elif kind == "file_progress":
-            self._update_bar(ev.name, ev.done)
-            # Aggregate is rebuilt from per-bar deltas; updated lazily below.
+            f = self._files.get(ev.name)
+            if f is None:
+                return
+            delta = ev.done - f["done"]
+            if delta < 0:
+                delta = 0
+            f["done"] = ev.done
+            self._downloaded += delta
+            now = time.monotonic()
+            f["samples"].append((now, f["done"]))
+            cutoff = now - self._WINDOW
+            while f["samples"] and f["samples"][0][0] < cutoff:
+                f["samples"].popleft()
 
         elif kind == "file_finished":
-            self._finish_bar(ev.name, ev.done)
-            self._agg_done += ev.done
-            if self._aggregate is not None:
-                self._aggregate.n = self._agg_done
-                self._aggregate.refresh()
+            f = self._files.get(ev.name)
+            if f is not None:
+                f["active"] = False
+                # Catch up any final bytes the progress events missed.
+                missed = ev.done - f["done"]
+                if missed > 0:
+                    f["done"] = ev.done
+                    self._downloaded += missed
 
         elif kind == "file_skipped":
-            self._agg_total += ev.total
-            self._agg_done  += ev.done
-            self._ensure_aggregate()
-            if self._aggregate is not None:
-                self._aggregate.total = self._agg_total
-                self._aggregate.n     = self._agg_done
-                self._aggregate.refresh()
+            self._skipped += ev.total
 
         elif kind == "stage":
-            # Print stage messages above the bars.
-            self._tqdm.write(f"[stage]    {ev.stage_msg}")
+            self._erase()
+            sys.stdout.write(f"\n{_BOLD} >  {_RESET}{ev.stage_msg}\n")
+            sys.stdout.flush()
 
         elif kind == "error":
-            target = f" ({ev.name})" if ev.name else ""
-            self._tqdm.write(f"[error]   {ev.error_msg}{target}")
+            self._erase()
+            target = f"  ({ev.name})" if ev.name else ""
+            sys.stdout.write(f"{_BOLD}!  {_RESET}{ev.error_msg}{target}\n")
+            sys.stdout.flush()
 
     # ------------------------------------------------------------------
 
-    def _ensure_aggregate(self) -> None:
-        if self._aggregate is None and self._agg_total > 0:
-            self._aggregate = self._tqdm(
-                total=self._agg_total,
-                position=0,
-                unit="B",
-                unit_scale=True,
-                desc="total",
-                leave=True,
-                dynamic_ncols=True,
+    def _ensure_started(self) -> None:
+        if self._greenlet is not None or self._closed:
+            return
+        try:
+            import gevent
+        except ImportError:
+            return
+        self._greenlet = gevent.spawn(self._loop)
+
+    def _loop(self) -> None:
+        import gevent
+        try:
+            while True:
+                gevent.sleep(self._REFRESH)
+                self._redraw()
+        except gevent.GreenletExit:
+            return
+
+    def _file_speed(self, samples: deque) -> float:
+        if len(samples) < 2:
+            return 0.0
+        t0, b0 = samples[0]
+        t1, b1 = samples[-1]
+        dt = t1 - t0
+        return (b1 - b0) / dt if dt > 0 else 0.0
+
+    def _erase(self) -> None:
+        if not _TTY:
+            return
+        if self._prev_lines:
+            sys.stdout.write(f"\033[{self._prev_lines}A\033[J")
+            sys.stdout.flush()
+            self._prev_lines = 0
+
+    def _redraw(self) -> None:
+        active = [(n, f) for n, f in self._files.items() if f["active"]]
+        total_speed = sum(self._file_speed(f["samples"]) for _, f in active)
+
+        if not _TTY:
+            # Single-line summary, overwriting itself with \r.
+            summary = (
+                f"\r  {len(active)} active   "
+                f"{_fmt_size(self._downloaded)} downloaded   "
+                f"{_fmt_size(self._skipped)} skipped   "
+                f"{_fmt_size(total_speed)}/s"
             )
-        elif self._aggregate is not None:
-            self._aggregate.total = self._agg_total
-            self._aggregate.refresh()
+            sys.stdout.write(summary)
+            sys.stdout.flush()
+            return
 
-    def _start_bar(self, name: str, total: int) -> None:
-        position = (self._free_positions.pop()
-                    if self._free_positions
-                    else self._next_position)
-        if not self._free_positions:
-            self._next_position += 1
-        bar = self._tqdm(
-            total=total,
-            position=position,
-            unit="B",
-            unit_scale=True,
-            desc=_truncate(name, 28),
-            leave=False,
-            dynamic_ncols=True,
+        try:
+            width = os.get_terminal_size().columns
+        except OSError:
+            width = 100
+
+        name_w = max(24, width - 44)
+        lines: list[str] = []
+
+        for name, f in active:
+            speed = self._file_speed(f["samples"])
+            done  = f["done"]
+            total = f["total"]
+            pct   = done / total * 100 if total else 100.0
+            disp  = name if len(name) <= name_w else "..." + name[-(name_w - 3):]
+            pct_col = _GREEN if pct >= 100.0 else _CYAN
+            lines.append(
+                f"  {_DIM}{disp:<{name_w}}{_RESET}  "
+                f"{_fmt_size(done):>9} / {_fmt_size(total):<9}  "
+                f"{_CYAN}{_fmt_size(speed):>9}/s{_RESET}  "
+                f"{pct_col}{pct:5.1f}%{_RESET}"
+            )
+
+        lines.append(f"  {_DIM}{'-' * min(width - 4, 74)}{_RESET}")
+        lines.append(
+            f"  {_BOLD}{len(active)} active{_RESET}   "
+            f"{_GREEN}{_fmt_size(self._downloaded)} downloaded{_RESET}   "
+            f"{_fmt_size(self._skipped)} skipped   "
+            f"{_CYAN}{_fmt_size(total_speed)}/s{_RESET}"
         )
-        bar._pf_position = position   # remember slot for reuse on finish
-        self._bars[name] = bar
 
-    def _update_bar(self, name: str, done: int) -> None:
-        bar = self._bars.get(name)
-        if bar is None:
-            return
-        bar.update(done - bar.n)
-
-    def _finish_bar(self, name: str, done: int) -> None:
-        bar = self._bars.pop(name, None)
-        if bar is None:
-            return
-        bar.update(done - bar.n)
-        bar.close()
-        position = getattr(bar, "_pf_position", None)
-        if position is not None:
-            self._free_positions.append(position)
+        out = (f"\033[{self._prev_lines}A\033[J" if self._prev_lines else "") \
+              + "\n".join(lines) + "\n"
+        sys.stdout.write(out)
+        sys.stdout.flush()
+        self._prev_lines = len(lines)
 
     def close(self) -> None:
-        for bar in list(self._bars.values()):
-            bar.close()
-        self._bars.clear()
-        if self._aggregate is not None:
-            self._aggregate.close()
-            self._aggregate = None
+        self._closed = True
+        if self._greenlet is not None:
+            try:
+                self._greenlet.kill()
+            except Exception:
+                pass
+            self._greenlet = None
+        self._erase()
+        # Final summary line so the user sees the total without scrolling.
+        if self._downloaded or self._skipped:
+            sys.stdout.write(
+                f"  {_GREEN}{_fmt_size(self._downloaded)} downloaded{_RESET}   "
+                f"{_fmt_size(self._skipped)} skipped\n"
+            )
+            sys.stdout.flush()
 
+
+# ---------------------------------------------------------------------------
+# Plain log subscriber (--no-progress, non-TTY fallback)
+# ---------------------------------------------------------------------------
 
 class PlainLogSubscriber:
-    """Structured one-line-per-event log mode (--no-progress).
+    """Structured one-line-per-event log mode.
 
-    Suitable for CI, log file capture, or any non-TTY context where tqdm's
-    cursor moves don't survive.  Output format: `[kind] name (n/N bytes)`.
+    Suitable for CI, log file capture, or any non-TTY context where ANSI
+    cursor moves don't survive.
     """
 
     def __init__(self, file=None):
@@ -169,7 +258,6 @@ class PlainLogSubscriber:
         # file_progress is intentionally dropped — too noisy for a log.
 
     def close(self) -> None:
-        # Flush any pending lines.
         try:
             self._file.flush()
         except Exception:
@@ -182,12 +270,6 @@ class PlainLogSubscriber:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _truncate(s: str, width: int) -> str:
-    if len(s) <= width:
-        return s
-    return "..." + s[-(width - 3):]
-
 
 def _fmt_size(n: float) -> str:
     n = float(n)
@@ -205,12 +287,10 @@ def _fmt_size(n: float) -> str:
 def build_subscriber(plain: bool = False):
     """Return an event subscriber appropriate for the current TTY/flag state.
 
-    Falls back to PlainLogSubscriber automatically when stdout is not a TTY
-    or tqdm isn't available, even if plain=False was requested.
+    Always falls back to PlainLogSubscriber when stdout is not a TTY, even
+    if plain=False was requested — ANSI cursor moves don't survive a pipe
+    or log capture.
     """
     if plain or not sys.stdout.isatty():
         return PlainLogSubscriber()
-    try:
-        return TqdmSubscriber()
-    except ImportError:
-        return PlainLogSubscriber()
+    return LiveDisplaySubscriber()

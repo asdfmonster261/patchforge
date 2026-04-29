@@ -421,6 +421,39 @@ def test_build_subscriber_plain_flag_overrides_tty(monkeypatch):
     assert sub.__class__.__name__ == "PlainLogSubscriber"
 
 
+def test_build_subscriber_default_is_live(monkeypatch):
+    """Default (TTY, plain=False) returns the SteamArchiver-style live display."""
+    from src.core.archive import cli_progress
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli_progress, "_TTY", True, raising=False)
+    sub = cli_progress.build_subscriber(plain=False)
+    assert sub.__class__.__name__ == "LiveDisplaySubscriber"
+
+
+def test_live_display_accumulates_bytes_without_greenlet():
+    """Construct a LiveDisplaySubscriber and feed it events without ever
+    entering a gevent context.  The greenlet only spawns on file_started
+    when gevent is importable, but state accounting must work either way."""
+    from src.core.archive.cli_progress import LiveDisplaySubscriber
+    from src.core.archive.download     import DownloadEvent
+
+    sub = LiveDisplaySubscriber()
+    # No file_started yet — greenlet must NOT spawn.
+    assert sub._greenlet is None
+
+    sub(DownloadEvent(kind="file_started", name="a.bin", total=100))
+    sub(DownloadEvent(kind="file_progress", name="a.bin", total=100, done=30))
+    sub(DownloadEvent(kind="file_progress", name="a.bin", total=100, done=70))
+    sub(DownloadEvent(kind="file_finished", name="a.bin", total=100, done=100))
+    sub(DownloadEvent(kind="file_skipped",  name="b.bin", total=50))
+    assert sub._downloaded == 100
+    assert sub._skipped    == 50
+    assert sub._files["a.bin"]["active"] is False
+
+    sub.close()
+    assert sub._closed is True
+
+
 # ---------------------------------------------------------------------------
 # Crack guard — Phase 3 not yet implemented
 # ---------------------------------------------------------------------------
