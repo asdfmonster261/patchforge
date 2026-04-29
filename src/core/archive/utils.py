@@ -34,6 +34,16 @@ def bin_dir() -> Path:
     return cache_dir() / "bin"
 
 
+def gbe_dir() -> Path:
+    """Directory where Goldberg Steam Emulator release archives are cached."""
+    return cache_dir() / "archive" / "gbe"
+
+
+def dlc_db_dir() -> Path:
+    """Directory where per-app DLC name databases live (one .ini per app)."""
+    return cache_dir() / "archive" / "dlc_db"
+
+
 def run_in_thread(fn, *args, **kwargs):
     """Run a blocking function in gevent's threadpool, yielding to the loop.
 

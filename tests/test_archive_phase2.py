@@ -524,11 +524,12 @@ def test_compress_platform_emits_compress_events(tmp_path):
 # Crack guard — Phase 3 not yet implemented
 # ---------------------------------------------------------------------------
 
-def test_download_platform_raises_on_crack():
-    """Until Phase 3 lands, --crack must surface a NotImplementedError so
-    users don't get silently dropped behaviour."""
+def test_download_platform_requires_crack_identity():
+    """Calling _download_platform with --crack but no identity must surface
+    a clear error rather than silently dropping the flag or crashing later
+    with an obscure NoneType access deep in the crack pipeline."""
     from src.core.archive.download import _download_platform
-    with pytest.raises(NotImplementedError, match="Phase 3"):
+    with pytest.raises(ValueError, match="crack_identity"):
         _download_platform(
             cdn=None, client=None, app_id=730, app_data={},
             dest=Path("/tmp/x"), platform="windows",

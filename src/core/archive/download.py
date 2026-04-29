@@ -126,16 +126,12 @@ def _download_platform(cdn, client, app_id: int, app_data: dict, dest: Path,
                        depot_names: dict | None = None,
                        max_retries: int = 1,
                        language: str = "english",
+                       crack_identity=None,
                        on_event: EventCallback | None = None
                        ) -> tuple[list[Path], list]:
     """Download required depots for one platform into dest in Steam-like layout."""
-    if crack:
-        # Crack steps are deferred to Phase 3 of the merge plan — coldclient
-        # and gse rewrites land along with the vendored unstub/ tree.  For
-        # now we surface a clear error rather than silently dropping the flag.
-        raise NotImplementedError(
-            "--crack support lands in Phase 3 of the SteamArchiver merge"
-        )
+    if crack and crack_identity is None:
+        raise ValueError("crack=... requires crack_identity to be passed in")
 
     GreenPool, GeventTimeout, _, _, EResult, ManifestError = _import_steam()
 
@@ -428,9 +424,32 @@ def _download_platform(cdn, client, app_id: int, app_data: dict, dest: Path,
     plat_display = _PLATFORM_DISPLAY.get(platform, platform)
     archive_stem = f"{game_name}.{build_id}.{plat_display}.{branch}"
 
+    # ---- Crack step (Phase 3) -------------------------------------------
+    gse_dir: Path | None = None
+    if crack:
+        _emit(on_event, kind="stage",
+              stage_msg=f"Running crack: {crack}")
+        if crack == "coldclient":
+            from .crack.coldclient import crack_coldclient
+            gse_dir = crack_coldclient(
+                app_id, app_data, dest, game_dest,
+                identity=crack_identity,
+                unstub_options=unstub_options,
+            )
+        elif crack == "gse":
+            from .crack.gse import crack_game
+            gse_dir = crack_game(
+                app_id, app_data, dest, game_dest,
+                identity=crack_identity,
+                experimental=experimental,
+                unstub_options=unstub_options,
+            )
+        else:
+            raise ValueError(f"Unknown crack mode: {crack!r}")
+
     archives = compress_platform(
         dest, archive_stem, password, compression_level, volume_size,
-        gse_dir=None,           # Phase 3: pass crack output dir
+        gse_dir=gse_dir,
         on_event=on_event,
     )
     return archives, manifest_records
@@ -460,6 +479,7 @@ def download_app(client, cdn, app_id: int, output_dir: Path,
                  depot_names: dict | None = None,
                  max_retries: int = 1,
                  language: str = "english",
+                 crack_identity=None,
                  on_event: EventCallback | None = None,
                  ) -> tuple[list[Path], dict[str, list]]:
     """Download depots for app_id using an already-connected client and cdn.
@@ -512,7 +532,8 @@ def download_app(client, cdn, app_id: int, output_dir: Path,
                 branch, workers, password, compression_level, volume_size,
                 crack, experimental, unstub_options,
                 depot_names=depot_names, max_retries=max_retries,
-                language=language, on_event=on_event,
+                language=language, crack_identity=crack_identity,
+                on_event=on_event,
             )
             _move_archives(archives, output_dir, on_event)
             all_archives.extend(output_dir / a.name for a in archives)

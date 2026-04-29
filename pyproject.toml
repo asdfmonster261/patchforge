@@ -38,3 +38,9 @@ patchforge-gui = "src.gui.main_window:run_gui"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["src*"]
+
+# Don't lint the vendored SteamStub unpackers — they are imported as-is from
+# upstream SteamArchiver/crack/unstub/ and any cosmetic fixes here would
+# diverge them from upstream and complicate re-vendoring future bug fixes.
+[tool.ruff]
+extend-exclude = ["src/core/archive/crack/unstub"]

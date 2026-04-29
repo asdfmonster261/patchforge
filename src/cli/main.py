@@ -1275,6 +1275,7 @@ def _cmd_archive_download(args):
 
     from src.core.archive            import credentials   as creds_mod
     from src.core.archive            import depots_ini
+    from src.core.archive            import project       as project_mod
     from src.core.archive.appinfo    import login as cm_login
     from src.core.archive.cli_progress import build_subscriber
     from src.core.archive.compress   import parse_size
@@ -1301,6 +1302,23 @@ def _cmd_archive_download(args):
         _die(f"--compression must be 0..9, got {args.compression}", EXIT_INPUT)
 
     depot_names = depots_ini.load()
+
+    # Crack identity — loaded from the .xarchive when --project is given, or
+    # a fresh CrackIdentity that prompts will fill in.  The crack functions
+    # mutate it in place; we save back to .xarchive after the run so users
+    # don't get re-prompted on every invocation.
+    project_path = Path(args.project) if args.project else None
+    project_obj = None
+    crack_identity = None
+    if args.crack:
+        if project_path:
+            try:
+                project_obj = project_mod.load(project_path)
+            except Exception as exc:
+                _die(f"Failed to load archive project: {exc}", EXIT_INPUT)
+            crack_identity = project_obj.crack
+        else:
+            crack_identity = project_mod.CrackIdentity()
 
     tokens = {
         "username":             creds.username,
@@ -1331,6 +1349,7 @@ def _cmd_archive_download(args):
                     depot_names=depot_names,
                     max_retries=args.max_retries,
                     language=args.language,
+                    crack_identity=crack_identity,
                     on_event=subscriber,
                 )
             except NotImplementedError as exc:
@@ -1354,6 +1373,16 @@ def _cmd_archive_download(args):
         added = depots_ini.record_unknown(sorted(all_unknown_depot_ids))
         if added:
             print(f"Added {len(added)} unknown depot ID(s) to {depots_ini.depots_path()}")
+
+    # Persist any crack-identity fields that prompts filled in back into the
+    # project so subsequent runs don't re-ask for the same values.
+    if args.crack and project_obj is not None and project_path is not None:
+        project_obj.crack = crack_identity
+        try:
+            project_mod.save(project_obj, project_path)
+            print(f"Updated crack identity in {project_path}")
+        except Exception as exc:
+            _warn(f"Could not persist crack identity to {project_path}: {exc}")
 
     print()
     print(f"Done.  {len(all_archives)} archive file(s) written to {output_dir}")
