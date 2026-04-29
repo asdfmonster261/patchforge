@@ -62,6 +62,11 @@ class LiveDisplaySubscriber:
         # "Compressing X% [bar]" status instead of per-file download rows.
         self._compress_name: str | None = None
         self._compress_pct:  int        = 0
+        # Crack-phase quiet flag.  The crack step prints diagnostics
+        # directly to stdout (achievement fetch, DLL processing, prompts);
+        # the redraw greenlet must stay out of its way or the cursor-up
+        # math fights the prints and the divider line accumulates.
+        self._crack_active: bool = False
 
     def __call__(self, ev) -> None:
         kind = ev.kind
@@ -132,6 +137,16 @@ class LiveDisplaySubscriber:
             self._compress_name = None
             self._compress_pct  = 0
 
+        elif kind == "crack_started":
+            # Crack uses print() directly — drop our footer and stop
+            # redrawing until crack_finished so we don't fight its output.
+            self._erase()
+            self._files.clear()
+            self._crack_active = True
+
+        elif kind == "crack_finished":
+            self._crack_active = False
+
     # ------------------------------------------------------------------
 
     def _ensure_started(self) -> None:
@@ -176,6 +191,8 @@ class LiveDisplaySubscriber:
             self._prev_lines = 0
 
     def _redraw(self) -> None:
+        if self._crack_active:
+            return
         if self._compress_name is not None:
             self._redraw_compression()
             return

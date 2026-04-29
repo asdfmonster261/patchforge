@@ -41,6 +41,8 @@ EventKind = Literal[
     "compress_started",
     "compress_progress",
     "compress_finished",
+    "crack_started",
+    "crack_finished",
 ]
 
 
@@ -429,23 +431,30 @@ def _download_platform(cdn, client, app_id: int, app_data: dict, dest: Path,
     if crack:
         _emit(on_event, kind="stage",
               stage_msg=f"Running crack: {crack}")
-        if crack == "coldclient":
-            from .crack.coldclient import crack_coldclient
-            gse_dir = crack_coldclient(
-                app_id, app_data, dest, game_dest,
-                identity=crack_identity,
-                unstub_options=unstub_options,
-            )
-        elif crack == "gse":
-            from .crack.gse import crack_game
-            gse_dir = crack_game(
-                app_id, app_data, dest, game_dest,
-                identity=crack_identity,
-                experimental=experimental,
-                unstub_options=unstub_options,
-            )
-        else:
-            raise ValueError(f"Unknown crack mode: {crack!r}")
+        # Suspend the live download display while the crack step runs — it
+        # uses print() heavily (achievement fetch, DLL processing, prompts)
+        # and would otherwise interleave with the redraw greenlet.
+        _emit(on_event, kind="crack_started")
+        try:
+            if crack == "coldclient":
+                from .crack.coldclient import crack_coldclient
+                gse_dir = crack_coldclient(
+                    app_id, app_data, dest, game_dest,
+                    identity=crack_identity,
+                    unstub_options=unstub_options,
+                )
+            elif crack == "gse":
+                from .crack.gse import crack_game
+                gse_dir = crack_game(
+                    app_id, app_data, dest, game_dest,
+                    identity=crack_identity,
+                    experimental=experimental,
+                    unstub_options=unstub_options,
+                )
+            else:
+                raise ValueError(f"Unknown crack mode: {crack!r}")
+        finally:
+            _emit(on_event, kind="crack_finished")
 
     archives = compress_platform(
         dest, archive_stem, password, compression_level, volume_size,

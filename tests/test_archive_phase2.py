@@ -486,6 +486,33 @@ def test_live_display_compress_clears_download_files():
     sub.close()
 
 
+def test_live_display_crack_suppresses_redraw():
+    """crack_started must drop the per-file rows and silence _redraw so
+    the crack step's print() output isn't fought by the redraw greenlet."""
+    from src.core.archive.cli_progress import LiveDisplaySubscriber
+    from src.core.archive.download     import DownloadEvent
+
+    sub = LiveDisplaySubscriber()
+    sub(DownloadEvent(kind="file_started", name="a.bin", total=100))
+    sub(DownloadEvent(kind="file_finished", name="a.bin", total=100, done=100))
+    assert sub._files
+    assert sub._crack_active is False
+
+    sub(DownloadEvent(kind="crack_started"))
+    assert sub._files == {}
+    assert sub._crack_active is True
+
+    # Force a manual redraw — must early-return, leaving prev_lines untouched.
+    sub._prev_lines = 0
+    sub._redraw()
+    assert sub._prev_lines == 0
+
+    sub(DownloadEvent(kind="crack_finished"))
+    assert sub._crack_active is False
+
+    sub.close()
+
+
 def test_compress_platform_emits_compress_events(tmp_path):
     """compress_platform on the native path must surround the work in
     compress_started/compress_finished and emit compress_progress between."""
