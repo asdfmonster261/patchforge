@@ -38,6 +38,9 @@ EventKind = Literal[
     "file_skipped",
     "stage",
     "error",
+    "compress_started",
+    "compress_progress",
+    "compress_finished",
 ]
 
 

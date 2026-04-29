@@ -221,11 +221,15 @@ def compress_platform(dest: Path, archive_stem: str,
         if volume_size:
             msg += f", volumes of {volume_size}b"
         _emit("stage", stage_msg=msg)
-        run_in_thread(_compress_native, seven_zip, dest, archive_path,
-                      compression_level, password, gse_dir, volume_size,
-                      lambda pct: _emit("file_progress",
-                                        name=archive_path.name,
-                                        total=100, done=pct))
+        _emit("compress_started", name=archive_path.name)
+        try:
+            run_in_thread(_compress_native, seven_zip, dest, archive_path,
+                          compression_level, password, gse_dir, volume_size,
+                          lambda pct: _emit("compress_progress",
+                                            name=archive_path.name,
+                                            total=100, done=pct))
+        finally:
+            _emit("compress_finished", name=archive_path.name)
 
         if volume_size:
             parts = _collect_native_parts(archive_path)
@@ -241,8 +245,12 @@ def compress_platform(dest: Path, archive_stem: str,
         return [archive_path]
 
     _emit("stage", stage_msg="Compressing with py7zr (slower fallback)")
-    run_in_thread(_compress_py7zr, dest, archive_path,
-                  compression_level, password, gse_dir)
+    _emit("compress_started", name=archive_path.name)
+    try:
+        run_in_thread(_compress_py7zr, dest, archive_path,
+                      compression_level, password, gse_dir)
+    finally:
+        _emit("compress_finished", name=archive_path.name)
 
     size = archive_path.stat().st_size
     if volume_size and size > volume_size:

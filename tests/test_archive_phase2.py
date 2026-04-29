@@ -454,6 +454,72 @@ def test_live_display_accumulates_bytes_without_greenlet():
     assert sub._closed is True
 
 
+def test_live_display_compress_clears_download_files():
+    """compress_started must drop the per-file download rows so the live
+    block stops redrawing stale '0 active 999MB downloaded' between
+    download and compression stages."""
+    from src.core.archive.cli_progress import LiveDisplaySubscriber
+    from src.core.archive.download     import DownloadEvent
+
+    sub = LiveDisplaySubscriber()
+    sub(DownloadEvent(kind="file_started", name="a.bin", total=100))
+    sub(DownloadEvent(kind="file_progress", name="a.bin", total=100, done=100))
+    sub(DownloadEvent(kind="file_finished", name="a.bin", total=100, done=100))
+    assert sub._files            # still has the finished file
+    assert sub._compress_name is None
+
+    sub(DownloadEvent(kind="compress_started", name="game.7z"))
+    assert sub._files == {}      # cleared
+    assert sub._compress_name == "game.7z"
+    assert sub._compress_pct  == 0
+
+    sub(DownloadEvent(kind="compress_progress", name="game.7z", total=100, done=42))
+    assert sub._compress_pct == 42
+
+    sub(DownloadEvent(kind="compress_progress", name="game.7z", total=100, done=100))
+    assert sub._compress_pct == 100
+
+    sub(DownloadEvent(kind="compress_finished", name="game.7z"))
+    assert sub._compress_name is None
+    assert sub._compress_pct == 0
+
+    sub.close()
+
+
+def test_compress_platform_emits_compress_events(tmp_path):
+    """compress_platform on the native path must surround the work in
+    compress_started/compress_finished and emit compress_progress between."""
+    from src.core.archive import sevenzip
+    from src.core.archive.compress import compress_platform
+    sevenzip.reset_cache()
+    if sevenzip.get_7zip() is None:
+        pytest.skip("native 7z binary not available")
+
+    sa = tmp_path / "steamapps" / "common" / "Game"
+    sa.mkdir(parents=True)
+    (sa / "data.bin").write_bytes(b"\x00" * (256 * 1024))   # easily compressed
+
+    events: list = []
+    compress_platform(
+        dest=tmp_path,
+        archive_stem="evtest",
+        password=None,
+        compression_level=1,
+        volume_size=None,
+        on_event=events.append,
+    )
+    kinds = [e.kind for e in events]
+    assert "compress_started"  in kinds
+    assert "compress_finished" in kinds
+    # compress_started must precede compress_finished.
+    assert kinds.index("compress_started") < kinds.index("compress_finished")
+    # The archive is small but at least one progress sample should appear
+    # for non-zero work.  Allow zero on absurdly fast runs.
+    progress_events = [e for e in events if e.kind == "compress_progress"]
+    for pe in progress_events:
+        assert 0 <= pe.done <= 100
+
+
 # ---------------------------------------------------------------------------
 # Crack guard — Phase 3 not yet implemented
 # ---------------------------------------------------------------------------

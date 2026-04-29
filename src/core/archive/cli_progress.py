@@ -57,6 +57,11 @@ class LiveDisplaySubscriber:
         self._prev_lines = 0
         self._greenlet   = None
         self._closed     = False
+        # Compression state.  Set by compress_started; cleared by
+        # compress_finished.  While set, _redraw renders a single-line
+        # "Compressing X% [bar]" status instead of per-file download rows.
+        self._compress_name: str | None = None
+        self._compress_pct:  int        = 0
 
     def __call__(self, ev) -> None:
         kind = ev.kind
@@ -108,6 +113,25 @@ class LiveDisplaySubscriber:
             sys.stdout.write(f"{_BOLD}!  {_RESET}{ev.error_msg}{target}\n")
             sys.stdout.flush()
 
+        elif kind == "compress_started":
+            # Transition from download phase to compression phase.  Drop the
+            # per-file download rows so the live block doesn't keep
+            # redrawing stale "0 active 999MB downloaded" between stages.
+            self._erase()
+            self._files.clear()
+            self._compress_name = ev.name
+            self._compress_pct  = 0
+            self._ensure_started()
+
+        elif kind == "compress_progress":
+            if self._compress_name is not None:
+                self._compress_pct = int(ev.done)
+
+        elif kind == "compress_finished":
+            self._erase()
+            self._compress_name = None
+            self._compress_pct  = 0
+
     # ------------------------------------------------------------------
 
     def _ensure_started(self) -> None:
@@ -152,6 +176,10 @@ class LiveDisplaySubscriber:
             self._prev_lines = 0
 
     def _redraw(self) -> None:
+        if self._compress_name is not None:
+            self._redraw_compression()
+            return
+
         active = [(n, f) for n, f in self._files.items() if f["active"]]
         total_speed = sum(self._file_speed(f["samples"]) for _, f in active)
 
@@ -208,6 +236,37 @@ class LiveDisplaySubscriber:
         sys.stdout.write(out)
         sys.stdout.flush()
         self._prev_lines = len(lines)
+
+    def _redraw_compression(self) -> None:
+        name = self._compress_name or ""
+        pct  = max(0, min(100, self._compress_pct))
+
+        if not _TTY:
+            sys.stdout.write(f"\r  Compressing {name}  {pct:>3}%")
+            sys.stdout.flush()
+            return
+
+        try:
+            width = os.get_terminal_size().columns
+        except OSError:
+            width = 100
+
+        bar_w = max(20, min(40, width // 3))
+        name_w = max(20, width - bar_w - 14)
+        disp = name if len(name) <= name_w else "..." + name[-(name_w - 3):]
+        filled = int(round(pct / 100 * bar_w))
+        bar = "#" * filled + "-" * (bar_w - filled)
+
+        line = (
+            f"  {_DIM}{disp:<{name_w}}{_RESET}  "
+            f"{_CYAN}[{bar}]{_RESET}  "
+            f"{_BOLD}{pct:>3}%{_RESET}"
+        )
+        out = (f"\033[{self._prev_lines}A\033[J" if self._prev_lines else "") \
+              + line + "\n"
+        sys.stdout.write(out)
+        sys.stdout.flush()
+        self._prev_lines = 1
 
     def close(self) -> None:
         self._closed = True
