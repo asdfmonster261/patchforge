@@ -611,6 +611,163 @@ def test_project_notify_mode_field_roundtrips(tmp_path):
     assert loaded.notify_mode == "both"
 
 
+def test_project_run_time_knobs_roundtrip(tmp_path):
+    """All persistent run-time knobs (workers, compression, language,
+    upload_description, max_concurrent_uploads, delete_archives,
+    experimental, archive_password, volume_size, max_retries, unstub.*)
+    must survive save/load."""
+    from src.core.archive import project as pm
+    p = pm.new_project(name="t")
+    p.workers                = 16
+    p.compression            = 5
+    p.language               = "russian"
+    p.max_retries            = 3
+    p.archive_password       = "hunter2"
+    p.volume_size            = "4g"
+    p.upload_description     = "weekly drop"
+    p.max_concurrent_uploads = 2
+    p.delete_archives        = True
+    p.experimental           = True
+    p.unstub.keepbind        = True
+    p.unstub.recalcchecksum  = True
+
+    out = tmp_path / "p.xarchive"
+    pm.save(p, out)
+    loaded = pm.load(out)
+    assert loaded.workers                == 16
+    assert loaded.compression            == 5
+    assert loaded.language               == "russian"
+    assert loaded.max_retries            == 3
+    assert loaded.archive_password       == "hunter2"
+    assert loaded.volume_size            == "4g"
+    assert loaded.upload_description     == "weekly drop"
+    assert loaded.max_concurrent_uploads == 2
+    assert loaded.delete_archives        is True
+    assert loaded.experimental           is True
+    assert loaded.unstub.keepbind        is True
+    assert loaded.unstub.recalcchecksum  is True
+
+
+def test_resolve_archive_run_options_priority():
+    """CLI value (when not None) wins over project value, which wins
+    over the built-in default.  Booleans OR together (CLI can only
+    force-on) so True from either side wins."""
+    from src.cli.main         import _resolve_archive_run_options
+    from src.core.archive     import project as pm
+    proj = pm.new_project(name="t")
+    proj.workers     = 16
+    proj.compression = 5
+    proj.experimental = True
+    proj.unstub.keepbind = True
+
+    # CLI supplies workers=32 (overrides project=16); leaves compression
+    # absent (None) so project=5 wins.
+    args = mock.Mock(
+        workers=32, compression=None, language=None, max_retries=None,
+        archive_password=None, volume_size=None,
+        description=None, max_concurrent_uploads=None,
+        delete_archives=False, experimental=False,
+        keepbind=False, keepstub=True,
+        dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
+    )
+    opts = _resolve_archive_run_options(args, proj)
+    assert opts["workers"]      == 32     # CLI wins
+    assert opts["compression"]  == 5      # project wins
+    assert opts["language"]     == "english"  # built-in default (proj also default)
+    assert opts["experimental"] is True   # project True survives CLI False
+    # Unstub: CLI keepstub True OR project keepstub False = True.
+    #         CLI keepbind False OR project keepbind True  = True.
+    assert opts["unstub"].keepstub is True
+    assert opts["unstub"].keepbind is True
+
+
+def test_resolve_archive_run_options_no_project():
+    """No project -> CLI values, then built-in defaults."""
+    from src.cli.main import _resolve_archive_run_options
+    args = mock.Mock(
+        workers=None, compression=None, language=None, max_retries=None,
+        archive_password=None, volume_size=None,
+        description=None, max_concurrent_uploads=None,
+        delete_archives=False, experimental=False,
+        keepbind=False, keepstub=False,
+        dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
+    )
+    opts = _resolve_archive_run_options(args, None)
+    assert opts["workers"]                == 8
+    assert opts["compression"]            == 9
+    assert opts["language"]               == "english"
+    assert opts["max_retries"]            == 1
+    assert opts["max_concurrent_uploads"] == 1
+    assert opts["delete_archives"]        is False
+    assert opts["experimental"]           is False
+
+
+def test_persist_archive_run_options_writes_cli_values():
+    """When CLI supplies a value, the project field is updated.  CLI
+    values matching the existing project value report no change."""
+    from src.cli.main         import _persist_archive_run_options
+    from src.core.archive     import project as pm
+    proj = pm.new_project(name="t")
+    proj.workers     = 8
+    proj.compression = 9
+
+    args = mock.Mock(
+        workers=16, compression=9, language=None, max_retries=None,
+        archive_password=None, volume_size=None,
+        description="newdesc", max_concurrent_uploads=None,
+        delete_archives=True, experimental=False,
+        keepbind=False, keepstub=True,
+        dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
+    )
+    changed = _persist_archive_run_options(args, proj)
+    assert changed is True
+    assert proj.workers            == 16          # CLI value persisted
+    assert proj.compression        == 9           # unchanged (CLI matched project)
+    assert proj.upload_description == "newdesc"   # str CLI value persisted
+    assert proj.delete_archives    is True        # bool flipped on
+    assert proj.unstub.keepstub    is True        # unstub bool flipped on
+    assert proj.unstub.keepbind    is False       # untouched
+
+
+def test_persist_archive_run_options_returns_false_when_nothing_changed():
+    from src.cli.main     import _persist_archive_run_options
+    from src.core.archive import project as pm
+    proj = pm.new_project(name="t")
+    args = mock.Mock(
+        workers=None, compression=None, language=None, max_retries=None,
+        archive_password=None, volume_size=None,
+        description=None, max_concurrent_uploads=None,
+        delete_archives=False, experimental=False,
+        keepbind=False, keepstub=False,
+        dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
+    )
+    assert _persist_archive_run_options(args, proj) is False
+
+
+def test_apply_archive_creds_overrides_returns_dirty_flag():
+    """Caller relies on the returned bool to decide whether to save."""
+    from src.cli.main         import _apply_archive_creds_overrides
+    from src.core.archive     import credentials as creds_mod
+    creds = creds_mod.Credentials()
+
+    no_change = mock.Mock(
+        upload_username=None, upload_password=None,
+        binurl=None, binpass=None,
+        telegram_bot_token=None, telegram_chat_id=None,
+        discord_webhook=None, discord_mention_role_ids=None,
+    )
+    assert _apply_archive_creds_overrides(creds, no_change) is False
+
+    changed = mock.Mock(
+        upload_username="alice", upload_password=None,
+        binurl=None, binpass=None,
+        telegram_bot_token=None, telegram_chat_id=None,
+        discord_webhook=None, discord_mention_role_ids=None,
+    )
+    assert _apply_archive_creds_overrides(creds, changed) is True
+    assert creds.multiup.username == "alice"
+
+
 def test_cli_post_pipeline_routes_upload_links_to_notify(tmp_path):
     """When upload + discord creds are set, the platform_links dict must
     be derived from the upload result and forwarded to send_discord."""

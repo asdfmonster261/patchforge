@@ -45,6 +45,20 @@ class AppEntry:
 
 
 @dataclass
+class UnstubOptions:
+    """SteamStub unpacker tunables.  Mirror of base_unpacker.options keys —
+    note that `keepstub` is the inverse of the underlying `zerodostub`
+    flag (so the default of "zero the DOS stub" is keepstub=False).
+    """
+    keepbind:       bool = False
+    keepstub:       bool = False
+    dumppayload:    bool = False
+    dumpdrmp:       bool = False
+    realign:        bool = False
+    recalcchecksum: bool = False
+
+
+@dataclass
 class CrackIdentity:
     """Per-project identity used by Goldberg / ColdClient config generation.
 
@@ -93,6 +107,29 @@ class ArchiveProject:
     # CLI --notify / --notify-delay / --notify-both override this field.
     notify_mode: str = ""
 
+    # ----- Persistent run-time knobs ------------------------------------
+    # These mirror the CLI flags of the same name.  When the CLI doesn't
+    # supply a value, the project's stored value is used instead;
+    # otherwise the CLI value wins AND is written back here so the next
+    # run defaults to the same setting.
+
+    # Download / archive shape
+    workers:          int = 8           # --workers
+    compression:      int = 9           # --compression
+    archive_password: str = ""          # --archive-password
+    volume_size:      str = ""          # --volume-size (raw string, parsed at use)
+    language:         str = "english"   # --language
+    max_retries:      int = 1           # --max-retries
+
+    # Upload knobs
+    upload_description:     str  = ""    # --description (MultiUp project + file)
+    max_concurrent_uploads: int  = 1     # --max-concurrent-uploads
+    delete_archives:        bool = False # --delete-archives
+
+    # Crack tunables
+    experimental: bool          = False                 # --experimental
+    unstub:       UnstubOptions = field(default_factory=UnstubOptions)
+
     # Free-form CLI args appended to `patchforge archive` invocations
     extra_args: str = ""
 
@@ -118,15 +155,17 @@ def load(path: Path) -> ArchiveProject:
             f"Upgrade PatchForge to open this project."
         )
 
-    apps_raw = data.pop("apps", [])
-    crack_raw = data.pop("crack", {})
+    apps_raw   = data.pop("apps", [])
+    crack_raw  = data.pop("crack", {})
+    unstub_raw = data.pop("unstub", {})
 
-    known = set(ArchiveProject.__dataclass_fields__) - {"apps", "crack"}
+    known = set(ArchiveProject.__dataclass_fields__) - {"apps", "crack", "unstub"}
     filtered = {k: v for k, v in data.items() if k in known}
 
     proj = ArchiveProject(**filtered)
-    proj.apps = [_load_app_entry(a) for a in apps_raw]
-    proj.crack = _load_crack_identity(crack_raw)
+    proj.apps   = [_load_app_entry(a) for a in apps_raw]
+    proj.crack  = _load_crack_identity(crack_raw)
+    proj.unstub = _load_unstub_options(unstub_raw)
     return proj
 
 
@@ -142,6 +181,13 @@ def _load_crack_identity(d: dict) -> CrackIdentity:
         return CrackIdentity()
     known = set(CrackIdentity.__dataclass_fields__)
     return CrackIdentity(**{k: v for k, v in d.items() if k in known})
+
+
+def _load_unstub_options(d: dict) -> UnstubOptions:
+    if not isinstance(d, dict):
+        return UnstubOptions()
+    known = set(UnstubOptions.__dataclass_fields__)
+    return UnstubOptions(**{k: v for k, v in d.items() if k in known})
 
 
 def default_bbcode_template() -> str:

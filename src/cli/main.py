@@ -1010,26 +1010,29 @@ def _add_archive(sub):
     p_dl.add_argument("--platform", default="windows",
                       choices=["windows", "linux", "macos", "all"],
                       help="Platform filter (default: windows)")
-    p_dl.add_argument("--workers", type=int, default=8, metavar="N",
-                      help="Parallel CDN connections per depot (default: 8)")
+    p_dl.add_argument("--workers", type=int, default=None, metavar="N",
+                      help="Parallel CDN connections per depot "
+                           "(default: project value, or 8)")
     p_dl.add_argument("--branch", default="public", metavar="NAME",
                       help="Branch to download (default: public)")
     p_dl.add_argument("--branch-password", default=None, metavar="PASS",
                       dest="branch_password",
                       help="Password for restricted branches")
-    p_dl.add_argument("--compression", type=int, default=9, metavar="0..9",
-                      help="7z compression level (default: 9)")
+    p_dl.add_argument("--compression", type=int, default=None, metavar="0..9",
+                      help="7z compression level (default: project value, or 9)")
     p_dl.add_argument("--archive-password", default=None, metavar="PASS",
                       dest="archive_password",
                       help="Password to encrypt the resulting 7z archive")
     p_dl.add_argument("--volume-size", default=None, metavar="SIZE",
                       dest="volume_size",
                       help="Split archive into volumes (e.g. 4g, 700m, 1024k)")
-    p_dl.add_argument("--language", default="english", metavar="LANG",
-                      help="Language depot filter (default: english)")
-    p_dl.add_argument("--max-retries", type=int, default=1, metavar="N",
+    p_dl.add_argument("--language", default=None, metavar="LANG",
+                      help="Language depot filter (default: project value, "
+                           "or english)")
+    p_dl.add_argument("--max-retries", type=int, default=None, metavar="N",
                       dest="max_retries",
-                      help="Retries on CM/manifest timeouts (default: 1)")
+                      help="Retries on CM/manifest timeouts "
+                           "(default: project value, or 1)")
     p_dl.add_argument("--project", metavar="FILE",
                       help="Pull app IDs and overrides from a .xarchive project")
     p_dl.add_argument("--appid-file", metavar="FILE", dest="appid_file",
@@ -1050,9 +1053,10 @@ def _add_archive(sub):
     p_dl.add_argument("--description", default=None, metavar="TEXT",
                       dest="description",
                       help="Description attached to each MultiUp upload + project.")
-    p_dl.add_argument("--max-concurrent-uploads", type=int, default=1,
+    p_dl.add_argument("--max-concurrent-uploads", type=int, default=None,
                       metavar="N", dest="max_concurrent_uploads",
-                      help="Number of archives to upload concurrently (default: 1).")
+                      help="Number of archives to upload concurrently "
+                           "(default: project value, or 1).")
     p_dl.add_argument("--delete-archives", action="store_true",
                       dest="delete_archives",
                       help="Delete archives after their links have been saved. "
@@ -1361,26 +1365,130 @@ def _resolve_output_dir(args) -> Path:
 _PLATFORM_LABELS = {"windows": "Windows", "linux": "Linux", "macos": "macOS"}
 
 
-def _apply_archive_creds_overrides(creds, args) -> None:
+def _apply_archive_creds_overrides(creds, args) -> bool:
     """Mutate `creds` in place with any --upload-*, --bin*, --telegram-*,
-    --discord-* CLI overrides.  Lets scripted runs supply credentials
-    without persisting them to disk."""
+    --discord-* CLI overrides.  Returns True iff anything was changed
+    so the caller can persist the new state (we treat CLI overrides as
+    "the user is configuring this machine", same model as the rest of
+    the project's run-time knobs)."""
+    changed = False
     if getattr(args, "upload_username", None) is not None:
         creds.multiup.username = args.upload_username
+        changed = True
     if getattr(args, "upload_password", None) is not None:
         creds.multiup.password = args.upload_password
+        changed = True
     if getattr(args, "binurl", None) is not None:
         creds.privatebin.url = args.binurl
+        changed = True
     if getattr(args, "binpass", None) is not None:
         creds.privatebin.password = args.binpass
+        changed = True
     if getattr(args, "telegram_bot_token", None) is not None:
         creds.telegram.token = args.telegram_bot_token
+        changed = True
     if getattr(args, "telegram_chat_id", None):
         creds.telegram.chat_ids = list(args.telegram_chat_id)
+        changed = True
     if getattr(args, "discord_webhook", None) is not None:
         creds.discord.webhook_url = args.discord_webhook
+        changed = True
     if getattr(args, "discord_mention_role_ids", None):
         creds.discord.mention_role_ids = list(args.discord_mention_role_ids)
+        changed = True
+    return changed
+
+
+def _resolve_archive_run_options(args, project_obj) -> dict:
+    """Pick the effective value for each run-time knob.
+
+    Priority: CLI flag (when supplied) wins over project's stored value
+    wins over the built-in default.  For boolean store_true flags the
+    CLI can only force-on; force-off requires editing the .xarchive (or
+    leaving the flag absent in the first place).
+    """
+    P = project_obj
+
+    def pick(cli_value, proj_attr, fallback):
+        if cli_value is not None:
+            return cli_value
+        if P is not None:
+            return getattr(P, proj_attr)
+        return fallback
+
+    keep_or = lambda cli, proj_attr, fallback=False: (
+        cli or (getattr(P, proj_attr) if P is not None else fallback)
+    )
+
+    from src.core.archive.project import UnstubOptions
+    pu = P.unstub if P is not None else UnstubOptions()
+    unstub = UnstubOptions(
+        keepbind       = bool(args.keepbind       or pu.keepbind),
+        keepstub       = bool(args.keepstub       or pu.keepstub),
+        dumppayload    = bool(args.dumppayload    or pu.dumppayload),
+        dumpdrmp       = bool(args.dumpdrmp       or pu.dumpdrmp),
+        realign        = bool(args.realign        or pu.realign),
+        recalcchecksum = bool(args.recalcchecksum or pu.recalcchecksum),
+    )
+
+    return {
+        "workers":          pick(args.workers,          "workers",          8),
+        "compression":      pick(args.compression,      "compression",      9),
+        "language":         pick(args.language,         "language",         "english"),
+        "max_retries":      pick(args.max_retries,      "max_retries",      1),
+        "archive_password": pick(args.archive_password, "archive_password", "") or None,
+        "volume_size":      pick(args.volume_size,      "volume_size",      "") or None,
+        "description":      pick(args.description,      "upload_description", "") or None,
+        "max_concurrent_uploads": pick(args.max_concurrent_uploads,
+                                       "max_concurrent_uploads", 1),
+        "delete_archives":  keep_or(args.delete_archives, "delete_archives"),
+        "experimental":     keep_or(args.experimental,    "experimental"),
+        "unstub":           unstub,
+    }
+
+
+def _persist_archive_run_options(args, project_obj) -> bool:
+    """Mirror any explicitly-CLI-supplied run-time knob values into
+    project_obj.  Returns True iff anything changed.  Booleans set
+    True via CLI persist as True; CLI absence does NOT clear them
+    (use the .xarchive file to flip booleans off)."""
+    if project_obj is None:
+        return False
+    P = project_obj
+    changed = False
+
+    def set_if(attr, value, sentinel=None):
+        nonlocal changed
+        if value is not sentinel and value != getattr(P, attr):
+            setattr(P, attr, value)
+            changed = True
+
+    if args.workers is not None and args.workers != P.workers:
+        P.workers = args.workers; changed = True
+    if args.compression is not None and args.compression != P.compression:
+        P.compression = args.compression; changed = True
+    if args.language is not None and args.language != P.language:
+        P.language = args.language; changed = True
+    if args.max_retries is not None and args.max_retries != P.max_retries:
+        P.max_retries = args.max_retries; changed = True
+    if args.archive_password is not None and args.archive_password != P.archive_password:
+        P.archive_password = args.archive_password; changed = True
+    if args.volume_size is not None and args.volume_size != P.volume_size:
+        P.volume_size = args.volume_size; changed = True
+    if args.description is not None and args.description != P.upload_description:
+        P.upload_description = args.description; changed = True
+    if (args.max_concurrent_uploads is not None
+            and args.max_concurrent_uploads != P.max_concurrent_uploads):
+        P.max_concurrent_uploads = args.max_concurrent_uploads; changed = True
+    if args.delete_archives and not P.delete_archives:
+        P.delete_archives = True; changed = True
+    if args.experimental and not P.experimental:
+        P.experimental = True; changed = True
+    for f in ("keepbind", "keepstub", "dumppayload", "dumpdrmp",
+              "realign", "recalcchecksum"):
+        if getattr(args, f, False) and not getattr(P.unstub, f):
+            setattr(P.unstub, f, True); changed = True
+    return changed
 
 
 def _build_unstub_options(args) -> dict:
@@ -1604,7 +1712,11 @@ def _cmd_archive_download(args):
         _sys.stderr = log_tee_err
 
     creds = creds_mod.load()
-    _apply_archive_creds_overrides(creds, args)
+    creds_dirty = _apply_archive_creds_overrides(creds, args)
+    if creds_dirty:
+        # Persist immediately so a CTRL-C mid-run still leaves the new
+        # creds saved — they're config, not transient state.
+        creds_mod.save(creds)
     if not creds.has_login_tokens():
         _die("No saved tokens.  Run `patchforge archive login` first.", EXIT_INPUT)
 
@@ -1619,14 +1731,6 @@ def _cmd_archive_download(args):
 
     output_dir = _resolve_output_dir(args)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    try:
-        volume_size = parse_size(args.volume_size) if args.volume_size else None
-    except ValueError:
-        _die(f"Invalid --volume-size: {args.volume_size!r}", EXIT_INPUT)
-
-    if args.compression < 0 or args.compression > 9:
-        _die(f"--compression must be 0..9, got {args.compression}", EXIT_INPUT)
 
     depot_names = depots_ini.load()
 
@@ -1651,6 +1755,17 @@ def _cmd_archive_download(args):
             else project_mod.CrackIdentity()
         )
 
+    # Resolve every per-run knob: CLI > project > built-in default.
+    opts = _resolve_archive_run_options(args, project_obj)
+
+    try:
+        volume_size = parse_size(opts["volume_size"]) if opts["volume_size"] else None
+    except ValueError:
+        _die(f"Invalid --volume-size: {opts['volume_size']!r}", EXIT_INPUT)
+
+    if opts["compression"] < 0 or opts["compression"] > 9:
+        _die(f"--compression must be 0..9, got {opts['compression']}", EXIT_INPUT)
+
     # Resolve notify mode (CLI flag > project field > auto-default).
     notify_mode = _resolve_notify_mode(
         getattr(args, "notify_mode_flag", None),
@@ -1669,7 +1784,17 @@ def _cmd_archive_download(args):
         _die(f"CM login failed: {exc}", EXIT_INPUT)
 
     subscriber = build_subscriber(plain=args.no_progress)
-    unstub_options = _build_unstub_options(args) if args.crack else None
+    unstub_options = (
+        {
+            "keepbind":       opts["unstub"].keepbind,
+            "zerodostub":     not opts["unstub"].keepstub,
+            "dumppayload":    opts["unstub"].dumppayload,
+            "dumpdrmp":       opts["unstub"].dumpdrmp,
+            "realign":        opts["unstub"].realign,
+            "recalcchecksum": opts["unstub"].recalcchecksum,
+        }
+        if args.crack else None
+    )
     all_archives: list[Path] = []
     all_unknown_depot_ids: set[str] = set()
 
@@ -1705,17 +1830,17 @@ def _cmd_archive_download(args):
             try:
                 archives, platform_manifests, app_meta = download_app(
                     client, cdn, app_id, output_dir,
-                    platform=args.platform, workers=args.workers,
-                    password=args.archive_password,
-                    compression_level=args.compression,
+                    platform=args.platform, workers=opts["workers"],
+                    password=opts["archive_password"],
+                    compression_level=opts["compression"],
                     volume_size=volume_size,
                     branch=args.branch,
                     crack=args.crack,
-                    experimental=args.experimental,
+                    experimental=opts["experimental"],
                     unstub_options=unstub_options,
                     depot_names=depot_names,
-                    max_retries=args.max_retries,
-                    language=args.language,
+                    max_retries=opts["max_retries"],
+                    language=opts["language"],
                     crack_identity=crack_identity,
                     on_event=subscriber,
                 )
@@ -1735,9 +1860,9 @@ def _cmd_archive_download(args):
                 upload_mod=upload_mod, notify_mod=notify_mod,
                 output_dir=output_dir, subscriber=subscriber,
                 notify_mode=notify_mode,
-                description=args.description,
-                max_concurrent=args.max_concurrent_uploads,
-                delete_archives=args.delete_archives,
+                description=opts["description"],
+                max_concurrent=opts["max_concurrent_uploads"],
+                delete_archives=opts["delete_archives"],
             )
 
             # Persist current buildid so the next polling run can detect change.
@@ -1760,15 +1885,28 @@ def _cmd_archive_download(args):
         if added:
             print(f"Added {len(added)} unknown depot ID(s) to {depots_ini.depots_path()}")
 
-    # Persist any crack-identity fields that prompts filled in back into the
-    # project so subsequent runs don't re-ask for the same values.
-    if args.crack and project_obj is not None and project_path is not None:
-        project_obj.crack = crack_identity
-        try:
-            project_mod.save(project_obj, project_path)
-            print(f"Updated crack identity in {project_path}")
-        except Exception as exc:
-            _warn(f"Could not persist crack identity to {project_path}: {exc}")
+    # Persist run-time knobs + crack identity back to the .xarchive so
+    # subsequent runs default to the same configuration.  Booleans set
+    # via CLI persist as True; the .xarchive must be hand-edited to
+    # flip them off.  Only writes when something actually changed.
+    if project_obj is not None and project_path is not None:
+        proj_dirty = _persist_archive_run_options(args, project_obj)
+        if args.crack and crack_identity is not None:
+            project_obj.crack = crack_identity
+            proj_dirty = True
+        # current_buildid was already mutated in the per-app loop —
+        # _persist_archive_run_options doesn't see those, so flag dirty
+        # whenever any AppEntry has a different buildid than what was
+        # loaded.  Cheaper to just always re-save when buildids may
+        # have changed: any successful download_app call sets it.
+        if any(e.current_buildid for e in project_obj.apps):
+            proj_dirty = True
+        if proj_dirty:
+            try:
+                project_mod.save(project_obj, project_path)
+                print(f"Updated {project_path}")
+            except Exception as exc:
+                _warn(f"Could not persist project to {project_path}: {exc}")
 
     print()
     print(f"Done.  {len(all_archives)} archive file(s) written to {output_dir}")
