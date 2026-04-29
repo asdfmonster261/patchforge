@@ -13,8 +13,6 @@ import sys
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO_ROOT))
 
@@ -401,6 +399,102 @@ def test_cli_post_pipeline_skips_when_no_creds_set(tmp_path):
     upload_mod.upload_archives.assert_not_called()
     notify_mod.send_discord_notification.assert_not_called()
     notify_mod.send_telegram_notification.assert_not_called()
+
+
+def test_cli_resolve_notify_mode_priority():
+    """CLI flag wins over project field; project field wins over auto-default;
+    auto-default falls back to 'delay' iff multiup creds are set."""
+    from src.cli.main import _resolve_notify_mode
+    from src.core.archive import credentials as creds_mod
+
+    creds = creds_mod.Credentials()
+    creds.discord.webhook_url = "https://h"   # at least one notify target
+
+    # No notify creds → "none" regardless of flag/field.
+    no_notify = creds_mod.Credentials()
+    no_notify.multiup.username = "u"
+    assert _resolve_notify_mode("pre", "delay", no_notify) == "none"
+
+    # CLI flag overrides everything.
+    assert _resolve_notify_mode("pre",   "delay", creds) == "pre"
+    assert _resolve_notify_mode("both",  "delay", creds) == "both"
+
+    # Project field used when CLI flag absent.
+    assert _resolve_notify_mode(None, "pre",   creds) == "pre"
+    assert _resolve_notify_mode(None, "delay", creds) == "delay"
+    assert _resolve_notify_mode(None, "both",  creds) == "both"
+
+    # Auto-default: 'delay' when uploads can produce links, else 'pre'.
+    creds.multiup.username = "u"
+    assert _resolve_notify_mode(None, "", creds) == "delay"
+    creds.multiup.username = ""
+    assert _resolve_notify_mode(None, "", creds) == "pre"
+
+    # Invalid project field is ignored, falls through to auto.
+    assert _resolve_notify_mode(None, "garbage", creds) == "pre"
+
+
+def test_cli_pre_pipeline_fires_only_in_pre_or_both(tmp_path):
+    from src.cli.main import _archive_run_pre_pipeline
+    from src.core.archive import credentials as creds_mod
+
+    notify_mod = mock.MagicMock()
+    creds = creds_mod.Credentials()
+    creds.discord.webhook_url = "https://h"
+
+    base = dict(
+        app_meta={"appid": 9, "name": "G", "buildid": "", "timeupdated": 0},
+        previous_buildid="100",
+        creds=creds, notify_mod=notify_mod,
+    )
+    _archive_run_pre_pipeline(notify_mode="delay", **base)
+    notify_mod.send_discord_notification.assert_not_called()
+    _archive_run_pre_pipeline(notify_mode="pre", **base)
+    _archive_run_pre_pipeline(notify_mode="both", **base)
+    assert notify_mod.send_discord_notification.call_count == 2
+
+    # Pre-notify must NOT include upload links.
+    for call in notify_mod.send_discord_notification.call_args_list:
+        assert call.kwargs["upload_links"] is None
+
+
+def test_cli_post_pipeline_skips_post_notify_when_mode_pre(tmp_path):
+    """notify_mode='pre' means upload still runs (so links land in the
+    paste/links file) but the *post* notify is suppressed — the pre-notify
+    already fired, sending a second one would duplicate."""
+    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive import credentials as creds_mod
+
+    upload_mod = mock.MagicMock()
+    upload_mod.upload_archives.return_value = {"Game.1.windows.public": "https://u"}
+    notify_mod = mock.MagicMock()
+
+    creds = creds_mod.Credentials()
+    creds.multiup.username    = "alice"
+    creds.discord.webhook_url = "https://hook"
+
+    _archive_run_post_pipeline(
+        archives=[tmp_path / "Game.1.windows.public.7z"],
+        app_meta={"appid": 9, "name": "G", "buildid": "200", "timeupdated": 0},
+        previous_buildid="100",
+        creds=creds,
+        upload_mod=upload_mod, notify_mod=notify_mod,
+        output_dir=tmp_path, subscriber=lambda ev: None,
+        notify_mode="pre",
+    )
+    upload_mod.upload_archives.assert_called_once()      # still runs
+    notify_mod.send_discord_notification.assert_not_called()  # post suppressed
+
+
+def test_project_notify_mode_field_roundtrips(tmp_path):
+    """ArchiveProject.notify_mode persists through save/load."""
+    from src.core.archive import project as pm
+    p = pm.new_project(name="t")
+    p.notify_mode = "both"
+    out = tmp_path / "p.xarchive"
+    pm.save(p, out)
+    loaded = pm.load(out)
+    assert loaded.notify_mode == "both"
 
 
 def test_cli_post_pipeline_routes_upload_links_to_notify(tmp_path):

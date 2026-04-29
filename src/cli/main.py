@@ -1038,6 +1038,24 @@ def _add_archive(sub):
                       help="Plain log mode instead of tqdm progress bars")
     p_dl.add_argument("--crack", choices=["coldclient", "gse"], default=None,
                       help="(Phase 3 — not yet implemented; raises an error today)")
+
+    # Notify-mode: --notify, --notify-delay, --notify-both are mutually
+    # exclusive.  When none is given, the project's notify_mode field
+    # decides; when that's also blank, defaults to "delay" if MultiUp
+    # creds are set (links available) or "pre" otherwise.
+    notify_grp = p_dl.add_mutually_exclusive_group()
+    notify_grp.add_argument("--notify", dest="notify_mode_flag",
+                            action="store_const", const="pre",
+                            help="Send a single notification before downloading "
+                                 "starts; no upload links included.")
+    notify_grp.add_argument("--notify-delay", dest="notify_mode_flag",
+                            action="store_const", const="delay",
+                            help="Send a single notification after download + "
+                                 "upload completes, with per-platform links.")
+    notify_grp.add_argument("--notify-both", dest="notify_mode_flag",
+                            action="store_const", const="both",
+                            help="Send both pre-download and post-upload notifications.")
+
     p_dl.set_defaults(func=_cmd_archive_download)
 
     p_new = asub.add_parser("new-project",
@@ -1286,13 +1304,92 @@ def _platform_from_archive_stem(stem: str) -> str | None:
     return None
 
 
+_VALID_NOTIFY_MODES = ("pre", "delay", "both", "none")
+
+
+def _resolve_notify_mode(cli_flag: str | None,
+                         project_field: str,
+                         creds) -> str:
+    """Pick the active notify mode for one run.
+
+    Priority: CLI flag > project field > auto-default.  Auto picks
+    "delay" when MultiUp upload creds are present (so the post-upload
+    notification carries links) and "pre" otherwise (no point sending
+    a delayed notify with no links).  Returns "none" when no notify
+    creds are set at all.
+    """
+    if not (creds.discord.is_set() or creds.telegram.is_set()):
+        return "none"
+    for source in (cli_flag, project_field):
+        if source in ("pre", "delay", "both"):
+            return source
+    return "delay" if creds.multiup.is_set() else "pre"
+
+
+def _build_notify_data(app_meta: dict, previous_buildid: str) -> dict:
+    return {
+        "appid":            app_meta.get("appid"),
+        "name":             app_meta.get("name", ""),
+        "previous_buildid": previous_buildid or "",
+        "current_buildid":  app_meta.get("buildid", ""),
+        "timeupdated":      app_meta.get("timeupdated", 0),
+    }
+
+
+def _send_notifications(notify_data: dict,
+                        upload_links: dict | None,
+                        creds, *, notify_mod) -> None:
+    """Fire Discord + Telegram for one notify event.  Per-channel failures
+    are warnings; they don't abort the run."""
+    if creds.discord.is_set():
+        try:
+            notify_mod.send_discord_notification(
+                creds.discord.webhook_url,
+                notify_data,
+                mention_role_ids=creds.discord.mention_role_ids or None,
+                upload_links=upload_links,
+            )
+        except Exception as exc:
+            _warn(f"Discord notify failed: {exc}")
+    if creds.telegram.is_set():
+        try:
+            notify_mod.send_telegram_notification(
+                creds.telegram.token,
+                creds.telegram.chat_ids,
+                notify_data,
+                upload_links=upload_links,
+            )
+        except Exception as exc:
+            _warn(f"Telegram notify failed: {exc}")
+
+
+def _archive_run_pre_pipeline(app_meta: dict, previous_buildid: str,
+                              creds, notify_mode: str,
+                              *, notify_mod) -> None:
+    """Pre-download notification (no upload links).  Skipped unless mode
+    is 'pre' or 'both'."""
+    if notify_mode not in ("pre", "both"):
+        return
+    if not app_meta:
+        return
+    _send_notifications(
+        _build_notify_data(app_meta, previous_buildid),
+        upload_links=None,
+        creds=creds, notify_mod=notify_mod,
+    )
+
+
 def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
                                 *, upload_mod, notify_mod,
-                                output_dir, subscriber) -> None:
-    """Upload archives and fire build-change notifications for one app run.
+                                output_dir, subscriber,
+                                notify_mode: str = "delay") -> None:
+    """Upload archives and (when notify_mode in {'delay','both'}) fire the
+    post-upload notification with platform links.
 
-    No-ops when the corresponding credential blocks are blank.  Shared
-    across `archive download` and (Phase 5) the polling loop."""
+    Upload always runs when MultiUp creds are set, regardless of
+    notify_mode — the notify_mode only gates whether a *post* notify
+    fires.  Pre-download notify is _archive_run_pre_pipeline above.
+    """
     if not archives or not app_meta:
         return
 
@@ -1320,36 +1417,14 @@ def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
         if plat:
             platform_links[plat] = url
 
-    # ---- notify --------------------------------------------------------
-    if not (creds.discord.is_set() or creds.telegram.is_set()):
+    # ---- post-upload notify -------------------------------------------
+    if notify_mode not in ("delay", "both"):
         return
-    notify_data = {
-        "appid":            app_meta.get("appid"),
-        "name":             app_meta.get("name", ""),
-        "previous_buildid": previous_buildid or "",
-        "current_buildid":  app_meta.get("buildid", ""),
-        "timeupdated":      app_meta.get("timeupdated", 0),
-    }
-    if creds.discord.is_set():
-        try:
-            notify_mod.send_discord_notification(
-                creds.discord.webhook_url,
-                notify_data,
-                mention_role_ids=creds.discord.mention_role_ids or None,
-                upload_links=platform_links or None,
-            )
-        except Exception as exc:
-            _warn(f"Discord notify failed: {exc}")
-    if creds.telegram.is_set():
-        try:
-            notify_mod.send_telegram_notification(
-                creds.telegram.token,
-                creds.telegram.chat_ids,
-                notify_data,
-                upload_links=platform_links or None,
-            )
-        except Exception as exc:
-            _warn(f"Telegram notify failed: {exc}")
+    _send_notifications(
+        _build_notify_data(app_meta, previous_buildid),
+        upload_links=platform_links or None,
+        creds=creds, notify_mod=notify_mod,
+    )
 
 
 def _cmd_archive_download(args):
@@ -1387,22 +1462,33 @@ def _cmd_archive_download(args):
 
     depot_names = depots_ini.load()
 
-    # Crack identity — loaded from the .xarchive when --project is given, or
-    # a fresh CrackIdentity that prompts will fill in.  The crack functions
-    # mutate it in place; we save back to .xarchive after the run so users
-    # don't get re-prompted on every invocation.
+    # Project load — done up front when --project is given so notify_mode
+    # and AppEntry.current_buildid are available regardless of --crack.
     project_path = Path(args.project) if args.project else None
     project_obj = None
+    if project_path:
+        try:
+            project_obj = project_mod.load(project_path)
+        except Exception as exc:
+            _die(f"Failed to load archive project: {exc}", EXIT_INPUT)
+
+    # Crack identity falls out of the project when present, or a fresh
+    # CrackIdentity that prompts will fill in.  Crack functions mutate it
+    # in place; we save back to .xarchive after the run so users don't
+    # get re-prompted on every invocation.
     crack_identity = None
     if args.crack:
-        if project_path:
-            try:
-                project_obj = project_mod.load(project_path)
-            except Exception as exc:
-                _die(f"Failed to load archive project: {exc}", EXIT_INPUT)
-            crack_identity = project_obj.crack
-        else:
-            crack_identity = project_mod.CrackIdentity()
+        crack_identity = (
+            project_obj.crack if project_obj is not None
+            else project_mod.CrackIdentity()
+        )
+
+    # Resolve notify mode (CLI flag > project field > auto-default).
+    notify_mode = _resolve_notify_mode(
+        getattr(args, "notify_mode_flag", None),
+        project_obj.notify_mode if project_obj is not None else "",
+        creds,
+    )
 
     tokens = {
         "username":             creds.username,
@@ -1430,6 +1516,23 @@ def _cmd_archive_download(args):
             print(f"=== app {app_id} ===")
             entry = apps_by_id.get(app_id)
             previous_buildid = entry.current_buildid if entry else ""
+
+            # Pre-download notify needs an app_meta to mention.  We don't
+            # have it yet here (download_app builds it from the
+            # product-info call) so just send what we know — appid +
+            # previous buildid — and let the next-build/timeupdated
+            # fields stay blank for the pre-notify.  This matches
+            # SteamArchiver's behaviour: pre-notify is the "build
+            # change detected" alert, not a build summary.
+            if notify_mode in ("pre", "both"):
+                _archive_run_pre_pipeline(
+                    app_meta={"appid": app_id, "name": str(app_id),
+                              "buildid": "", "timeupdated": 0},
+                    previous_buildid=previous_buildid,
+                    creds=creds, notify_mode=notify_mode,
+                    notify_mod=notify_mod,
+                )
+
             try:
                 archives, platform_manifests, app_meta = download_app(
                     client, cdn, app_id, output_dir,
@@ -1460,6 +1563,7 @@ def _cmd_archive_download(args):
                 archives, app_meta, previous_buildid, creds,
                 upload_mod=upload_mod, notify_mod=notify_mod,
                 output_dir=output_dir, subscriber=subscriber,
+                notify_mode=notify_mode,
             )
 
             # Persist current buildid so the next polling run can detect change.

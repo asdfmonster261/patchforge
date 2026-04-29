@@ -85,6 +85,14 @@ class ArchiveProject:
     # BBCode template body (copied from vendored default on project create)
     bbcode_template: str = ""
 
+    # Notify mode (Phase 4 parity with SteamArchiver --notify / --notify-delay):
+    #   "pre"   — fire one notification before download starts; no upload links
+    #   "delay" — fire one notification after upload completes; with links
+    #   "both"  — fire both
+    #   ""      — auto: "delay" if MultiUp creds set, else "pre"
+    # CLI --notify / --notify-delay / --notify-both override this field.
+    notify_mode: str = ""
+
     # Free-form CLI args appended to `patchforge archive` invocations
     extra_args: str = ""
 
