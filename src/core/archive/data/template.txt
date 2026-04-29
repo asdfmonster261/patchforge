@@ -1,0 +1,9 @@
+[size=150][b][color=#FF0000]{APP_NAME} - Clean Steam Files[/color][/b][/size]
+[url={STEAMDB_URL}][img]{HEADER_IMAGE}[/img][/url]
+[b][color=#FF0000]Platform(s)[/color]:[/b] {PLATFORMS}
+[b][color=#FF0000]Branch[/color]:[/b] Public
+[b][color=#FF0000]Build[/color]:[/b] {BUILDID}
+[b][color=#FF0000]Released[/color]:[/b] {DATETIME}
+[b][color=#FF0000]Link(s)[/color]:[/b] [color=green][b]{ALL_LINKS}[/b][/color]
+
+{MANIFESTS}

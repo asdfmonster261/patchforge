@@ -12,6 +12,25 @@ dependencies = [
     "crcmod>=1.7",
 ]
 
+# Archive mode (Steam depot downloader, ports SteamArchiver into PatchForge).
+# Pulls in heavy deps not needed by Update Patch / Repack modes; opt in via:
+#   pip install patchforge[archive]
+# `steam[client]` is sourced from a git fork (Lopsider's) — install it
+# separately first if you're not using the conda env recipe.  libarchive-c
+# also requires the system libarchive library on pip-only installs.
+[project.optional-dependencies]
+archive = [
+    "py7zr",
+    "libarchive-c",
+    "requests",
+    "requests-toolbelt",
+    "privatebinapi",
+    "origamibot",
+    "discord-webhook",
+    "zstandard",
+    "qrcode",
+]
+
 [project.scripts]
 patchforge = "src.cli.main:run_cli"
 patchforge-gui = "src.gui.main_window:run_gui"

@@ -47,6 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_repack(sub)
     _add_new_repack_project(sub)
     _add_show_repack_project(sub)
+    _add_archive(sub)
 
     return parser
 
@@ -75,6 +76,12 @@ Examples:
   # Create/show a repack project file
   patchforge new-repack-project --output installer.xpr --app-name "My Game"
   patchforge show-repack-project installer.xpr
+
+  # Archive mode (Steam depot downloader; requires `pip install patchforge[archive]`)
+  patchforge archive login
+  patchforge archive info 730 570
+  patchforge archive new-project --output tracker.xarchive
+  patchforge archive show-project tracker.xarchive
 """
 
 
@@ -949,3 +956,199 @@ _NEW_REPACK_PROJECT_FIELDS = (
     "install_registry_key", "run_after_install", "detect_running_exe",
     "shortcut_target", "shortcut_name",
 )
+
+
+# ---------------------------------------------------------------------------
+# archive (Steam depot downloader — Phase 1 minimal slice)
+# ---------------------------------------------------------------------------
+
+def _add_archive(sub):
+    p = sub.add_parser(
+        "archive",
+        help="Steam depot downloader (requires `pip install patchforge[archive]`)",
+    )
+    asub = p.add_subparsers(dest="archive_cmd", metavar="SUBCOMMAND")
+
+    p_login = asub.add_parser("login", help="Log in to Steam and save refresh tokens")
+    p_login.set_defaults(func=_cmd_archive_login)
+
+    p_logout = asub.add_parser("logout", help="Delete saved Steam login tokens")
+    p_logout.add_argument("--all", action="store_true",
+                          help="Also delete the saved Web API key")
+    p_logout.set_defaults(func=_cmd_archive_logout)
+
+    p_check = asub.add_parser("check", help="Verify saved tokens still log in to Steam")
+    p_check.set_defaults(func=_cmd_archive_check)
+
+    p_info = asub.add_parser("info", help="Print product info for one or more app IDs")
+    p_info.add_argument("app_ids", metavar="APPID", nargs="+", type=int,
+                        help="Steam app IDs")
+    p_info.set_defaults(func=_cmd_archive_info)
+
+    p_new = asub.add_parser("new-project",
+                            help="Create a new .xarchive project file with default settings")
+    p_new.add_argument("--output", metavar="FILE", required=True,
+                       help="Path to write the .xarchive project file")
+    p_new.add_argument("--name", metavar="NAME", help="Project name")
+    p_new.add_argument("--app-id", metavar="APPID", action="append", type=int, default=[],
+                       dest="app_ids", help="Add an app ID (repeatable)")
+    p_new.set_defaults(func=_cmd_archive_new_project)
+
+    p_show = asub.add_parser("show-project", help="Display settings from a .xarchive file")
+    p_show.add_argument("project", metavar="FILE", help="Path to .xarchive file")
+    p_show.set_defaults(func=_cmd_archive_show_project)
+
+    p.set_defaults(func=lambda args: p.print_help())
+
+
+def _archive_require_extras_or_die():
+    from src.core.archive._extras import missing_extras
+    missing = missing_extras()
+    if missing:
+        _die(
+            "archive-mode requires optional dependencies: "
+            + ", ".join(missing)
+            + "\n  Install with: pip install patchforge[archive]",
+            EXIT_INPUT,
+        )
+
+
+def _cmd_archive_login(args):
+    _archive_require_extras_or_die()
+    from src.core.archive.auth import fresh_login
+    from src.core.archive import credentials as creds_mod
+
+    print("Starting Steam login...")
+    tokens = fresh_login()
+    creds = creds_mod.load()
+    creds.username             = tokens["username"]
+    creds.steam_id             = int(tokens["steam_id"])
+    creds.client_refresh_token = tokens["client_refresh_token"]
+    creds_mod.save(creds)
+    print(f"Logged in as {tokens['username']!r}  ·  SteamID {tokens['steam_id']}")
+    print(f"Tokens saved to {creds_mod.credentials_path()}")
+
+
+def _cmd_archive_logout(args):
+    from src.core.archive import credentials as creds_mod
+
+    if args.all:
+        creds_mod.clear_all()
+        print(f"All credentials deleted ({creds_mod.credentials_path()}).")
+    else:
+        creds_mod.clear_login_tokens()
+        print("Login tokens cleared.  Web API key (if any) preserved.")
+
+
+def _cmd_archive_check(args):
+    _archive_require_extras_or_die()
+    from src.core.archive import credentials as creds_mod
+    from src.core.archive.appinfo import login as cm_login
+
+    creds = creds_mod.load()
+    if not creds.has_login_tokens():
+        _die("No saved tokens.  Run `patchforge archive login` first.", EXIT_INPUT)
+
+    text, _ = creds_mod.refresh_token_expiry_text(creds.client_refresh_token)
+    if text:
+        print(text)
+
+    tokens = {
+        "username":             creds.username,
+        "steam_id":             creds.steam_id,
+        "client_refresh_token": creds.client_refresh_token,
+    }
+    try:
+        client, _cdn = cm_login(tokens)
+    except Exception as exc:
+        _die(f"CM login failed: {exc}", EXIT_INPUT)
+
+    name = client.user.name if client.user else "?"
+    print(f"OK — logged in as {name!r}  ·  SteamID {client.steam_id}")
+    client.logout()
+
+
+def _cmd_archive_info(args):
+    _archive_require_extras_or_die()
+    from src.core.archive import credentials as creds_mod
+    from src.core.archive.appinfo import login as cm_login, query_app_info_batch
+
+    creds = creds_mod.load()
+    if not creds.has_login_tokens():
+        _die("No saved tokens.  Run `patchforge archive login` first.", EXIT_INPUT)
+
+    tokens = {
+        "username":             creds.username,
+        "steam_id":             creds.steam_id,
+        "client_refresh_token": creds.client_refresh_token,
+    }
+    try:
+        client, cdn = cm_login(tokens)
+    except Exception as exc:
+        _die(f"CM login failed: {exc}", EXIT_INPUT)
+
+    try:
+        for app_id, info in query_app_info_batch(client, cdn, list(args.app_ids)):
+            if info is None:
+                _warn(f"app {app_id}: no info returned")
+    finally:
+        client.logout()
+
+
+def _cmd_archive_new_project(args):
+    from src.core.archive.project import (
+        AppEntry, new_project, save as save_proj,
+    )
+
+    proj = new_project(name=args.name or "")
+    for app_id in args.app_ids or []:
+        proj.apps.append(AppEntry(app_id=int(app_id)))
+
+    out = Path(args.output)
+    save_proj(proj, out)
+    print(f"Archive project created: {out}")
+    print(f"  apps:        {len(proj.apps)}")
+    print(f"  default_platform: {proj.default_platform}")
+
+
+def _cmd_archive_show_project(args):
+    from dataclasses import asdict
+    from src.core.archive.project import load as load_proj
+
+    try:
+        proj = load_proj(Path(args.project))
+    except Exception as exc:
+        _die(f"Failed to load archive project: {exc}", EXIT_INPUT)
+
+    d = asdict(proj)
+    apps  = d.pop("apps", [])
+    crack = d.pop("crack", {})
+    bbcode_template = d.pop("bbcode_template", "")
+    print(f"Archive project: {args.project}")
+    for key, val in d.items():
+        if val is None or val == "" or val == []:
+            continue
+        print(f"  {key:<20} {val}")
+    if apps:
+        print(f"  {'apps':<20} ({len(apps)})")
+        for a in apps:
+            line = f"    {a.get('app_id')}"
+            extras = []
+            if a.get("branch") and a["branch"] != "public":
+                extras.append(f"branch={a['branch']}")
+            if a.get("platform"):
+                extras.append(f"platform={a['platform']}")
+            if a.get("current_buildid"):
+                extras.append(f"buildid={a['current_buildid']}")
+            if extras:
+                line += "  [" + ", ".join(extras) + "]"
+            print(line)
+    if any(crack.values()):
+        print(f"  {'crack':<20}")
+        for k, v in crack.items():
+            if v:
+                print(f"    {k:<20} {v}")
+    if bbcode_template:
+        line_count = bbcode_template.count("\n") + 1
+        print(f"  {'bbcode_template':<20} ({line_count} lines)")
+
