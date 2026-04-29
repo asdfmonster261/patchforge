@@ -117,6 +117,13 @@ class LiveDisplaySubscriber:
             import gevent
         except ImportError:
             return
+        # Disable terminal auto-wrap for the duration of the live block.
+        # If the line-width math is slightly off, this truncates instead of
+        # wrapping — wrapped lines break the cursor-up redraw math and make
+        # each refresh append below the previous block instead of replacing it.
+        if _TTY:
+            sys.stdout.write("\033[?7l")
+            sys.stdout.flush()
         self._greenlet = gevent.spawn(self._loop)
 
     def _loop(self) -> None:
@@ -165,7 +172,13 @@ class LiveDisplaySubscriber:
         except OSError:
             width = 100
 
-        name_w = max(24, width - 44)
+        # Per-file row visible budget:
+        #   2 + name_w + 2 + 8 + 3 + 8 + 2 + 8 + 2 + 2 + 5 + 1
+        # = name_w + 41.  Leave 4 cols of slack so wider _fmt_size strings
+        # (e.g. "1023.9 GB" = 9 chars under :>8) never push us past the
+        # terminal width.  If a line wraps the cursor-up math undershoots
+        # and every redraw appends instead of overwriting.
+        name_w = max(20, width - 50)
         lines: list[str] = []
 
         for name, f in active:
@@ -205,6 +218,10 @@ class LiveDisplaySubscriber:
                 pass
             self._greenlet = None
         self._erase()
+        # Re-enable terminal auto-wrap for any subsequent output.
+        if _TTY:
+            sys.stdout.write("\033[?7h")
+            sys.stdout.flush()
         # Final summary line so the user sees the total without scrolling.
         if self._downloaded or self._skipped:
             sys.stdout.write(
