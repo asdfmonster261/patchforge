@@ -486,6 +486,120 @@ def test_cli_post_pipeline_skips_post_notify_when_mode_pre(tmp_path):
     notify_mod.send_discord_notification.assert_not_called()  # post suppressed
 
 
+def test_cli_apply_creds_overrides_merges_per_field():
+    """CLI flag values overwrite the corresponding creds field; missing
+    args leave the creds untouched."""
+    from src.cli.main         import _apply_archive_creds_overrides
+    from src.core.archive     import credentials as creds_mod
+
+    creds = creds_mod.Credentials()
+    creds.multiup.username    = "from-disk"
+    creds.discord.webhook_url = "https://disk-hook"
+
+    args = mock.Mock(
+        upload_username="cli-user", upload_password="cli-pw",
+        binurl="https://pb-cli", binpass=None,
+        telegram_bot_token=None, telegram_chat_id=["c1", "c2"],
+        discord_webhook=None,
+        discord_mention_role_ids=None,
+    )
+    _apply_archive_creds_overrides(creds, args)
+
+    # Overridden fields take CLI values.
+    assert creds.multiup.username    == "cli-user"
+    assert creds.multiup.password    == "cli-pw"
+    assert creds.privatebin.url      == "https://pb-cli"
+    assert creds.telegram.chat_ids   == ["c1", "c2"]
+    # Untouched fields keep disk values.
+    assert creds.discord.webhook_url == "https://disk-hook"
+    # Empty append list (None) leaves chat_ids/role_ids alone.
+    assert creds.privatebin.password == ""
+
+
+def test_cli_build_unstub_options_inverts_keepstub():
+    """--keepstub means don't zero the DOS stub; the dict key is
+    `zerodostub` so the boolean inverts."""
+    from src.cli.main import _build_unstub_options
+
+    args = mock.Mock(keepbind=False, keepstub=True, dumppayload=True,
+                     dumpdrmp=False, realign=False, recalcchecksum=True)
+    opts = _build_unstub_options(args)
+    assert opts == {
+        "keepbind":       False,
+        "zerodostub":     False,    # inverted
+        "dumppayload":    True,
+        "dumpdrmp":       False,
+        "realign":        False,
+        "recalcchecksum": True,
+    }
+
+
+def test_cli_build_unstub_options_defaults():
+    from src.cli.main import _build_unstub_options
+    args = mock.Mock(keepbind=False, keepstub=False, dumppayload=False,
+                     dumpdrmp=False, realign=False, recalcchecksum=False)
+    opts = _build_unstub_options(args)
+    assert opts["zerodostub"] is True
+    assert all(v is False for k, v in opts.items() if k != "zerodostub")
+
+
+def test_log_tee_strips_ansi_to_file_passes_raw_to_stream(tmp_path):
+    """Live-display ANSI codes must reach the terminal verbatim but the
+    log file gets the plain-text version."""
+    from src.cli.main import _LogTee
+    import io
+
+    fake_stream = io.StringIO()
+    fake_stream.isatty = lambda: True
+    log_path = tmp_path / "run.log"
+
+    tee = _LogTee(fake_stream, log_path)
+    tee.write("hello \033[1mworld\033[0m\n")
+    tee.write("plain line\n")
+    tee.flush()
+    tee.close()
+
+    # __getattr__ forwards isatty so the live display still detects TTY.
+    assert tee.isatty() is True
+    # Stream got raw ANSI.
+    assert "\033[1mworld\033[0m" in fake_stream.getvalue()
+    # Log file was stripped.
+    body = log_path.read_text()
+    assert "\033[" not in body
+    assert "hello world" in body
+    assert "plain line"  in body
+
+
+def test_cli_post_pipeline_forwards_upload_knobs(tmp_path):
+    """description / max_concurrent / delete_archives must reach
+    upload_archives()."""
+    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive import credentials as creds_mod
+
+    upload_mod = mock.MagicMock()
+    upload_mod.upload_archives.return_value = {}
+    notify_mod = mock.MagicMock()
+    creds = creds_mod.Credentials()
+    creds.multiup.username = "u"
+
+    _archive_run_post_pipeline(
+        archives=[tmp_path / "x.7z"],
+        app_meta={"appid": 1, "name": "G", "buildid": "1", "timeupdated": 0},
+        previous_buildid="0",
+        creds=creds,
+        upload_mod=upload_mod, notify_mod=notify_mod,
+        output_dir=tmp_path, subscriber=lambda ev: None,
+        notify_mode="delay",
+        description="custom description",
+        max_concurrent=4,
+        delete_archives=True,
+    )
+    _args, kwargs = upload_mod.upload_archives.call_args
+    assert kwargs["description"]     == "custom description"
+    assert kwargs["max_concurrent"]  == 4
+    assert kwargs["delete_archives"] is True
+
+
 def test_project_notify_mode_field_roundtrips(tmp_path):
     """ArchiveProject.notify_mode persists through save/load."""
     from src.core.archive import project as pm

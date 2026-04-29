@@ -1037,7 +1037,77 @@ def _add_archive(sub):
     p_dl.add_argument("--no-progress", action="store_true", dest="no_progress",
                       help="Plain log mode instead of tqdm progress bars")
     p_dl.add_argument("--crack", choices=["coldclient", "gse"], default=None,
-                      help="(Phase 3 — not yet implemented; raises an error today)")
+                      help="Generate a Goldberg / ColdClient emulator config "
+                           "alongside the archive (requires --project for "
+                           "crack identity persistence).")
+    p_dl.add_argument("--experimental", action="store_true",
+                      help="Use the Goldberg experimental build for the crack "
+                           "step (default: regular).")
+    p_dl.add_argument("--log", default=None, metavar="FILE",
+                      help="Tee console output to FILE (ANSI codes stripped).")
+
+    # ---- Upload args (per-run knobs that aren't credentials) -----------
+    p_dl.add_argument("--description", default=None, metavar="TEXT",
+                      dest="description",
+                      help="Description attached to each MultiUp upload + project.")
+    p_dl.add_argument("--max-concurrent-uploads", type=int, default=1,
+                      metavar="N", dest="max_concurrent_uploads",
+                      help="Number of archives to upload concurrently (default: 1).")
+    p_dl.add_argument("--delete-archives", action="store_true",
+                      dest="delete_archives",
+                      help="Delete archives after their links have been saved. "
+                           "Requires upload credentials.")
+
+    # ---- One-shot credential overrides --------------------------------
+    # These let scripted runs supply credentials without writing them to
+    # ~/.config/patchforge/archive_credentials.json.  Each one merges on
+    # top of the loaded creds so a partial override is allowed.
+    p_dl.add_argument("--upload-username", default=None, metavar="USERNAME",
+                      dest="upload_username",
+                      help="Override creds.multiup.username for this run.")
+    p_dl.add_argument("--upload-password", default=None, metavar="PASSWORD",
+                      dest="upload_password",
+                      help="Override creds.multiup.password for this run.")
+    p_dl.add_argument("--binurl", default=None, metavar="URL",
+                      dest="binurl",
+                      help="Override creds.privatebin.url for this run.")
+    p_dl.add_argument("--binpass", default=None, metavar="PASSWORD",
+                      dest="binpass",
+                      help="Override creds.privatebin.password for this run.")
+    p_dl.add_argument("--telegram-bot-token", default=None, metavar="TOKEN",
+                      dest="telegram_bot_token",
+                      help="Override creds.telegram.token for this run.")
+    p_dl.add_argument("--telegram-chat-id", default=None,
+                      action="append", metavar="CHAT_ID",
+                      dest="telegram_chat_id",
+                      help="Override creds.telegram.chat_ids "
+                           "(repeat to add multiple).")
+    p_dl.add_argument("--discord-webhook", default=None, metavar="URL",
+                      dest="discord_webhook",
+                      help="Override creds.discord.webhook_url for this run.")
+    p_dl.add_argument("--discord-mention-role-ids", default=None,
+                      action="append", metavar="ROLE_ID",
+                      dest="discord_mention_role_ids",
+                      help="Override creds.discord.mention_role_ids "
+                           "(repeat to add multiple).")
+
+    # ---- Unstub options (only meaningful with --crack) ---------------
+    unstub_grp = p_dl.add_argument_group(
+        "unstub options (only valid with --crack)",
+        "Fine-tune the SteamStub DRM unpacker applied to game executables.",
+    )
+    unstub_grp.add_argument("--keepbind", action="store_true",
+                            help="Keep the .bind section instead of removing it.")
+    unstub_grp.add_argument("--keepstub", action="store_true",
+                            help="Keep the DOS stub (default: zero it out).")
+    unstub_grp.add_argument("--dumppayload", action="store_true",
+                            help="Dump the stub payload to disk alongside the exe.")
+    unstub_grp.add_argument("--dumpdrmp", action="store_true",
+                            help="Dump SteamDRMP.dll to disk alongside the exe.")
+    unstub_grp.add_argument("--realign", action="store_true",
+                            help="Realign sections after .bind removal (default: off).")
+    unstub_grp.add_argument("--recalcchecksum", action="store_true",
+                            help="Recalculate the PE checksum of unpacked executables.")
 
     # Notify-mode: --notify, --notify-delay, --notify-both are mutually
     # exclusive.  When none is given, the project's notify_mode field
@@ -1291,6 +1361,79 @@ def _resolve_output_dir(args) -> Path:
 _PLATFORM_LABELS = {"windows": "Windows", "linux": "Linux", "macos": "macOS"}
 
 
+def _apply_archive_creds_overrides(creds, args) -> None:
+    """Mutate `creds` in place with any --upload-*, --bin*, --telegram-*,
+    --discord-* CLI overrides.  Lets scripted runs supply credentials
+    without persisting them to disk."""
+    if getattr(args, "upload_username", None) is not None:
+        creds.multiup.username = args.upload_username
+    if getattr(args, "upload_password", None) is not None:
+        creds.multiup.password = args.upload_password
+    if getattr(args, "binurl", None) is not None:
+        creds.privatebin.url = args.binurl
+    if getattr(args, "binpass", None) is not None:
+        creds.privatebin.password = args.binpass
+    if getattr(args, "telegram_bot_token", None) is not None:
+        creds.telegram.token = args.telegram_bot_token
+    if getattr(args, "telegram_chat_id", None):
+        creds.telegram.chat_ids = list(args.telegram_chat_id)
+    if getattr(args, "discord_webhook", None) is not None:
+        creds.discord.webhook_url = args.discord_webhook
+    if getattr(args, "discord_mention_role_ids", None):
+        creds.discord.mention_role_ids = list(args.discord_mention_role_ids)
+
+
+def _build_unstub_options(args) -> dict:
+    """Translate the --keepbind / --keepstub / etc. flags into the dict
+    shape that base_unpacker.options expects.  Note: --keepstub maps to
+    `zerodostub=False` (inverted) so the default of zeroing the DOS stub
+    matches SteamArchiver's behaviour."""
+    return {
+        "keepbind":       bool(getattr(args, "keepbind",       False)),
+        "zerodostub":     not bool(getattr(args, "keepstub",   False)),
+        "dumppayload":    bool(getattr(args, "dumppayload",    False)),
+        "dumpdrmp":       bool(getattr(args, "dumpdrmp",       False)),
+        "realign":        bool(getattr(args, "realign",        False)),
+        "recalcchecksum": bool(getattr(args, "recalcchecksum", False)),
+    }
+
+
+_ANSI_RE = __import__("re").compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+class _LogTee:
+    """Mirror writes to a wrapped stream + an ANSI-stripped log file.
+
+    Wraps sys.stdout / sys.stderr so the live display still renders to
+    the terminal while a parallel plain-text log accumulates on disk.
+    """
+
+    def __init__(self, stream, log_path):
+        self._stream = stream
+        self._fh = open(log_path, "a", encoding="utf-8")
+
+    def write(self, data):
+        self._stream.write(data)
+        self._fh.write(_ANSI_RE.sub("", data))
+        self._fh.flush()
+
+    def flush(self):
+        self._stream.flush()
+        self._fh.flush()
+
+    def close(self):
+        try:
+            self._fh.close()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        # Forward isatty(), fileno(), etc. to the wrapped stream so the
+        # live display's TTY check still sees a terminal.
+        return getattr(self._stream, name)
+
+
+
 def _platform_from_archive_stem(stem: str) -> str | None:
     """Pull the platform key out of an archive stem.
 
@@ -1382,13 +1525,20 @@ def _archive_run_pre_pipeline(app_meta: dict, previous_buildid: str,
 def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
                                 *, upload_mod, notify_mod,
                                 output_dir, subscriber,
-                                notify_mode: str = "delay") -> None:
+                                notify_mode: str = "delay",
+                                description: str | None = None,
+                                max_concurrent: int = 1,
+                                delete_archives: bool = False) -> None:
     """Upload archives and (when notify_mode in {'delay','both'}) fire the
     post-upload notification with platform links.
 
     Upload always runs when MultiUp creds are set, regardless of
     notify_mode — the notify_mode only gates whether a *post* notify
     fires.  Pre-download notify is _archive_run_pre_pipeline above.
+
+    description, max_concurrent, delete_archives forward to
+    upload_archives().  description falls back to app_meta['name'] when
+    None so the MultiUp project still gets a sensible label.
     """
     if not archives or not app_meta:
         return
@@ -1401,10 +1551,12 @@ def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
                 archives,
                 username=creds.multiup.username or None,
                 password=creds.multiup.password or None,
-                description=str(app_meta.get("name", "")) or None,
+                description=description or str(app_meta.get("name", "")) or None,
+                max_concurrent=max_concurrent,
                 links_dir=output_dir,
                 bin_url=creds.privatebin.url or None,
                 bin_pass=creds.privatebin.password or None,
+                delete_archives=delete_archives,
                 on_event=subscriber,
             )
         except Exception as exc:
@@ -1440,9 +1592,25 @@ def _cmd_archive_download(args):
     from src.core.archive.compress   import parse_size
     from src.core.archive.download   import download_app
 
+    # --log: tee stdout + stderr to FILE with ANSI codes stripped.  Set
+    # up before any other prints so the file captures everything from
+    # this command.  Uninstalled in the outer finally below.
+    import sys as _sys
+    log_tee_out = log_tee_err = None
+    if getattr(args, "log", None):
+        log_tee_out = _LogTee(_sys.stdout, args.log)
+        log_tee_err = _LogTee(_sys.stderr, args.log)
+        _sys.stdout = log_tee_out
+        _sys.stderr = log_tee_err
+
     creds = creds_mod.load()
+    _apply_archive_creds_overrides(creds, args)
     if not creds.has_login_tokens():
         _die("No saved tokens.  Run `patchforge archive login` first.", EXIT_INPUT)
+
+    if getattr(args, "delete_archives", False) and not creds.multiup.is_set():
+        _die("--delete-archives requires upload credentials "
+             "(via creds or --upload-username).", EXIT_INPUT)
 
     app_ids = _resolve_download_app_ids(args)
     if not app_ids:
@@ -1501,6 +1669,7 @@ def _cmd_archive_download(args):
         _die(f"CM login failed: {exc}", EXIT_INPUT)
 
     subscriber = build_subscriber(plain=args.no_progress)
+    unstub_options = _build_unstub_options(args) if args.crack else None
     all_archives: list[Path] = []
     all_unknown_depot_ids: set[str] = set()
 
@@ -1542,6 +1711,8 @@ def _cmd_archive_download(args):
                     volume_size=volume_size,
                     branch=args.branch,
                     crack=args.crack,
+                    experimental=args.experimental,
+                    unstub_options=unstub_options,
                     depot_names=depot_names,
                     max_retries=args.max_retries,
                     language=args.language,
@@ -1564,6 +1735,9 @@ def _cmd_archive_download(args):
                 upload_mod=upload_mod, notify_mod=notify_mod,
                 output_dir=output_dir, subscriber=subscriber,
                 notify_mode=notify_mode,
+                description=args.description,
+                max_concurrent=args.max_concurrent_uploads,
+                delete_archives=args.delete_archives,
             )
 
             # Persist current buildid so the next polling run can detect change.
@@ -1575,6 +1749,11 @@ def _cmd_archive_download(args):
             client.logout()
         except Exception:
             pass
+        if log_tee_out is not None:
+            _sys.stdout = log_tee_out._stream
+            _sys.stderr = log_tee_err._stream
+            log_tee_out.close()
+            log_tee_err.close()
 
     if all_unknown_depot_ids:
         added = depots_ini.record_unknown(sorted(all_unknown_depot_ids))
