@@ -985,6 +985,46 @@ def _add_archive(sub):
                         help="Steam app IDs")
     p_info.set_defaults(func=_cmd_archive_info)
 
+    p_dl = asub.add_parser("download",
+                           help="Download depots for one or more app IDs into 7z archives")
+    p_dl.add_argument("app_ids", metavar="APPID", nargs="*", type=int, default=[],
+                      help="Steam app IDs (or omit and pass --project / --appid-file)")
+    p_dl.add_argument("--output-dir", metavar="DIR",
+                      help="Where the resulting .7z archives are written. "
+                           "Falls back to project.output_dir then to current dir.")
+    p_dl.add_argument("--platform", default="windows",
+                      choices=["windows", "linux", "macos", "all"],
+                      help="Platform filter (default: windows)")
+    p_dl.add_argument("--workers", type=int, default=8, metavar="N",
+                      help="Parallel CDN connections per depot (default: 8)")
+    p_dl.add_argument("--branch", default="public", metavar="NAME",
+                      help="Branch to download (default: public)")
+    p_dl.add_argument("--branch-password", default=None, metavar="PASS",
+                      dest="branch_password",
+                      help="Password for restricted branches")
+    p_dl.add_argument("--compression", type=int, default=9, metavar="0..9",
+                      help="7z compression level (default: 9)")
+    p_dl.add_argument("--archive-password", default=None, metavar="PASS",
+                      dest="archive_password",
+                      help="Password to encrypt the resulting 7z archive")
+    p_dl.add_argument("--volume-size", default=None, metavar="SIZE",
+                      dest="volume_size",
+                      help="Split archive into volumes (e.g. 4g, 700m, 1024k)")
+    p_dl.add_argument("--language", default="english", metavar="LANG",
+                      help="Language depot filter (default: english)")
+    p_dl.add_argument("--max-retries", type=int, default=1, metavar="N",
+                      dest="max_retries",
+                      help="Retries on CM/manifest timeouts (default: 1)")
+    p_dl.add_argument("--project", metavar="FILE",
+                      help="Pull app IDs and overrides from a .xarchive project")
+    p_dl.add_argument("--appid-file", metavar="FILE", dest="appid_file",
+                      help="Read app IDs from FILE (one per line, comma-separated OK)")
+    p_dl.add_argument("--no-progress", action="store_true", dest="no_progress",
+                      help="Plain log mode instead of tqdm progress bars")
+    p_dl.add_argument("--crack", choices=["coldclient", "gse"], default=None,
+                      help="(Phase 3 — not yet implemented; raises an error today)")
+    p_dl.set_defaults(func=_cmd_archive_download)
+
     p_new = asub.add_parser("new-project",
                             help="Create a new .xarchive project file with default settings")
     p_new.add_argument("--output", metavar="FILE", required=True,
@@ -1151,4 +1191,158 @@ def _cmd_archive_show_project(args):
     if bbcode_template:
         line_count = bbcode_template.count("\n") + 1
         print(f"  {'bbcode_template':<20} ({line_count} lines)")
+
+
+# ---------------------------------------------------------------------------
+# archive download (Phase 2)
+# ---------------------------------------------------------------------------
+
+def _resolve_download_app_ids(args) -> list[int]:
+    """Collect app IDs from positional args, --appid-file, and/or --project."""
+    app_ids: list[int] = list(args.app_ids or [])
+
+    if args.appid_file:
+        appid_path = Path(args.appid_file)
+        if not appid_path.is_file():
+            _die(f"--appid-file not found: {appid_path}", EXIT_INPUT)
+        text = appid_path.read_text(encoding="utf-8")
+        for token in text.replace(",", "\n").split("\n"):
+            token = token.strip()
+            if not token or token.startswith("#"):
+                continue
+            try:
+                app_ids.append(int(token))
+            except ValueError:
+                _die(f"--appid-file contains non-integer: {token!r}", EXIT_INPUT)
+
+    if args.project:
+        from src.core.archive.project import load as load_proj
+        proj_path = Path(args.project)
+        if not proj_path.is_file():
+            _die(f"--project not found: {proj_path}", EXIT_INPUT)
+        try:
+            proj = load_proj(proj_path)
+        except Exception as exc:
+            _die(f"Failed to load archive project: {exc}", EXIT_INPUT)
+        for entry in proj.apps:
+            if entry.app_id:
+                app_ids.append(int(entry.app_id))
+
+    # Dedupe while preserving order.
+    seen: set[int] = set()
+    deduped: list[int] = []
+    for aid in app_ids:
+        if aid not in seen:
+            seen.add(aid)
+            deduped.append(aid)
+    return deduped
+
+
+def _resolve_output_dir(args) -> Path:
+    """Resolve --output-dir, falling back to project.output_dir, then cwd."""
+    if args.output_dir:
+        return Path(args.output_dir).resolve()
+
+    if args.project:
+        from src.core.archive.project import load as load_proj
+        try:
+            proj = load_proj(Path(args.project))
+        except Exception:
+            proj = None
+        if proj and proj.output_dir:
+            return Path(proj.output_dir).resolve()
+
+    return Path.cwd().resolve()
+
+
+def _cmd_archive_download(args):
+    _archive_require_extras_or_die()
+
+    from src.core.archive            import credentials   as creds_mod
+    from src.core.archive            import depots_ini
+    from src.core.archive.appinfo    import login as cm_login
+    from src.core.archive.cli_progress import build_subscriber
+    from src.core.archive.compress   import parse_size
+    from src.core.archive.download   import download_app
+
+    creds = creds_mod.load()
+    if not creds.has_login_tokens():
+        _die("No saved tokens.  Run `patchforge archive login` first.", EXIT_INPUT)
+
+    app_ids = _resolve_download_app_ids(args)
+    if not app_ids:
+        _die("No app IDs provided — pass APPID positional, --appid-file, or --project",
+             EXIT_INPUT)
+
+    output_dir = _resolve_output_dir(args)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        volume_size = parse_size(args.volume_size) if args.volume_size else None
+    except ValueError:
+        _die(f"Invalid --volume-size: {args.volume_size!r}", EXIT_INPUT)
+
+    if args.compression < 0 or args.compression > 9:
+        _die(f"--compression must be 0..9, got {args.compression}", EXIT_INPUT)
+
+    depot_names = depots_ini.load()
+
+    tokens = {
+        "username":             creds.username,
+        "steam_id":             creds.steam_id,
+        "client_refresh_token": creds.client_refresh_token,
+    }
+    try:
+        client, cdn = cm_login(tokens)
+    except Exception as exc:
+        _die(f"CM login failed: {exc}", EXIT_INPUT)
+
+    subscriber = build_subscriber(plain=args.no_progress)
+    all_archives: list[Path] = []
+    all_unknown_depot_ids: set[str] = set()
+
+    try:
+        for app_id in app_ids:
+            print(f"=== app {app_id} ===")
+            try:
+                archives, platform_manifests = download_app(
+                    client, cdn, app_id, output_dir,
+                    platform=args.platform, workers=args.workers,
+                    password=args.archive_password,
+                    compression_level=args.compression,
+                    volume_size=volume_size,
+                    branch=args.branch,
+                    crack=args.crack,
+                    depot_names=depot_names,
+                    max_retries=args.max_retries,
+                    language=args.language,
+                    on_event=subscriber,
+                )
+            except NotImplementedError as exc:
+                _die(str(exc), EXIT_INPUT)
+            except Exception as exc:
+                _warn(f"app {app_id} failed: {exc}")
+                continue
+            all_archives.extend(archives)
+            for plat_records in platform_manifests.values():
+                for depot_id, depot_name, _gid in plat_records:
+                    if not depot_name:
+                        all_unknown_depot_ids.add(str(depot_id))
+    finally:
+        subscriber.close() if hasattr(subscriber, "close") else None
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+    if all_unknown_depot_ids:
+        added = depots_ini.record_unknown(sorted(all_unknown_depot_ids))
+        if added:
+            print(f"Added {len(added)} unknown depot ID(s) to {depots_ini.depots_path()}")
+
+    print()
+    print(f"Done.  {len(all_archives)} archive file(s) written to {output_dir}")
+    for a in all_archives:
+        print(f"  {a.name}")
+
 

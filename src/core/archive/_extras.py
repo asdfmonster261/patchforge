@@ -45,3 +45,24 @@ def require_extras() -> None:
             + ", ".join(missing)
             + ".\n  Install with: pip install patchforge[archive]"
         )
+
+
+_monkey_patched = False
+
+
+def patch_steam_monkey() -> None:
+    """Apply gevent socket/ssl monkey-patches required by steam[client].
+
+    Must be called before any steam.client / steam.client.cdn import touches
+    the network.  Idempotent — calling twice is a no-op.  Safe to call when
+    the archive extras are not installed (silently returns).
+    """
+    global _monkey_patched
+    if _monkey_patched:
+        return
+    try:
+        import steam.monkey  # type: ignore
+        steam.monkey.patch_minimal()
+    except ImportError:
+        return
+    _monkey_patched = True

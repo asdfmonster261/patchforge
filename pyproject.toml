@@ -29,6 +29,7 @@ archive = [
     "discord-webhook",
     "zstandard",
     "qrcode",
+    "tqdm",
 ]
 
 [project.scripts]
