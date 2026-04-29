@@ -233,6 +233,91 @@ def test_split_file_no_split_when_volume_larger(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# compress_platform — native -v<size> multi-volume integration
+# These tests need the actual 7z binary; skipped automatically when absent.
+# ---------------------------------------------------------------------------
+
+def _native_7z_or_skip():
+    from src.core.archive import sevenzip
+    sevenzip.reset_cache()
+    p = sevenzip.get_7zip()
+    if p is None:
+        pytest.skip("native 7z binary not available")
+    return p
+
+
+def _populate_dest(dest: Path, payload_bytes: int) -> None:
+    """Drop a steamapps/ subtree under dest with one big random file so 7z
+    actually has compressible content.  Random bytes beat zeros to ensure
+    the archive can't trivially crunch below a useful size for split tests."""
+    import os
+    sa = dest / "steamapps" / "common" / "Game"
+    sa.mkdir(parents=True, exist_ok=True)
+    (sa / "data.bin").write_bytes(os.urandom(payload_bytes))
+
+
+def test_compress_native_volumes_multipart(tmp_path):
+    from src.core.archive.compress import compress_platform
+    _native_7z_or_skip()
+
+    _populate_dest(tmp_path, 4 * 1024 * 1024)   # 4 MiB random payload
+    parts = compress_platform(
+        dest=tmp_path,
+        archive_stem="multi",
+        password=None,
+        compression_level=1,        # fast; we just need the bytes to land
+        volume_size=512 * 1024,     # 512 KiB chunks → at least a few parts
+    )
+    assert len(parts) >= 2
+    for p in parts:
+        # Numbered parts retain .001/.002/... suffix.
+        assert p.name.startswith("multi.7z.")
+        assert p.exists() and p.stat().st_size > 0
+    # Plain unsplit form must NOT exist when archive was split.
+    assert not (tmp_path / "multi.7z").exists()
+
+
+def test_compress_native_volumes_single_part_renamed(tmp_path):
+    """When the archive ends up smaller than volume_size, native 7z still
+    emits .7z.001 — compress_platform renames it to plain .7z so the
+    user-facing layout doesn't carry a .001 suffix on a single-part build."""
+    from src.core.archive.compress import compress_platform
+    _native_7z_or_skip()
+
+    _populate_dest(tmp_path, 64 * 1024)        # 64 KiB
+    parts = compress_platform(
+        dest=tmp_path,
+        archive_stem="single",
+        password=None,
+        compression_level=1,
+        volume_size=4 * 1024 * 1024,           # 4 MiB ≫ archive size
+    )
+    assert len(parts) == 1
+    assert parts[0].name == "single.7z"
+    assert parts[0].exists()
+    # The .001 form is gone post-rename.
+    assert not (tmp_path / "single.7z.001").exists()
+
+
+def test_compress_native_no_volume_size(tmp_path):
+    """No volume_size = no -v flag.  Output is plain .7z; no .001 ever appears."""
+    from src.core.archive.compress import compress_platform
+    _native_7z_or_skip()
+
+    _populate_dest(tmp_path, 64 * 1024)
+    parts = compress_platform(
+        dest=tmp_path,
+        archive_stem="plain",
+        password=None,
+        compression_level=1,
+        volume_size=None,
+    )
+    assert len(parts) == 1
+    assert parts[0].name == "plain.7z"
+    assert not (tmp_path / "plain.7z.001").exists()
+
+
+# ---------------------------------------------------------------------------
 # sevenzip — cache hit/miss with mocked urllib
 # ---------------------------------------------------------------------------
 

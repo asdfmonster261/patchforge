@@ -75,16 +75,24 @@ _PCT_RE = re.compile(rb"(\d+)%")
 def _compress_native(seven_zip: Path, dest: Path, archive_path: Path,
                      compression_level: int, password: str | None,
                      gse_dir: Path | None,
+                     volume_size: int | None = None,
                      on_pct=None) -> None:
     cmd = [
         str(seven_zip), "a", "-t7z",
         f"-mx={compression_level}",
         "-mmt=on",
         "-bso0", "-bse0", "-bsp1",  # silence stdout/stderr, stream % to stdout
-        str(archive_path.resolve()),
     ]
+    # 7z native multi-volume: -v<bytes> creates archive.7z.001, .002, ... in
+    # one pass, no double-disk-usage post-split.  When the archive ends up
+    # smaller than volume_size, 7z still emits a single .7z.001 that we
+    # rename to .7z in compress_platform().
+    if volume_size:
+        cmd.append(f"-v{volume_size}b")
     if password:
         cmd += [f"-p{password}", "-mhe=on"]
+
+    cmd.append(str(archive_path.resolve()))
 
     sources = ["depotcache", "steamapps"]
     if gse_dir and gse_dir.exists():
@@ -152,6 +160,17 @@ def _compress_py7zr(dest: Path, archive_path: Path,
 # Top-level
 # ---------------------------------------------------------------------------
 
+def _collect_native_parts(archive_path: Path) -> list[Path]:
+    """Return the parts 7z produced when invoked with `-v<size>`.
+
+    7z multi-volume always names parts archive.7z.001, .002, ... — even
+    when the archive turned out smaller than one volume (just .001).
+    Sorted by volume number.
+    """
+    parts = sorted(archive_path.parent.glob(archive_path.name + ".[0-9][0-9][0-9]"))
+    return list(parts)
+
+
 def compress_platform(dest: Path, archive_stem: str,
                       password: str | None,
                       compression_level: int,
@@ -162,9 +181,15 @@ def compress_platform(dest: Path, archive_stem: str,
     """Compress depotcache/, steamapps/, and optionally a gse_config_*/ folder
     under dest into a 7z archive.
 
-    The archive is written to dest/<archive_stem>.7z.  If volume_size is set
-    and the archive exceeds it, the result is split into
-    dest/<archive_stem>.7z.001, .002, ... parts and the unsplit file removed.
+    The archive is written to dest/<archive_stem>.7z.  When volume_size is
+    set:
+      - native path: 7z's -v<size> flag emits .7z.001, .002, ... in one pass
+      - py7zr fallback: archive is built whole, then byte-split post-hoc
+
+    A single-part archive (archive ended up smaller than volume_size) is
+    always exposed as plain dest/<archive_stem>.7z without the .001
+    suffix — caller asked for splits but doesn't get any when there's
+    only one part.
 
     on_event, if given, is called with DownloadEvent-shaped objects for stage
     transitions and per-percent compression progress.  May be None (silent).
@@ -192,19 +217,34 @@ def compress_platform(dest: Path, archive_stem: str,
         seven_zip = get_7zip()
 
     if seven_zip:
-        _emit("stage", stage_msg=f"Compressing with native 7z ({seven_zip.name})")
+        msg = f"Compressing with native 7z ({seven_zip.name})"
+        if volume_size:
+            msg += f", volumes of {volume_size}b"
+        _emit("stage", stage_msg=msg)
         run_in_thread(_compress_native, seven_zip, dest, archive_path,
-                      compression_level, password, gse_dir,
+                      compression_level, password, gse_dir, volume_size,
                       lambda pct: _emit("file_progress",
                                         name=archive_path.name,
                                         total=100, done=pct))
-    else:
-        _emit("stage", stage_msg="Compressing with py7zr (slower fallback)")
-        run_in_thread(_compress_py7zr, dest, archive_path,
-                      compression_level, password, gse_dir)
+
+        if volume_size:
+            parts = _collect_native_parts(archive_path)
+            if len(parts) == 1:
+                # Single-part: drop the .001 suffix so output looks like a
+                # plain unsplit archive.
+                parts[0].rename(archive_path)
+                return [archive_path]
+            if len(parts) > 1:
+                return parts
+            # Fall through if 7z produced an unexpected layout (no parts) —
+            # treat as plain archive.
+        return [archive_path]
+
+    _emit("stage", stage_msg="Compressing with py7zr (slower fallback)")
+    run_in_thread(_compress_py7zr, dest, archive_path,
+                  compression_level, password, gse_dir)
 
     size = archive_path.stat().st_size
-
     if volume_size and size > volume_size:
         _emit("stage", stage_msg=f"Splitting into {volume_size}-byte volumes")
         parts = run_in_thread(_split_file, archive_path, volume_size)
