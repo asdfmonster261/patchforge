@@ -1270,12 +1270,96 @@ def _resolve_output_dir(args) -> Path:
     return Path.cwd().resolve()
 
 
+_PLATFORM_LABELS = {"windows": "Windows", "linux": "Linux", "macos": "macOS"}
+
+
+def _platform_from_archive_stem(stem: str) -> str | None:
+    """Pull the platform key out of an archive stem.
+
+    Stems are built by compress.py as `<game>.<buildid>.<platform>.<branch>`.
+    We look for any known platform key in the dot-separated parts (the
+    second-to-last is the convention but a sanitised game name with dots
+    can shift positions, so just scan)."""
+    for part in stem.split("."):
+        if part.lower() in _PLATFORM_LABELS:
+            return part.lower()
+    return None
+
+
+def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
+                                *, upload_mod, notify_mod,
+                                output_dir, subscriber) -> None:
+    """Upload archives and fire build-change notifications for one app run.
+
+    No-ops when the corresponding credential blocks are blank.  Shared
+    across `archive download` and (Phase 5) the polling loop."""
+    if not archives or not app_meta:
+        return
+
+    # ---- upload --------------------------------------------------------
+    stem_to_url: dict[str, str] = {}
+    if creds.multiup.is_set():
+        try:
+            stem_to_url = upload_mod.upload_archives(
+                archives,
+                username=creds.multiup.username or None,
+                password=creds.multiup.password or None,
+                description=str(app_meta.get("name", "")) or None,
+                links_dir=output_dir,
+                bin_url=creds.privatebin.url or None,
+                bin_pass=creds.privatebin.password or None,
+                on_event=subscriber,
+            )
+        except Exception as exc:
+            _warn(f"Upload failed for app {app_meta.get('appid')}: {exc}")
+
+    # Build platform -> url map for notify + any future bbcode rendering.
+    platform_links: dict[str, str] = {}
+    for stem, url in stem_to_url.items():
+        plat = _platform_from_archive_stem(stem)
+        if plat:
+            platform_links[plat] = url
+
+    # ---- notify --------------------------------------------------------
+    if not (creds.discord.is_set() or creds.telegram.is_set()):
+        return
+    notify_data = {
+        "appid":            app_meta.get("appid"),
+        "name":             app_meta.get("name", ""),
+        "previous_buildid": previous_buildid or "",
+        "current_buildid":  app_meta.get("buildid", ""),
+        "timeupdated":      app_meta.get("timeupdated", 0),
+    }
+    if creds.discord.is_set():
+        try:
+            notify_mod.send_discord_notification(
+                creds.discord.webhook_url,
+                notify_data,
+                mention_role_ids=creds.discord.mention_role_ids or None,
+                upload_links=platform_links or None,
+            )
+        except Exception as exc:
+            _warn(f"Discord notify failed: {exc}")
+    if creds.telegram.is_set():
+        try:
+            notify_mod.send_telegram_notification(
+                creds.telegram.token,
+                creds.telegram.chat_ids,
+                notify_data,
+                upload_links=platform_links or None,
+            )
+        except Exception as exc:
+            _warn(f"Telegram notify failed: {exc}")
+
+
 def _cmd_archive_download(args):
     _archive_require_extras_or_die()
 
     from src.core.archive            import credentials   as creds_mod
     from src.core.archive            import depots_ini
+    from src.core.archive            import notify        as notify_mod
     from src.core.archive            import project       as project_mod
+    from src.core.archive            import upload        as upload_mod
     from src.core.archive.appinfo    import login as cm_login
     from src.core.archive.cli_progress import build_subscriber
     from src.core.archive.compress   import parse_size
@@ -1334,11 +1418,20 @@ def _cmd_archive_download(args):
     all_archives: list[Path] = []
     all_unknown_depot_ids: set[str] = set()
 
+    # Per-app entry lookup (for previous_buildid + post-run buildid persist).
+    # Built lazily so non-project runs (CLI app-id positional) skip it.
+    apps_by_id: dict[int, project_mod.AppEntry] = {}
+    if project_obj is not None:
+        for entry in project_obj.apps:
+            apps_by_id[entry.app_id] = entry
+
     try:
         for app_id in app_ids:
             print(f"=== app {app_id} ===")
+            entry = apps_by_id.get(app_id)
+            previous_buildid = entry.current_buildid if entry else ""
             try:
-                archives, platform_manifests = download_app(
+                archives, platform_manifests, app_meta = download_app(
                     client, cdn, app_id, output_dir,
                     platform=args.platform, workers=args.workers,
                     password=args.archive_password,
@@ -1362,6 +1455,16 @@ def _cmd_archive_download(args):
                 for depot_id, depot_name, _gid in plat_records:
                     if not depot_name:
                         all_unknown_depot_ids.add(str(depot_id))
+
+            _archive_run_post_pipeline(
+                archives, app_meta, previous_buildid, creds,
+                upload_mod=upload_mod, notify_mod=notify_mod,
+                output_dir=output_dir, subscriber=subscriber,
+            )
+
+            # Persist current buildid so the next polling run can detect change.
+            if entry is not None and app_meta.get("buildid"):
+                entry.current_buildid = str(app_meta["buildid"])
     finally:
         subscriber.close() if hasattr(subscriber, "close") else None
         try:

@@ -43,6 +43,10 @@ EventKind = Literal[
     "compress_finished",
     "crack_started",
     "crack_finished",
+    "upload_started",
+    "upload_progress",
+    "upload_finished",
+    "paste_created",
 ]
 
 
@@ -490,15 +494,18 @@ def download_app(client, cdn, app_id: int, output_dir: Path,
                  language: str = "english",
                  crack_identity=None,
                  on_event: EventCallback | None = None,
-                 ) -> tuple[list[Path], dict[str, list]]:
+                 ) -> tuple[list[Path], dict[str, list], dict]:
     """Download depots for app_id using an already-connected client and cdn.
 
     When platform is 'all', iterates each platform listed in app metadata into
     output_dir/{app_id}/{build_id}/{platform}/.  Otherwise downloads into
     output_dir/{app_id}/{build_id}/{platform}/.
 
-    Returns (archives, platform_manifests) where platform_manifests maps
-    platform key → list of (depot_id, depot_name, gid) tuples.
+    Returns (archives, platform_manifests, app_meta) where:
+      - platform_manifests maps platform key -> [(depot_id, depot_name, gid), ...]
+      - app_meta carries the notify/bbcode-relevant fields read off
+        app_data: {appid, name, buildid, timeupdated}.  Empty dict if the
+        product-info fetch failed.
 
     Raises SessionDead if the CM connection times out after exhausting retries.
     """
@@ -520,10 +527,17 @@ def download_app(client, cdn, app_id: int, output_dir: Path,
     if not app_data:
         _emit(on_event, kind="error",
               error_msg=f"No product info for app {app_id}")
-        return [], {}
+        return [], {}, {}
 
     build_id = app_data.get("depots", {}).get("branches", {}).get(branch, {}).get("buildid", "unknown")
     base = output_dir / str(app_id) / str(build_id)
+    app_meta = {
+        "appid":       app_id,
+        "name":        app_data.get("common", {}).get("name", str(app_id)),
+        "buildid":     str(build_id),
+        "timeupdated": app_data.get("depots", {}).get("branches", {})
+                                 .get(branch, {}).get("timeupdated", 0),
+    }
 
     all_archives: list[Path] = []
     platform_manifests: dict[str, list] = {}
@@ -533,7 +547,7 @@ def download_app(client, cdn, app_id: int, output_dir: Path,
         if not platforms:
             _emit(on_event, kind="error",
                   error_msg="Could not detect any platforms from depot info")
-            return [], {}
+            return [], {}, app_meta
         for plat in platforms:
             _emit(on_event, kind="stage", stage_msg=f"Platform: {plat}")
             archives, records = _download_platform(
@@ -567,4 +581,4 @@ def download_app(client, cdn, app_id: int, output_dir: Path,
     if app_dir.exists():
         shutil.rmtree(app_dir)
 
-    return all_archives, platform_manifests
+    return all_archives, platform_manifests, app_meta

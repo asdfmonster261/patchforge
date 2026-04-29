@@ -21,7 +21,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -43,6 +43,48 @@ def credentials_path() -> Path:
 
 
 @dataclass
+class MultiUpCreds:
+    """MultiUp.io upload account.  Anonymous uploads work too — leave both
+    fields blank in that case (no login, no project grouping)."""
+    username: str = ""
+    password: str = ""
+
+    def is_set(self) -> bool:
+        # MultiUp accepts anonymous uploads, so a "set" multiup config just
+        # needs *either* a username (logged-in upload) or an explicit
+        # opt-in via username="" + password="" → handled at the call site.
+        return bool(self.username)
+
+
+@dataclass
+class PrivateBinCreds:
+    """PrivateBin paste service for grouping per-archive download links."""
+    url:      str = ""
+    password: str = ""
+
+    def is_set(self) -> bool:
+        return bool(self.url)
+
+
+@dataclass
+class TelegramCreds:
+    token:    str       = ""
+    chat_ids: list[str] = field(default_factory=list)
+
+    def is_set(self) -> bool:
+        return bool(self.token and self.chat_ids)
+
+
+@dataclass
+class DiscordCreds:
+    webhook_url:      str       = ""
+    mention_role_ids: list[str] = field(default_factory=list)
+
+    def is_set(self) -> bool:
+        return bool(self.webhook_url)
+
+
+@dataclass
 class Credentials:
     # Steam refresh-token login (CM)
     username:             str = ""
@@ -52,8 +94,25 @@ class Credentials:
     # Steam Web API key (used by Goldberg/ColdClient config generation)
     web_api_key:          str = ""
 
+    # Phase 4: archive upload + notify destinations.  Each block is opt-in;
+    # when is_set() returns False the corresponding pipeline step is skipped.
+    multiup:    MultiUpCreds    = field(default_factory=MultiUpCreds)
+    privatebin: PrivateBinCreds = field(default_factory=PrivateBinCreds)
+    telegram:   TelegramCreds   = field(default_factory=TelegramCreds)
+    discord:    DiscordCreds    = field(default_factory=DiscordCreds)
+
     def has_login_tokens(self) -> bool:
         return bool(self.username and self.client_refresh_token)
+
+
+# Map nested-block name -> dataclass.  Used by load() to reconstitute
+# nested dicts from the on-disk JSON.
+_NESTED: dict[str, type] = {
+    "multiup":    MultiUpCreds,
+    "privatebin": PrivateBinCreds,
+    "telegram":   TelegramCreds,
+    "discord":    DiscordCreds,
+}
 
 
 def load() -> Credentials:
@@ -70,6 +129,15 @@ def load() -> Credentials:
     sid = filtered.get("steam_id")
     if isinstance(sid, str):
         filtered["steam_id"] = int(sid) if sid.isdigit() else 0
+    # Reconstitute nested credential blocks.  Drop unknown keys so renamed
+    # fields don't crash older files.
+    for key, cls in _NESTED.items():
+        raw = filtered.get(key)
+        if isinstance(raw, dict):
+            sub_known = set(cls.__dataclass_fields__)
+            filtered[key] = cls(**{k: v for k, v in raw.items() if k in sub_known})
+        else:
+            filtered.pop(key, None)
     return Credentials(**filtered)
 
 

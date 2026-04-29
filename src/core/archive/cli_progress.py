@@ -53,10 +53,16 @@ class LiveDisplaySubscriber:
     def __init__(self):
         self._files: dict[str, dict] = {}
         self._downloaded = 0
+        self._uploaded   = 0
         self._skipped    = 0
         self._prev_lines = 0
         self._greenlet   = None
         self._closed     = False
+        # "download" vs "upload" toggles the per-file dict semantics and the
+        # footer label.  upload_started flips to "upload"; the next
+        # download (rare, but possible if a future caller chains pipelines)
+        # would need to flip back explicitly.
+        self._phase: str = "download"
         # Compression state.  Set by compress_started; cleared by
         # compress_finished.  While set, _redraw renders a single-line
         # "Compressing X% [bar]" status instead of per-file download rows.
@@ -147,6 +153,52 @@ class LiveDisplaySubscriber:
         elif kind == "crack_finished":
             self._crack_active = False
 
+        elif kind == "upload_started":
+            # First upload event after compress_finished — switch phase and
+            # start tracking the new per-file rows in self._files.
+            if self._phase != "upload":
+                self._erase()
+                self._files.clear()
+                self._phase = "upload"
+            self._ensure_started()
+            self._files[ev.name] = {
+                "total":   ev.total,
+                "done":    0,
+                "samples": deque(),
+                "active":  True,
+            }
+
+        elif kind == "upload_progress":
+            f = self._files.get(ev.name)
+            if f is None:
+                return
+            delta = ev.done - f["done"]
+            if delta < 0:
+                delta = 0
+            f["done"] = ev.done
+            self._uploaded += delta
+            now = time.monotonic()
+            f["samples"].append((now, f["done"]))
+            cutoff = now - self._WINDOW
+            while f["samples"] and f["samples"][0][0] < cutoff:
+                f["samples"].popleft()
+
+        elif kind == "upload_finished":
+            f = self._files.get(ev.name)
+            if f is not None:
+                f["active"] = False
+                missed = ev.done - f["done"]
+                if missed > 0:
+                    f["done"] = ev.done
+                    self._uploaded += missed
+
+        elif kind == "paste_created":
+            self._erase()
+            sys.stdout.write(
+                f"  {_BOLD}[paste]{_RESET} {ev.name}  →  {ev.stage_msg}\n"
+            )
+            sys.stdout.flush()
+
     # ------------------------------------------------------------------
 
     def _ensure_started(self) -> None:
@@ -174,6 +226,12 @@ class LiveDisplaySubscriber:
         except gevent.GreenletExit:
             return
 
+    def _phase_counters(self) -> tuple[int, str]:
+        """Return (cumulative-bytes, footer-label) for the current phase."""
+        if self._phase == "upload":
+            return self._uploaded, "uploaded"
+        return self._downloaded, "downloaded"
+
     def _file_speed(self, samples: deque) -> float:
         if len(samples) < 2:
             return 0.0
@@ -200,11 +258,13 @@ class LiveDisplaySubscriber:
         active = [(n, f) for n, f in self._files.items() if f["active"]]
         total_speed = sum(self._file_speed(f["samples"]) for _, f in active)
 
+        moved_bytes, moved_label = self._phase_counters()
+
         if not _TTY:
             # Single-line summary, overwriting itself with \r.
             summary = (
                 f"\r  {len(active)} active   "
-                f"{_fmt_size(self._downloaded)} downloaded   "
+                f"{_fmt_size(moved_bytes)} {moved_label}   "
                 f"{_fmt_size(self._skipped)} skipped   "
                 f"{_fmt_size(total_speed)}/s"
             )
@@ -243,7 +303,7 @@ class LiveDisplaySubscriber:
         lines.append(f"  {_DIM}{'-' * min(width - 4, 74)}{_RESET}")
         lines.append(
             f"  {_BOLD}{len(active)} active{_RESET}   "
-            f"{_GREEN}{_fmt_size(self._downloaded)} downloaded{_RESET}   "
+            f"{_GREEN}{_fmt_size(moved_bytes)} {moved_label}{_RESET}   "
             f"{_fmt_size(self._skipped)} skipped   "
             f"{_CYAN}{_fmt_size(total_speed)}/s{_RESET}"
         )
@@ -299,11 +359,15 @@ class LiveDisplaySubscriber:
             sys.stdout.write("\033[?7h")
             sys.stdout.flush()
         # Final summary line so the user sees the total without scrolling.
-        if self._downloaded or self._skipped:
-            sys.stdout.write(
-                f"  {_GREEN}{_fmt_size(self._downloaded)} downloaded{_RESET}   "
-                f"{_fmt_size(self._skipped)} skipped\n"
-            )
+        parts: list[str] = []
+        if self._downloaded:
+            parts.append(f"{_GREEN}{_fmt_size(self._downloaded)} downloaded{_RESET}")
+        if self._uploaded:
+            parts.append(f"{_GREEN}{_fmt_size(self._uploaded)} uploaded{_RESET}")
+        if self._skipped:
+            parts.append(f"{_fmt_size(self._skipped)} skipped")
+        if parts:
+            sys.stdout.write("  " + "   ".join(parts) + "\n")
             sys.stdout.flush()
 
 
