@@ -252,6 +252,9 @@ class MainWindow(QMainWindow):
         self._build_repack_bindings()
         self._connect_signals()
         self._on_engine_changed()  # set initial compression list
+        # Apply mode-specific chrome visibility for the restored tab
+        # index — currentChanged didn't fire because we didn't move.
+        self._on_mode_changed(self.mode_tabs.currentIndex())
 
     # ------------------------------------------------------------------ #
     # UI construction                                                      #
@@ -283,7 +286,8 @@ class MainWindow(QMainWindow):
         root.addWidget(self._splitter, 1)
 
         self._splitter.addWidget(self.mode_tabs)
-        self._splitter.addWidget(self._build_output_panel())
+        self._output_panel = self._build_output_panel()
+        self._splitter.addWidget(self._output_panel)
         # Restore splitter ratio (G5).  Sanity-check we got two ints summing
         # to something positive; fall back to defaults otherwise.
         sizes = self._app_settings.splitter_sizes
@@ -293,8 +297,11 @@ class MainWindow(QMainWindow):
             self._splitter.setSizes([580, 480])
 
         # ── Bottom button bar ──
-        root.addWidget(HSep())
-        root.addLayout(self._build_button_bar())
+        self._bottom_sep = HSep()
+        root.addWidget(self._bottom_sep)
+        self._button_bar_widget = QWidget()
+        self._button_bar_widget.setLayout(self._build_button_bar())
+        root.addWidget(self._button_bar_widget)
 
         # ── Status bar ──
         self.status_bar = QStatusBar()
@@ -1371,13 +1378,16 @@ class MainWindow(QMainWindow):
             self.extra_files_list.takeItem(self.extra_files_list.row(item))
 
     def _on_mode_changed(self, index: int):
-        # Archive mode owns its own run button inside the panel; the
-        # MainWindow's accent button bar is for patch + repack only.
+        # Archive mode owns its own run button + log inside the panel;
+        # hide the MainWindow's right-pane build log + bottom button bar
+        # so they don't double up with the archive panel's controls.
         archive = (index == 2)
-        self.build_btn.setVisible(not archive)
-        self.new_btn.setVisible(not archive)
-        self.load_btn.setVisible(not archive)
-        self.save_btn.setVisible(not archive)
+        if hasattr(self, "_output_panel"):
+            self._output_panel.setVisible(not archive)
+        if hasattr(self, "_bottom_sep"):
+            self._bottom_sep.setVisible(not archive)
+        if hasattr(self, "_button_bar_widget"):
+            self._button_bar_widget.setVisible(not archive)
         if index == 0:
             self.build_btn.setText("⚡  Build Patch")
         elif index == 1:
