@@ -28,9 +28,18 @@ def detect_changes(client,
     subset whose Steam buildid differs from the AppEntry's persisted
     `current_buildid`.
 
-    When `force_download` is True every app with a usable buildid is
-    returned regardless of comparison — used to seed a polling run with
-    an unconditional first pass.
+    First-time seeding: when an AppEntry has no recorded current_buildid
+    yet, we mutate the entry to record what Steam reports right now (and
+    fill in the display name if blank) but DO NOT include it in the
+    returned change list — a poll cycle should never trigger a download
+    just because the user added a new app, only when a previously-known
+    buildid actually moved.  Run a one-shot `patchforge archive download
+    <appid>` if you want the initial download.
+
+    When `force_download` is True every app with a *known* prior
+    buildid is returned regardless of comparison — used to seed a
+    polling run with an unconditional first pass.  First-time entries
+    are still silently seeded only.
 
     Apps with no info, no public buildid, or buildid == "Unknown" are
     silently skipped so a missing app doesn't poison the iteration; the
@@ -57,6 +66,20 @@ def detect_changes(client,
             continue
         entry = apps_by_id.get(app_id)
         previous = str(getattr(entry, "current_buildid", "") or "") if entry else ""
+
+        # Backfill the display name on every cycle when the entry's name
+        # is blank — cheap, idempotent, and gets new apps a real label
+        # without a separate seeding pass.
+        if entry is not None and not getattr(entry, "name", "") and info.get("name"):
+            entry.name = str(info["name"])
+
+        if not previous:
+            # First-time observation: seed the buildid silently.  Caller
+            # persists the project after detect_changes returns.
+            if entry is not None:
+                entry.current_buildid = current
+            continue
+
         if force_download or current != previous:
             out.append((app_id, previous, current, info))
     return out

@@ -35,6 +35,11 @@ class AppEntry:
     """One Steam app being tracked.  Per-app overrides go here; missing fields
     fall back to project-level defaults."""
     app_id:           int  = 0
+    # Display name from the Steam product-info common section.  Auto-
+    # populated by poll.detect_changes / runner.run_one_app the first time
+    # we ever see this app, then refreshed each successful run.  User can
+    # override in the GUI if Steam's name is stale or wrong.
+    name:             str  = ""
     branch:           str  = "public"      # public, beta, etc.
     branch_password:  str  = ""            # for password-protected branches
     platform:         str  = ""            # "" = use project default

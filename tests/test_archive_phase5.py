@@ -51,7 +51,13 @@ def test_detect_changes_returns_only_changed_apps():
     by_id = {row[0]: row for row in changes}
     assert 100 not in by_id                              # unchanged
     assert by_id[200] == (200, "222", "999", infos[200]) # bumped
-    assert by_id[300] == (300, "",    "333", infos[300]) # first-seen
+    # 300 was first-seen this cycle: seeded silently, no download.
+    assert 300 not in by_id
+    assert apps_by_id[300].current_buildid == "333"
+    assert apps_by_id[300].name            == "C"
+    # Existing entries also get their name backfilled when missing.
+    assert apps_by_id[100].name == "A"
+    assert apps_by_id[200].name == "B"
 
 
 def test_detect_changes_force_download_returns_all_with_valid_buildid():
@@ -89,7 +95,38 @@ def test_detect_changes_skips_apps_without_usable_buildid():
     with mock.patch.object(poll, "query_app_info_batch", _stub_qaib(infos)):
         changes = poll.detect_changes(None, None, apps_by_id, force_download=True)
 
-    assert [row[0] for row in changes] == [300]
+    # 300 has a usable buildid but is first-seen → seeded, not returned.
+    # 100 / 200 have no usable buildid → skipped entirely.
+    assert changes == []
+    assert apps_by_id[300].current_buildid == "999"
+    assert apps_by_id[300].name            == "C"
+    assert apps_by_id[100].current_buildid == ""    # untouched (no info)
+    assert apps_by_id[200].current_buildid == ""    # untouched (Unknown)
+
+
+def test_detect_changes_first_seen_not_returned_even_with_force_download():
+    """Force-download bypasses change detection but never triggers a
+    first-time download — that path is reserved for explicit
+    `archive download <appid>`."""
+    from src.core.archive import poll
+    from src.core.archive.project import AppEntry
+
+    apps_by_id = {
+        500: AppEntry(app_id=500, current_buildid=""),
+        600: AppEntry(app_id=600, current_buildid="123"),
+    }
+    infos = {
+        500: {"name": "Newcomer", "buildid": "777", "timeupdated": 0, "oslist": "", "installdir": ""},
+        600: {"name": "Old",      "buildid": "123", "timeupdated": 0, "oslist": "", "installdir": ""},
+    }
+    with mock.patch.object(poll, "query_app_info_batch", _stub_qaib(infos)):
+        changes = poll.detect_changes(None, None, apps_by_id, force_download=True)
+
+    # 600 has a known prior buildid → force_download includes it.
+    # 500 is first-seen → seeded silently regardless of force_download.
+    assert {row[0] for row in changes} == {600}
+    assert apps_by_id[500].current_buildid == "777"
+    assert apps_by_id[500].name            == "Newcomer"
 
 
 def test_detect_changes_passes_batch_size_through():
