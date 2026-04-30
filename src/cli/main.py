@@ -1594,65 +1594,27 @@ def _platform_from_archive_stem(stem: str) -> str | None:
 _VALID_NOTIFY_MODES = ("pre", "delay", "both", "none")
 
 
-def _resolve_notify_mode(cli_flag: str | None,
-                         project_field: str,
-                         creds) -> str:
-    """Pick the active notify mode for one run.
-
-    Priority: CLI flag > project field > auto-default.  Auto picks
-    "delay" when MultiUp upload creds are present (so the post-upload
-    notification carries links) and "pre" otherwise (no point sending
-    a delayed notify with no links).  Returns "none" when no notify
-    creds are set at all.
-    """
-    if not (creds.discord.is_set() or creds.telegram.is_set()):
-        return "none"
-    for source in (cli_flag, project_field):
-        if source in ("pre", "delay", "both"):
-            return source
-    return "delay" if creds.multiup.is_set() else "pre"
+# Phase 6: notify primitives + per-app pipeline + run driver moved to
+# src.core.archive.runner so the GUI can drive the same plumbing without
+# subprocess'ing the CLI.  These shims keep the historical CLI helper
+# names so existing tests + ad-hoc importers continue to work.
+def _resolve_notify_mode(cli_flag, project_field, creds):
+    from src.core.archive import runner as _runner
+    return _runner.resolve_notify_mode(cli_flag, project_field, creds)
 
 
-def _build_notify_data(app_meta: dict, previous_buildid: str) -> dict:
-    return {
-        "appid":            app_meta.get("appid"),
-        "name":             app_meta.get("name", ""),
-        "previous_buildid": previous_buildid or "",
-        "current_buildid":  app_meta.get("buildid", ""),
-        "timeupdated":      app_meta.get("timeupdated", 0),
-    }
+def _build_notify_data(app_meta, previous_buildid):
+    from src.core.archive import runner as _runner
+    return _runner.build_notify_data(app_meta, previous_buildid)
 
 
-def _send_notifications(notify_data: dict,
-                        upload_links: dict | None,
-                        creds, *, notify_mod,
-                        force_download: bool = False) -> None:
-    """Fire Discord + Telegram for one notify event.  Per-channel failures
-    are warnings; they don't abort the run.  When `force_download` is set
-    the notification carries a "this may not represent an actual update"
-    warning (Phase 5: --force-download bypasses the buildid-change gate)."""
-    if creds.discord.is_set():
-        try:
-            notify_mod.send_discord_notification(
-                creds.discord.webhook_url,
-                notify_data,
-                mention_role_ids=creds.discord.mention_role_ids or None,
-                upload_links=upload_links,
-                force_download=force_download,
-            )
-        except Exception as exc:
-            _warn(f"Discord notify failed: {exc}")
-    if creds.telegram.is_set():
-        try:
-            notify_mod.send_telegram_notification(
-                creds.telegram.token,
-                creds.telegram.chat_ids,
-                notify_data,
-                upload_links=upload_links,
-                force_download=force_download,
-            )
-        except Exception as exc:
-            _warn(f"Telegram notify failed: {exc}")
+def _send_notifications(notify_data, upload_links, creds, *, notify_mod,
+                        force_download=False):
+    from src.core.archive import runner as _runner
+    return _runner.send_notifications(
+        notify_data, upload_links, creds, notify_mod=notify_mod,
+        force_download=force_download, warn=_warn,
+    )
 
 
 def _poll_countdown(seconds: int) -> bool:
@@ -1699,123 +1661,32 @@ def _poll_countdown(seconds: int) -> bool:
         return False
 
 
-def _archive_run_pre_pipeline(app_meta: dict, previous_buildid: str,
-                              creds, notify_mode: str,
-                              *, notify_mod,
-                              force_download: bool = False) -> None:
-    """Pre-download notification (no upload links).  Skipped unless mode
-    is 'pre' or 'both'."""
-    if notify_mode not in ("pre", "both"):
-        return
-    if not app_meta:
-        return
-    _send_notifications(
-        _build_notify_data(app_meta, previous_buildid),
-        upload_links=None,
-        creds=creds, notify_mod=notify_mod,
-        force_download=force_download,
+def _archive_run_pre_pipeline(app_meta, previous_buildid, creds, notify_mode,
+                              *, notify_mod, force_download=False):
+    from src.core.archive import runner as _runner
+    return _runner.run_pre_notify(
+        app_meta, previous_buildid, creds,
+        notify_mode=notify_mode, notify_mod=notify_mod,
+        force_download=force_download, warn=_warn,
     )
 
 
 def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
-                                *, upload_mod, notify_mod,
-                                output_dir, subscriber,
-                                notify_mode: str = "delay",
-                                description: str | None = None,
-                                max_concurrent: int = 1,
-                                delete_archives: bool = False,
-                                force_download: bool = False,
-                                manifests: dict | None = None,
-                                bbcode_template: str = "") -> None:
-    """Upload archives and (when notify_mode in {'delay','both'}) fire the
-    post-upload notification with platform links.
-
-    Upload always runs when MultiUp creds are set, regardless of
-    notify_mode — the notify_mode only gates whether a *post* notify
-    fires.  Pre-download notify is _archive_run_pre_pipeline above.
-
-    description, max_concurrent, delete_archives forward to
-    upload_archives().  description falls back to app_meta['name'] when
-    None so the MultiUp project still gets a sensible label.
-    """
-    if not archives or not app_meta:
-        return
-
-    # ---- upload --------------------------------------------------------
-    stem_to_url: dict[str, str] = {}
-    if creds.multiup.is_set():
-        try:
-            stem_to_url = upload_mod.upload_archives(
-                archives,
-                username=creds.multiup.username or None,
-                password=creds.multiup.password or None,
-                description=description or str(app_meta.get("name", "")) or None,
-                max_concurrent=max_concurrent,
-                links_dir=output_dir,
-                bin_url=creds.privatebin.url or None,
-                bin_pass=creds.privatebin.password or None,
-                delete_archives=delete_archives,
-                on_event=subscriber,
-            )
-        except Exception as exc:
-            _warn(f"Upload failed for app {app_meta.get('appid')}: {exc}")
-
-    # Build platform -> url map for notify + bbcode rendering.
-    platform_links: dict[str, str] = {}
-    for stem, url in stem_to_url.items():
-        plat = _platform_from_archive_stem(stem)
-        if plat:
-            platform_links[plat] = url
-
-    # ---- bbcode post --------------------------------------------------
-    # Renders the project's stored bbcode_template into a single
-    # <safe_name>.<buildid>.post.txt next to the archives, replacing the
-    # per-stem .txt link files upload_archives writes (paste URLs are
-    # already inlined into the post via {ALL_LINKS}).  Only fires when
-    # we actually have upload links — without them the placeholders
-    # would render an incomplete post.
-    if stem_to_url and bbcode_template and bbcode_template.strip():
-        try:
-            from src.core.archive import bbcode as bbcode_mod
-            from src.core.archive.notify import _steam_image_url
-            data = bbcode_mod.build_data(
-                name=str(app_meta.get("name", "")),
-                appid=app_meta.get("appid", ""),
-                buildid=str(app_meta.get("buildid", "")),
-                previous_buildid=previous_buildid or "",
-                timeupdated=app_meta.get("timeupdated", 0),
-                upload_links=platform_links or None,
-                manifests=manifests or {},
-                header_image=_steam_image_url(app_meta.get("appid", "")),
-            )
-            rendered = bbcode_mod.render(bbcode_template, data)
-            sname = bbcode_mod.safe_name(
-                str(app_meta.get("name", "")) or str(app_meta.get("appid", ""))
-            )
-            buildid = str(app_meta.get("buildid", "")) or "build"
-            out_path = Path(output_dir) / f"{sname}.{buildid}.post.txt"
-            out_path.write_text(rendered, encoding="utf-8")
-            print(f"BBCode post: {out_path.name}")
-            # Drop the per-stem .txt link sidecars now that the post
-            # carries the same URLs in template-friendly form.
-            for stem in stem_to_url:
-                sidecar = Path(output_dir) / f"{stem}.txt"
-                if sidecar.exists():
-                    try:
-                        sidecar.unlink()
-                    except OSError as exc:
-                        _warn(f"Could not remove {sidecar.name}: {exc}")
-        except Exception as exc:
-            _warn(f"BBCode render failed for app {app_meta.get('appid')}: {exc}")
-
-    # ---- post-upload notify -------------------------------------------
-    if notify_mode not in ("delay", "both"):
-        return
-    _send_notifications(
-        _build_notify_data(app_meta, previous_buildid),
-        upload_links=platform_links or None,
-        creds=creds, notify_mod=notify_mod,
-        force_download=force_download,
+                               *, upload_mod, notify_mod, output_dir, subscriber,
+                               notify_mode="delay", description=None,
+                               max_concurrent=1, delete_archives=False,
+                               force_download=False, manifests=None,
+                               bbcode_template=""):
+    from src.core.archive import runner as _runner
+    return _runner.run_post_pipeline(
+        archives, app_meta, previous_buildid, creds,
+        upload_mod=upload_mod, notify_mod=notify_mod,
+        output_dir=output_dir, subscriber=subscriber,
+        notify_mode=notify_mode, description=description,
+        max_concurrent=max_concurrent, delete_archives=delete_archives,
+        force_download=force_download, manifests=manifests,
+        bbcode_template=bbcode_template,
+        log=print, warn=_warn,
     )
 
 
@@ -1830,7 +1701,6 @@ def _cmd_archive_download(args):
     from src.core.archive.appinfo    import login as cm_login
     from src.core.archive.cli_progress import build_subscriber
     from src.core.archive.compress   import parse_size
-    from src.core.archive.download   import download_app
 
     # --log: tee stdout + stderr to FILE with ANSI codes stripped.  Set
     # up before any other prints so the file captures everything from
@@ -1937,140 +1807,39 @@ def _cmd_archive_download(args):
         }
         if args.crack else None
     )
-    all_archives: list[Path] = []
-    all_unknown_depot_ids: set[str] = set()
-
-    # Per-app entry lookup (for previous_buildid + post-run buildid persist).
-    # Built lazily so non-project runs (CLI app-id positional) skip it.
-    apps_by_id: dict[int, project_mod.AppEntry] = {}
-    if project_obj is not None:
-        for entry in project_obj.apps:
-            apps_by_id[entry.app_id] = entry
-
-    # ---- Phase 5 polling-mode setup -----------------------------------
+    # ---- Phase 5 polling-mode validation ------------------------------
     restart_delay = int(opts.get("restart_delay") or 0)
-    poll_mode = restart_delay > 0
-    if poll_mode and project_obj is None:
+    if restart_delay > 0 and project_obj is None:
         _die("--restart-delay > 0 requires --project (buildid state must persist)",
              EXIT_INPUT)
-    if poll_mode and not apps_by_id:
+    if restart_delay > 0 and project_obj is not None and not project_obj.apps:
         _die("--restart-delay > 0 needs at least one app in the .xarchive project",
              EXIT_INPUT)
-    poll_batch_size = int(opts.get("batch_size") or 0) or None
 
-    def _run_one_app(app_id: int, previous_buildid: str,
-                     app_info_hint: dict | None = None) -> None:
-        """Pre-notify + download + post-pipeline for a single app.  Errors
-        from download_app are reported and skipped; the polling loop / app
-        list iteration continues with the next entry."""
-        print(f"=== app {app_id} ===")
-        hint = app_info_hint or {}
-        if notify_mode in ("pre", "both"):
-            _archive_run_pre_pipeline(
-                app_meta={
-                    "appid":       app_id,
-                    "name":        hint.get("name", str(app_id)),
-                    "buildid":     hint.get("buildid", ""),
-                    "timeupdated": hint.get("timeupdated", 0),
-                },
-                previous_buildid=previous_buildid,
-                creds=creds, notify_mode=notify_mode,
-                notify_mod=notify_mod,
-                force_download=opts["force_download"],
-            )
-        try:
-            archives, platform_manifests, app_meta = download_app(
-                client, cdn, app_id, output_dir,
-                platform=effective_platform, workers=opts["workers"],
-                password=opts["archive_password"],
-                compression_level=opts["compression"],
-                volume_size=volume_size,
-                branch=args.branch,
-                crack=args.crack,
-                experimental=opts["experimental"],
-                unstub_options=unstub_options,
-                depot_names=depot_names,
-                max_retries=opts["max_retries"],
-                language=opts["language"],
-                crack_identity=crack_identity,
-                on_event=subscriber,
-            )
-        except NotImplementedError as exc:
-            _die(str(exc), EXIT_INPUT)
-        except Exception as exc:
-            _warn(f"app {app_id} failed: {exc}")
-            return
-        all_archives.extend(archives)
-        for plat_records in platform_manifests.values():
-            for depot_id, depot_name, _gid in plat_records:
-                if not depot_name:
-                    all_unknown_depot_ids.add(str(depot_id))
-        _archive_run_post_pipeline(
-            archives, app_meta, previous_buildid, creds,
-            upload_mod=upload_mod, notify_mod=notify_mod,
-            output_dir=output_dir, subscriber=subscriber,
-            notify_mode=notify_mode,
-            description=opts["description"],
-            max_concurrent=opts["max_concurrent_uploads"],
-            delete_archives=opts["delete_archives"],
-            force_download=opts["force_download"],
-            manifests=platform_manifests,
-            bbcode_template=(project_obj.bbcode_template
-                             if project_obj is not None else ""),
-        )
-        entry_local = apps_by_id.get(app_id)
-        if entry_local is not None and app_meta.get("buildid"):
-            new_bid = str(app_meta["buildid"])
-            old_bid = entry_local.current_buildid
-            # Shift the persisted history one slot when the buildid
-            # actually moves; a re-download of the same buildid (e.g.
-            # --force-download against an unchanged Steam state) leaves
-            # previous_buildid alone so we don't lose the real history.
-            if old_bid and old_bid != new_bid:
-                entry_local.previous_buildid = old_bid
-            entry_local.current_buildid = new_bid
-
-    def _save_project_now() -> None:
-        """Persist project state mid-run (poll mode flushes after each
-        cycle so a kill / crash doesn't drop buildid updates)."""
-        if project_obj is None or project_path is None:
-            return
-        try:
-            project_mod.save(project_obj, project_path)
-        except Exception as exc:
-            _warn(f"Could not persist project to {project_path}: {exc}")
-
+    # ---- Run pipeline (Phase 6: shared with GUI via runner module) ----
+    from src.core.archive import runner as runner_mod
+    all_archives: list[Path] = []
+    all_unknown_depot_ids: set[str] = set()
     try:
-        if poll_mode:
-            from src.core.archive import poll as poll_mod
-            force = bool(opts["force_download"])
-            iteration = 0
-            while True:
-                iteration += 1
-                print(f"\n=== poll cycle {iteration} ===")
-                try:
-                    changes = poll_mod.detect_changes(
-                        client, cdn, apps_by_id,
-                        force_download=force,
-                        batch_size=poll_batch_size,
-                        max_retries=opts["max_retries"],
-                    )
-                except Exception as exc:
-                    _warn(f"poll cycle failed: {exc}")
-                    changes = []
-                if not changes:
-                    print("no buildid changes detected this cycle")
-                for app_id, prev, _curr, info in changes:
-                    _run_one_app(app_id, prev, app_info_hint=info)
-                _save_project_now()
-                force = False
-                if not _poll_countdown(restart_delay):
-                    break
-        else:
-            for app_id in app_ids:
-                entry = apps_by_id.get(app_id)
-                previous_buildid = entry.current_buildid if entry else ""
-                _run_one_app(app_id, previous_buildid)
+        run_result = runner_mod.run_session(
+            client=client, cdn=cdn,
+            project_obj=project_obj, project_path=project_path,
+            creds=creds, output_dir=output_dir,
+            app_ids=app_ids, opts=opts,
+            platform=effective_platform, notify_mode=notify_mode,
+            branch=args.branch, crack=args.crack,
+            crack_identity=crack_identity,
+            unstub_options=unstub_options,
+            volume_size=volume_size, depot_names=depot_names,
+            subscriber=subscriber,
+            upload_mod=upload_mod, notify_mod=notify_mod,
+            countdown_sleep=_poll_countdown,
+            log=print, warn=_warn,
+        )
+        all_archives        = run_result.archives
+        all_unknown_depot_ids = run_result.unknown_depot_ids
+    except NotImplementedError as exc:
+        _die(str(exc), EXIT_INPUT)
     finally:
         subscriber.close() if hasattr(subscriber, "close") else None
         try:

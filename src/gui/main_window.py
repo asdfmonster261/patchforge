@@ -270,6 +270,7 @@ class MainWindow(QMainWindow):
         self.mode_tabs = QTabWidget()
         self.mode_tabs.addTab(self._build_patch_panel(), "Update Patch")
         self.mode_tabs.addTab(self._build_repack_panel(), "Repack")
+        self.mode_tabs.addTab(self._build_archive_panel(), "Archive")
         # Restore the last-used mode tab (G5).  Bounded to valid range in
         # case the saved value is stale after a UI change.
         self.mode_tabs.setCurrentIndex(
@@ -1037,6 +1038,14 @@ class MainWindow(QMainWindow):
     def _is_repack_mode(self) -> bool:
         return self.mode_tabs.currentIndex() == 1
 
+    def _is_archive_mode(self) -> bool:
+        return self.mode_tabs.currentIndex() == 2
+
+    def _build_archive_panel(self) -> QWidget:
+        from .archive_panel import ArchivePanel
+        self.archive_panel = ArchivePanel()
+        return self.archive_panel
+
     # ------------------------------------------------------------------ #
     # Signal wiring                                                        #
     # ------------------------------------------------------------------ #
@@ -1362,14 +1371,23 @@ class MainWindow(QMainWindow):
             self.extra_files_list.takeItem(self.extra_files_list.row(item))
 
     def _on_mode_changed(self, index: int):
+        # Archive mode owns its own run button inside the panel; the
+        # MainWindow's accent button bar is for patch + repack only.
+        archive = (index == 2)
+        self.build_btn.setVisible(not archive)
+        self.new_btn.setVisible(not archive)
+        self.load_btn.setVisible(not archive)
+        self.save_btn.setVisible(not archive)
         if index == 0:
             self.build_btn.setText("⚡  Build Patch")
-        else:
+        elif index == 1:
             self.build_btn.setText("⚡  Build Repack")
 
     def _on_build(self):
         if self._thread and self._thread.isRunning():
             return
+        if self._is_archive_mode():
+            return  # archive tab has its own run button
         if self._is_repack_mode():
             self._on_build_repack()
         else:
