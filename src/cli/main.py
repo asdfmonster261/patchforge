@@ -1001,7 +1001,8 @@ def _add_archive(sub):
     p_info.set_defaults(func=_cmd_archive_info)
 
     p_dl = asub.add_parser("download",
-                           help="Download depots for one or more app IDs into 7z archives")
+                           help="Download depots for one or more app IDs into 7z archives",
+                           allow_abbrev=False)
     p_dl.add_argument("app_ids", metavar="APPID", nargs="*", type=int, default=[],
                       help="Steam app IDs (or omit and pass --project / --appid-file)")
     p_dl.add_argument("--output-dir", metavar="DIR",
