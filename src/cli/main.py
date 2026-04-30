@@ -1049,6 +1049,25 @@ def _add_archive(sub):
     p_dl.add_argument("--log", default=None, metavar="FILE",
                       help="Tee console output to FILE (ANSI codes stripped).")
 
+    # ---- Polling-loop args (Phase 5) ----------------------------------
+    p_dl.add_argument("--restart-delay", type=int, default=None, metavar="SEC",
+                      dest="restart_delay",
+                      help="Poll-on-change loop: re-check buildids every SEC "
+                           "seconds and only download apps whose buildid moved. "
+                           "0 = single-pass (default).  Requires --project so "
+                           "AppEntry.current_buildid persists between cycles.")
+    p_dl.add_argument("--batch-size", type=int, default=None, metavar="N",
+                      dest="batch_size",
+                      help="Chunk product-info RPC into batches of N app IDs "
+                           "(default: project value, or unbatched single call).")
+    p_dl.add_argument("--force-download", action="store_true",
+                      dest="force_download",
+                      help="Download every app ignoring the buildid-change "
+                           "gate.  In polling mode this only applies to the "
+                           "first iteration; subsequent cycles resume normal "
+                           "change detection.  Notifications are tagged with "
+                           "a \"may not represent an actual update\" warning.")
+
     # ---- Upload args (per-run knobs that aren't credentials) -----------
     p_dl.add_argument("--description", default=None, metavar="TEXT",
                       dest="description",
@@ -1444,6 +1463,12 @@ def _resolve_archive_run_options(args, project_obj) -> dict:
         "delete_archives":  keep_or(args.delete_archives, "delete_archives"),
         "experimental":     keep_or(args.experimental,    "experimental"),
         "unstub":           unstub,
+        # Phase 5: --force-download is per-run-only, never sticks to project.
+        "force_download":   bool(getattr(args, "force_download", False)),
+        "restart_delay":    pick(getattr(args, "restart_delay", None),
+                                 "restart_delay", 0),
+        "batch_size":       pick(getattr(args, "batch_size", None),
+                                 "batch_size", 0),
     }
 
 
@@ -1488,6 +1513,14 @@ def _persist_archive_run_options(args, project_obj) -> bool:
               "realign", "recalcchecksum"):
         if getattr(args, f, False) and not getattr(P.unstub, f):
             setattr(P.unstub, f, True); changed = True
+    # Phase 5 polling knobs (force_download is intentionally not persisted
+    # — it's a per-run override, not a sticky project setting).
+    rd = getattr(args, "restart_delay", None)
+    if rd is not None and rd != P.restart_delay:
+        P.restart_delay = rd; changed = True
+    bs = getattr(args, "batch_size", None)
+    if bs is not None and bs != P.batch_size:
+        P.batch_size = bs; changed = True
     return changed
 
 
@@ -1589,9 +1622,12 @@ def _build_notify_data(app_meta: dict, previous_buildid: str) -> dict:
 
 def _send_notifications(notify_data: dict,
                         upload_links: dict | None,
-                        creds, *, notify_mod) -> None:
+                        creds, *, notify_mod,
+                        force_download: bool = False) -> None:
     """Fire Discord + Telegram for one notify event.  Per-channel failures
-    are warnings; they don't abort the run."""
+    are warnings; they don't abort the run.  When `force_download` is set
+    the notification carries a "this may not represent an actual update"
+    warning (Phase 5: --force-download bypasses the buildid-change gate)."""
     if creds.discord.is_set():
         try:
             notify_mod.send_discord_notification(
@@ -1599,6 +1635,7 @@ def _send_notifications(notify_data: dict,
                 notify_data,
                 mention_role_ids=creds.discord.mention_role_ids or None,
                 upload_links=upload_links,
+                force_download=force_download,
             )
         except Exception as exc:
             _warn(f"Discord notify failed: {exc}")
@@ -1609,6 +1646,7 @@ def _send_notifications(notify_data: dict,
                 creds.telegram.chat_ids,
                 notify_data,
                 upload_links=upload_links,
+                force_download=force_download,
             )
         except Exception as exc:
             _warn(f"Telegram notify failed: {exc}")
@@ -1616,7 +1654,8 @@ def _send_notifications(notify_data: dict,
 
 def _archive_run_pre_pipeline(app_meta: dict, previous_buildid: str,
                               creds, notify_mode: str,
-                              *, notify_mod) -> None:
+                              *, notify_mod,
+                              force_download: bool = False) -> None:
     """Pre-download notification (no upload links).  Skipped unless mode
     is 'pre' or 'both'."""
     if notify_mode not in ("pre", "both"):
@@ -1627,6 +1666,7 @@ def _archive_run_pre_pipeline(app_meta: dict, previous_buildid: str,
         _build_notify_data(app_meta, previous_buildid),
         upload_links=None,
         creds=creds, notify_mod=notify_mod,
+        force_download=force_download,
     )
 
 
@@ -1636,7 +1676,8 @@ def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
                                 notify_mode: str = "delay",
                                 description: str | None = None,
                                 max_concurrent: int = 1,
-                                delete_archives: bool = False) -> None:
+                                delete_archives: bool = False,
+                                force_download: bool = False) -> None:
     """Upload archives and (when notify_mode in {'delay','both'}) fire the
     post-upload notification with platform links.
 
@@ -1684,6 +1725,7 @@ def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
         _build_notify_data(app_meta, previous_buildid),
         upload_links=platform_links or None,
         creds=creds, notify_mod=notify_mod,
+        force_download=force_download,
     )
 
 
@@ -1805,69 +1847,126 @@ def _cmd_archive_download(args):
         for entry in project_obj.apps:
             apps_by_id[entry.app_id] = entry
 
-    try:
-        for app_id in app_ids:
-            print(f"=== app {app_id} ===")
-            entry = apps_by_id.get(app_id)
-            previous_buildid = entry.current_buildid if entry else ""
+    # ---- Phase 5 polling-mode setup -----------------------------------
+    restart_delay = int(opts.get("restart_delay") or 0)
+    poll_mode = restart_delay > 0
+    if poll_mode and project_obj is None:
+        _die("--restart-delay > 0 requires --project (buildid state must persist)",
+             EXIT_INPUT)
+    if poll_mode and not apps_by_id:
+        _die("--restart-delay > 0 needs at least one app in the .xarchive project",
+             EXIT_INPUT)
+    poll_batch_size = int(opts.get("batch_size") or 0) or None
 
-            # Pre-download notify needs an app_meta to mention.  We don't
-            # have it yet here (download_app builds it from the
-            # product-info call) so just send what we know — appid +
-            # previous buildid — and let the next-build/timeupdated
-            # fields stay blank for the pre-notify.  This matches
-            # SteamArchiver's behaviour: pre-notify is the "build
-            # change detected" alert, not a build summary.
-            if notify_mode in ("pre", "both"):
-                _archive_run_pre_pipeline(
-                    app_meta={"appid": app_id, "name": str(app_id),
-                              "buildid": "", "timeupdated": 0},
-                    previous_buildid=previous_buildid,
-                    creds=creds, notify_mode=notify_mode,
-                    notify_mod=notify_mod,
-                )
-
-            try:
-                archives, platform_manifests, app_meta = download_app(
-                    client, cdn, app_id, output_dir,
-                    platform=args.platform, workers=opts["workers"],
-                    password=opts["archive_password"],
-                    compression_level=opts["compression"],
-                    volume_size=volume_size,
-                    branch=args.branch,
-                    crack=args.crack,
-                    experimental=opts["experimental"],
-                    unstub_options=unstub_options,
-                    depot_names=depot_names,
-                    max_retries=opts["max_retries"],
-                    language=opts["language"],
-                    crack_identity=crack_identity,
-                    on_event=subscriber,
-                )
-            except NotImplementedError as exc:
-                _die(str(exc), EXIT_INPUT)
-            except Exception as exc:
-                _warn(f"app {app_id} failed: {exc}")
-                continue
-            all_archives.extend(archives)
-            for plat_records in platform_manifests.values():
-                for depot_id, depot_name, _gid in plat_records:
-                    if not depot_name:
-                        all_unknown_depot_ids.add(str(depot_id))
-
-            _archive_run_post_pipeline(
-                archives, app_meta, previous_buildid, creds,
-                upload_mod=upload_mod, notify_mod=notify_mod,
-                output_dir=output_dir, subscriber=subscriber,
-                notify_mode=notify_mode,
-                description=opts["description"],
-                max_concurrent=opts["max_concurrent_uploads"],
-                delete_archives=opts["delete_archives"],
+    def _run_one_app(app_id: int, previous_buildid: str,
+                     app_info_hint: dict | None = None) -> None:
+        """Pre-notify + download + post-pipeline for a single app.  Errors
+        from download_app are reported and skipped; the polling loop / app
+        list iteration continues with the next entry."""
+        print(f"=== app {app_id} ===")
+        hint = app_info_hint or {}
+        if notify_mode in ("pre", "both"):
+            _archive_run_pre_pipeline(
+                app_meta={
+                    "appid":       app_id,
+                    "name":        hint.get("name", str(app_id)),
+                    "buildid":     hint.get("buildid", ""),
+                    "timeupdated": hint.get("timeupdated", 0),
+                },
+                previous_buildid=previous_buildid,
+                creds=creds, notify_mode=notify_mode,
+                notify_mod=notify_mod,
+                force_download=opts["force_download"],
             )
+        try:
+            archives, platform_manifests, app_meta = download_app(
+                client, cdn, app_id, output_dir,
+                platform=args.platform, workers=opts["workers"],
+                password=opts["archive_password"],
+                compression_level=opts["compression"],
+                volume_size=volume_size,
+                branch=args.branch,
+                crack=args.crack,
+                experimental=opts["experimental"],
+                unstub_options=unstub_options,
+                depot_names=depot_names,
+                max_retries=opts["max_retries"],
+                language=opts["language"],
+                crack_identity=crack_identity,
+                on_event=subscriber,
+            )
+        except NotImplementedError as exc:
+            _die(str(exc), EXIT_INPUT)
+        except Exception as exc:
+            _warn(f"app {app_id} failed: {exc}")
+            return
+        all_archives.extend(archives)
+        for plat_records in platform_manifests.values():
+            for depot_id, depot_name, _gid in plat_records:
+                if not depot_name:
+                    all_unknown_depot_ids.add(str(depot_id))
+        _archive_run_post_pipeline(
+            archives, app_meta, previous_buildid, creds,
+            upload_mod=upload_mod, notify_mod=notify_mod,
+            output_dir=output_dir, subscriber=subscriber,
+            notify_mode=notify_mode,
+            description=opts["description"],
+            max_concurrent=opts["max_concurrent_uploads"],
+            delete_archives=opts["delete_archives"],
+            force_download=opts["force_download"],
+        )
+        entry_local = apps_by_id.get(app_id)
+        if entry_local is not None and app_meta.get("buildid"):
+            entry_local.current_buildid = str(app_meta["buildid"])
 
-            # Persist current buildid so the next polling run can detect change.
-            if entry is not None and app_meta.get("buildid"):
-                entry.current_buildid = str(app_meta["buildid"])
+    def _save_project_now() -> None:
+        """Persist project state mid-run (poll mode flushes after each
+        cycle so a kill / crash doesn't drop buildid updates)."""
+        if project_obj is None or project_path is None:
+            return
+        try:
+            project_mod.save(project_obj, project_path)
+        except Exception as exc:
+            _warn(f"Could not persist project to {project_path}: {exc}")
+
+    try:
+        if poll_mode:
+            import time as _time
+            from src.core.archive import poll as poll_mod
+            force = bool(opts["force_download"])
+            iteration = 0
+            while True:
+                iteration += 1
+                print(f"\n=== poll cycle {iteration} ===")
+                try:
+                    changes = poll_mod.detect_changes(
+                        client, cdn, apps_by_id,
+                        force_download=force,
+                        batch_size=poll_batch_size,
+                        max_retries=opts["max_retries"],
+                    )
+                except Exception as exc:
+                    _warn(f"poll cycle failed: {exc}")
+                    changes = []
+                if not changes:
+                    print("no buildid changes detected this cycle")
+                for app_id, prev, _curr, info in changes:
+                    _run_one_app(app_id, prev, app_info_hint=info)
+                _save_project_now()
+                force = False
+                print(f"sleeping {restart_delay}s until next poll cycle "
+                      f"(Ctrl-C to stop)")
+                try:
+                    _time.sleep(restart_delay)
+                except KeyboardInterrupt:
+                    print()
+                    print("polling interrupted, exiting")
+                    break
+        else:
+            for app_id in app_ids:
+                entry = apps_by_id.get(app_id)
+                previous_buildid = entry.current_buildid if entry else ""
+                _run_one_app(app_id, previous_buildid)
     finally:
         subscriber.close() if hasattr(subscriber, "close") else None
         try:

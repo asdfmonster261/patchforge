@@ -52,18 +52,34 @@ def login(tokens: dict):
     return client, cdn
 
 
+def _extract_app_info(app_data: dict) -> dict | None:
+    """Pull the structured fields PatchForge cares about out of a raw
+    Steam product-info `app_data` dict.  Returns None when `app_data`
+    is empty/missing.  Pure — does not print or touch any global state,
+    safe for the polling-loop driver to call repeatedly.
+    """
+    if not app_data:
+        return None
+    branch = app_data.get("depots", {}).get("branches", {}).get("public", {})
+    return {
+        "name":        app_data.get("common", {}).get("name", "Unknown"),
+        "buildid":     branch.get("buildid", "Unknown"),
+        "oslist":      app_data.get("common", {}).get("oslist", ""),
+        "timeupdated": branch.get("timeupdated", ""),
+        "installdir":  app_data.get("config", {}).get("installdir", "Unknown"),
+    }
+
+
 def _format_app_info(app_id: int, app_data: dict, licensed_apps) -> dict | None:
     if not app_data:
         print(f"error: no product info returned for app {app_id}.")
         return None
 
-    name        = app_data.get("common", {}).get("name", "Unknown")
-    installdir  = app_data.get("config", {}).get("installdir", "Unknown")
+    info        = _extract_app_info(app_data)
+    name        = info["name"]
+    installdir  = info["installdir"]
+    build_id    = info["buildid"]
     depots      = app_data.get("depots", {})
-    branch      = depots.get("branches", {}).get("public", {})
-    build_id    = branch.get("buildid", "Unknown")
-    timeupdated = branch.get("timeupdated", "")
-    oslist      = app_data.get("common", {}).get("oslist", "")
 
     print()
     print(f"  {name}  ·  App {app_id}")
@@ -136,19 +152,20 @@ def _format_app_info(app_id: int, app_data: dict, licensed_apps) -> dict | None:
             owned = "owned" if dlc_app_id in licensed_apps else "not owned"
             print(f"    {dlc_app_id}  {owned}")
 
-    return {
-        "name":        name,
-        "buildid":     build_id,
-        "oslist":      oslist,
-        "timeupdated": timeupdated,
-    }
+    return info
 
 
 def query_app_info_batch(client, cdn, app_ids: list[int],
                          max_retries: int = 1,
-                         batch_size: int | None = None) -> Iterator[tuple[int, dict | None]]:
-    """Yield (app_id, info_dict | None) for each app, fetched in batches."""
-    licensed_apps = cdn.licensed_app_ids
+                         batch_size: int | None = None,
+                         quiet: bool = False) -> Iterator[tuple[int, dict | None]]:
+    """Yield (app_id, info_dict | None) for each app, fetched in batches.
+
+    When `quiet` is True the per-app human-readable summary is skipped
+    and only the structured info dict is returned — used by the Phase 5
+    polling driver, which would otherwise spam the terminal each cycle.
+    """
+    licensed_apps = cdn.licensed_app_ids if not quiet else None
     batches = list(_chunks(app_ids, batch_size)) if batch_size else [app_ids]
 
     for batch in batches:
@@ -159,7 +176,10 @@ def query_app_info_batch(client, cdn, app_ids: list[int],
         )
         for app_id in batch:
             app_data = info["apps"].get(app_id)
-            yield app_id, _format_app_info(app_id, app_data, licensed_apps)
+            if quiet:
+                yield app_id, _extract_app_info(app_data)
+            else:
+                yield app_id, _format_app_info(app_id, app_data, licensed_apps)
 
 
 def _chunks(lst, n):

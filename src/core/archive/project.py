@@ -130,6 +130,16 @@ class ArchiveProject:
     experimental: bool          = False                 # --experimental
     unstub:       UnstubOptions = field(default_factory=UnstubOptions)
 
+    # Polling loop (Phase 5):
+    #   restart_delay > 0 enables poll-on-change mode — the CLI loops
+    #   forever, fetching product-info every restart_delay seconds and
+    #   only triggering downloads for apps whose Steam buildid differs
+    #   from the AppEntry.current_buildid we persisted last time.
+    #   restart_delay == 0 (default) = legacy single-pass mode.
+    #   batch_size > 0 chunks the product-info RPC; 0 = single batch.
+    restart_delay: int = 0           # --restart-delay (seconds)
+    batch_size:    int = 0           # --batch-size
+
     # Free-form CLI args appended to `patchforge archive` invocations
     extra_args: str = ""
 

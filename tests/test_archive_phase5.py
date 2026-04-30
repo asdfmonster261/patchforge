@@ -1,0 +1,427 @@
+"""Phase 5 tests — poll-on-change buildid detection + CLI knob plumbing.
+
+Covers the offline-testable surface:
+  - poll.detect_changes change-only / force-download / batch-size /
+    skip-when-no-buildid behaviour
+  - project schema roundtrip for restart_delay + batch_size
+  - resolver / persist priority for the new knobs (CLI > project > default)
+  - force_download routing into pre + post notify pipelines
+  - --restart-delay > 0 without --project bails out cleanly
+
+The actual sleep/loop behaviour of the CLI driver is exercised through a
+single integration-style test that mocks query_app_info_batch +
+download_app + time.sleep so we never hit the network and the loop
+exits deterministically.
+"""
+
+from __future__ import annotations
+
+from unittest import mock
+
+
+# ---------------------------------------------------------------------------
+# poll.detect_changes
+# ---------------------------------------------------------------------------
+
+def _stub_qaib(infos: dict[int, dict | None]):
+    """Build a stand-in for query_app_info_batch that yields preset infos."""
+    def fake(client, cdn, app_ids, max_retries=1, batch_size=None, quiet=False):
+        for aid in app_ids:
+            yield aid, infos.get(aid)
+    return fake
+
+
+def test_detect_changes_returns_only_changed_apps():
+    from src.core.archive import poll
+    from src.core.archive.project import AppEntry
+
+    apps_by_id = {
+        100: AppEntry(app_id=100, current_buildid="111"),
+        200: AppEntry(app_id=200, current_buildid="222"),
+        300: AppEntry(app_id=300, current_buildid=""),
+    }
+    infos = {
+        100: {"name": "A", "buildid": "111", "timeupdated": 1, "oslist": "windows", "installdir": "a"},
+        200: {"name": "B", "buildid": "999", "timeupdated": 2, "oslist": "windows", "installdir": "b"},
+        300: {"name": "C", "buildid": "333", "timeupdated": 3, "oslist": "windows", "installdir": "c"},
+    }
+    with mock.patch.object(poll, "query_app_info_batch", _stub_qaib(infos)):
+        changes = poll.detect_changes(None, None, apps_by_id)
+
+    by_id = {row[0]: row for row in changes}
+    assert 100 not in by_id                              # unchanged
+    assert by_id[200] == (200, "222", "999", infos[200]) # bumped
+    assert by_id[300] == (300, "",    "333", infos[300]) # first-seen
+
+
+def test_detect_changes_force_download_returns_all_with_valid_buildid():
+    from src.core.archive import poll
+    from src.core.archive.project import AppEntry
+
+    apps_by_id = {
+        100: AppEntry(app_id=100, current_buildid="111"),
+        200: AppEntry(app_id=200, current_buildid="222"),
+    }
+    infos = {
+        100: {"name": "A", "buildid": "111", "timeupdated": 1, "oslist": "", "installdir": ""},
+        200: {"name": "B", "buildid": "222", "timeupdated": 2, "oslist": "", "installdir": ""},
+    }
+    with mock.patch.object(poll, "query_app_info_batch", _stub_qaib(infos)):
+        changes = poll.detect_changes(None, None, apps_by_id, force_download=True)
+
+    assert {row[0] for row in changes} == {100, 200}
+
+
+def test_detect_changes_skips_apps_without_usable_buildid():
+    from src.core.archive import poll
+    from src.core.archive.project import AppEntry
+
+    apps_by_id = {
+        100: AppEntry(app_id=100, current_buildid=""),
+        200: AppEntry(app_id=200, current_buildid=""),
+        300: AppEntry(app_id=300, current_buildid=""),
+    }
+    infos = {
+        100: None,                                              # no info
+        200: {"name": "B", "buildid": "Unknown", "timeupdated": 0, "oslist": "", "installdir": ""},
+        300: {"name": "C", "buildid": "999",     "timeupdated": 0, "oslist": "", "installdir": ""},
+    }
+    with mock.patch.object(poll, "query_app_info_batch", _stub_qaib(infos)):
+        changes = poll.detect_changes(None, None, apps_by_id, force_download=True)
+
+    assert [row[0] for row in changes] == [300]
+
+
+def test_detect_changes_passes_batch_size_through():
+    from src.core.archive import poll
+    from src.core.archive.project import AppEntry
+
+    apps_by_id = {i: AppEntry(app_id=i, current_buildid="") for i in (1, 2, 3, 4, 5)}
+
+    captured = {}
+    def fake(client, cdn, app_ids, max_retries=1, batch_size=None, quiet=False):
+        captured["batch_size"] = batch_size
+        captured["max_retries"] = max_retries
+        captured["quiet"] = quiet
+        for aid in app_ids:
+            yield aid, {"name": str(aid), "buildid": "1", "timeupdated": 0,
+                        "oslist": "", "installdir": ""}
+
+    with mock.patch.object(poll, "query_app_info_batch", fake):
+        poll.detect_changes(None, None, apps_by_id, batch_size=2, max_retries=3)
+
+    assert captured == {"batch_size": 2, "max_retries": 3, "quiet": True}
+
+
+def test_detect_changes_empty_apps_returns_empty_list():
+    from src.core.archive import poll
+    assert poll.detect_changes(None, None, {}) == []
+
+
+# ---------------------------------------------------------------------------
+# Project schema
+# ---------------------------------------------------------------------------
+
+def test_project_roundtrips_restart_delay_and_batch_size(tmp_path):
+    from src.core.archive import project as pm
+    proj = pm.new_project(name="poll-test")
+    proj.restart_delay = 600
+    proj.batch_size    = 25
+
+    path = tmp_path / "poll.xarchive"
+    pm.save(proj, path)
+    loaded = pm.load(path)
+    assert loaded.restart_delay == 600
+    assert loaded.batch_size    == 25
+
+
+def test_project_default_restart_delay_is_zero():
+    from src.core.archive.project import ArchiveProject
+    p = ArchiveProject()
+    assert p.restart_delay == 0
+    assert p.batch_size    == 0
+
+
+# ---------------------------------------------------------------------------
+# Resolver / persistence priority
+# ---------------------------------------------------------------------------
+
+def _full_args(**overrides):
+    """argparse-shaped Mock with every flag _resolve / _persist consults."""
+    base = dict(
+        workers=None, compression=None, language=None, max_retries=None,
+        archive_password=None, volume_size=None,
+        description=None, max_concurrent_uploads=None,
+        delete_archives=False, experimental=False,
+        keepbind=False, keepstub=False,
+        dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
+        restart_delay=None, batch_size=None, force_download=False,
+    )
+    base.update(overrides)
+    return mock.Mock(**base)
+
+
+def test_resolve_picks_cli_over_project_for_polling_knobs():
+    from src.cli.main         import _resolve_archive_run_options
+    from src.core.archive     import project as pm
+    proj = pm.new_project(name="t")
+    proj.restart_delay = 60
+    proj.batch_size    = 5
+
+    args = _full_args(restart_delay=300, batch_size=10, force_download=True)
+    opts = _resolve_archive_run_options(args, proj)
+    assert opts["restart_delay"]  == 300   # CLI wins
+    assert opts["batch_size"]     == 10    # CLI wins
+    assert opts["force_download"] is True  # per-run override
+
+
+def test_resolve_falls_back_to_project_then_default():
+    from src.cli.main     import _resolve_archive_run_options
+    from src.core.archive import project as pm
+    proj = pm.new_project(name="t")
+    proj.restart_delay = 120
+    # batch_size left at default (0)
+
+    args = _full_args()  # no CLI values
+    opts = _resolve_archive_run_options(args, proj)
+    assert opts["restart_delay"]  == 120  # project wins
+    assert opts["batch_size"]     == 0    # project default
+    assert opts["force_download"] is False
+
+    opts2 = _resolve_archive_run_options(_full_args(), None)
+    assert opts2["restart_delay"]  == 0
+    assert opts2["batch_size"]     == 0
+    assert opts2["force_download"] is False
+
+
+def test_persist_writes_polling_knobs_but_skips_force_download():
+    from src.cli.main     import _persist_archive_run_options
+    from src.core.archive import project as pm
+    proj = pm.new_project(name="t")
+
+    args = _full_args(restart_delay=900, batch_size=8, force_download=True)
+    changed = _persist_archive_run_options(args, proj)
+    assert changed is True
+    assert proj.restart_delay == 900     # persisted
+    assert proj.batch_size    == 8       # persisted
+    # force_download is per-run-only; project shouldn't track it.
+    assert not hasattr(proj, "force_download")
+
+
+def test_persist_polling_knobs_idempotent_when_unchanged():
+    from src.cli.main     import _persist_archive_run_options
+    from src.core.archive import project as pm
+    proj = pm.new_project(name="t")
+    proj.restart_delay = 120
+    proj.batch_size    = 4
+
+    args = _full_args(restart_delay=120, batch_size=4)
+    assert _persist_archive_run_options(args, proj) is False
+
+
+# ---------------------------------------------------------------------------
+# Notify pipelines forward force_download
+# ---------------------------------------------------------------------------
+
+def test_pre_pipeline_passes_force_download_into_telegram_and_discord():
+    from src.cli.main         import _archive_run_pre_pipeline
+    from src.core.archive     import credentials as creds_mod
+    creds = creds_mod.Credentials()
+    creds.discord = creds_mod.DiscordCreds(webhook_url="https://hook")
+    creds.telegram = creds_mod.TelegramCreds(token="t", chat_ids=["1"])
+
+    fake_notify = mock.Mock()
+    fake_notify.send_discord_notification.return_value  = True
+    fake_notify.send_telegram_notification.return_value = True
+
+    _archive_run_pre_pipeline(
+        app_meta={"appid": 1, "name": "X", "buildid": "5", "timeupdated": 0},
+        previous_buildid="4", creds=creds, notify_mode="pre",
+        notify_mod=fake_notify,
+        force_download=True,
+    )
+    assert fake_notify.send_discord_notification.call_args.kwargs["force_download"]  is True
+    assert fake_notify.send_telegram_notification.call_args.kwargs["force_download"] is True
+
+
+def test_post_pipeline_passes_force_download_into_notifications(tmp_path):
+    from src.cli.main         import _archive_run_post_pipeline
+    from src.core.archive     import credentials as creds_mod
+
+    creds = creds_mod.Credentials()
+    creds.discord = creds_mod.DiscordCreds(webhook_url="https://hook")
+
+    fake_upload = mock.Mock()
+    fake_upload.upload_archives.return_value = {}
+    fake_notify = mock.Mock()
+    fake_notify.send_discord_notification.return_value = True
+
+    archive = tmp_path / "x.7z"
+    archive.write_bytes(b"x")
+
+    _archive_run_post_pipeline(
+        [archive],
+        {"appid": 1, "name": "X", "buildid": "5", "timeupdated": 0},
+        previous_buildid="4", creds=creds,
+        upload_mod=fake_upload, notify_mod=fake_notify,
+        output_dir=tmp_path, subscriber=None,
+        notify_mode="delay",
+        force_download=True,
+    )
+    assert fake_notify.send_discord_notification.call_args.kwargs["force_download"] is True
+
+
+# ---------------------------------------------------------------------------
+# appinfo quiet path (used by detect_changes)
+# ---------------------------------------------------------------------------
+
+def test_query_app_info_batch_quiet_does_not_print(capsys):
+    from src.core.archive.appinfo import query_app_info_batch
+
+    fake_client = mock.Mock()
+    fake_client.get_product_info.return_value = {
+        "apps": {
+            42: {"common":  {"name": "Q", "oslist": ""},
+                 "config":  {"installdir": "Q"},
+                 "depots":  {"branches": {"public": {"buildid": "9", "timeupdated": 7}}}},
+        }
+    }
+    fake_cdn = mock.Mock()
+    # licensed_app_ids must not be touched in quiet mode
+    type(fake_cdn).licensed_app_ids = mock.PropertyMock(side_effect=AssertionError(
+        "quiet=True must not request licensed_app_ids"
+    ))
+
+    rows = list(query_app_info_batch(fake_client, fake_cdn, [42], quiet=True))
+    captured = capsys.readouterr()
+    assert captured.out == ""             # no per-app summary
+    assert rows == [(42, {
+        "name": "Q", "buildid": "9", "oslist": "",
+        "timeupdated": 7, "installdir": "Q",
+    })]
+
+
+# ---------------------------------------------------------------------------
+# Polling driver smoke (mocks every IO boundary)
+# ---------------------------------------------------------------------------
+
+def test_polling_driver_loops_then_exits_on_keyboard_interrupt(tmp_path, monkeypatch):
+    """One full cycle:
+      iteration 1: detect_changes returns one app -> download fires
+      iteration 2: detect_changes returns nothing  -> download skipped
+      time.sleep raises KeyboardInterrupt -> driver exits cleanly.
+    Verifies force_download is True on call 1, False on call 2."""
+    from src.cli import main as cli_main
+    from src.core.archive import project as pm
+
+    proj = pm.new_project(name="poll-smoke")
+    proj.restart_delay = 1
+    proj.apps.append(pm.AppEntry(app_id=100, current_buildid="old"))
+    project_path = tmp_path / "p.xarchive"
+    pm.save(proj, project_path)
+
+    # Sentinel that captures detect_changes call args, returns one row first
+    # cycle, nothing after.
+    detect_calls: list[bool] = []
+    info = {"name": "Game", "buildid": "new", "timeupdated": 1,
+            "oslist": "windows", "installdir": "g"}
+    def fake_detect(client, cdn, apps, *, force_download, batch_size, max_retries):
+        detect_calls.append(force_download)
+        if len(detect_calls) == 1:
+            return [(100, "old", "new", info)]
+        return []
+
+    download_calls: list[int] = []
+    def fake_download_app(*a, **kw):
+        download_calls.append(a[2])  # app_id positional
+        return ([tmp_path / "x.7z"], {}, {"appid": 100, "name": "Game",
+                                          "buildid": "new", "timeupdated": 1})
+
+    sleep_calls: list[int] = []
+    def fake_sleep(n):
+        sleep_calls.append(n)
+        if len(sleep_calls) >= 2:           # exit on second sleep
+            raise KeyboardInterrupt
+    # ---- minimal stubs for everything else _cmd_archive_download imports
+    from src.core.archive import poll as poll_mod
+    monkeypatch.setattr(poll_mod, "detect_changes", fake_detect)
+
+    # Stub out the heavy CLI-side imports.
+    from src.core.archive import credentials as creds_mod
+    creds = creds_mod.Credentials()
+    creds.username = "u"
+    creds.steam_id = 1
+    creds.client_refresh_token = "t"
+    monkeypatch.setattr(creds_mod, "load", lambda: creds)
+    monkeypatch.setattr(creds_mod, "save", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli_main, "_archive_require_extras_or_die", lambda: None)
+
+    fake_appinfo = mock.Mock()
+    fake_appinfo.login.return_value = (mock.Mock(), mock.Mock())
+    monkeypatch.setitem(__import__("sys").modules,
+                        "src.core.archive.appinfo", fake_appinfo)
+
+    fake_download_mod = mock.Mock()
+    fake_download_mod.download_app = fake_download_app
+    monkeypatch.setitem(__import__("sys").modules,
+                        "src.core.archive.download", fake_download_mod)
+
+    fake_compress_mod = mock.Mock()
+    fake_compress_mod.parse_size = lambda s: None
+    monkeypatch.setitem(__import__("sys").modules,
+                        "src.core.archive.compress", fake_compress_mod)
+
+    fake_progress = mock.Mock()
+    fake_progress.build_subscriber = lambda plain=False: mock.Mock()
+    monkeypatch.setitem(__import__("sys").modules,
+                        "src.core.archive.cli_progress", fake_progress)
+
+    fake_depots = mock.Mock()
+    fake_depots.load = lambda: {}
+    fake_depots.record_unknown = lambda ids: []
+    fake_depots.depots_path = lambda: "/dev/null"
+    monkeypatch.setitem(__import__("sys").modules,
+                        "src.core.archive.depots_ini", fake_depots)
+
+    fake_upload = mock.Mock()
+    fake_upload.upload_archives = lambda *a, **kw: {}
+    monkeypatch.setitem(__import__("sys").modules,
+                        "src.core.archive.upload", fake_upload)
+
+    fake_notify = mock.Mock()
+    monkeypatch.setitem(__import__("sys").modules,
+                        "src.core.archive.notify", fake_notify)
+
+    monkeypatch.setattr("time.sleep", fake_sleep)
+
+    args = mock.Mock(
+        log=None,
+        upload_username=None, upload_password=None, binurl=None, binpass=None,
+        telegram_bot_token=None, telegram_chat_id=None,
+        discord_webhook=None, discord_mention_role_ids=None,
+        delete_archives=False,
+        app_ids=[], appid_file=None, project=str(project_path),
+        crack=None, no_progress=True,
+        platform="windows", branch="public", branch_password=None,
+        output_dir=str(tmp_path),
+        workers=None, compression=None, language=None, max_retries=None,
+        archive_password=None, volume_size=None,
+        description=None, max_concurrent_uploads=None, experimental=False,
+        keepbind=False, keepstub=False,
+        dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
+        restart_delay=None, batch_size=None, force_download=True,
+        notify_mode_flag=None,
+    )
+
+    cli_main._cmd_archive_download(args)
+
+    # Iteration 1 forced (CLI flag), iteration 2 cleared.
+    assert detect_calls == [True, False]
+    # Only the first iteration produced a download.
+    assert download_calls == [100]
+    # We slept twice (after iter 1 and iter 2), the second one raised KI.
+    assert sleep_calls == [1, 1]
+
+    # Project saved at end of each iteration -> current_buildid persisted.
+    reloaded = pm.load(project_path)
+    assert reloaded.apps[0].current_buildid == "new"
