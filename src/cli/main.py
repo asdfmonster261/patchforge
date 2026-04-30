@@ -1018,7 +1018,8 @@ def _add_archive(sub):
     p_dl.add_argument("--branch-password", default=None, metavar="PASS",
                       dest="branch_password",
                       help="Password for restricted branches")
-    p_dl.add_argument("--compression", type=int, default=None, metavar="0..9",
+    p_dl.add_argument("--compression-level", type=int, default=None,
+                      metavar="0..9", dest="compression",
                       help="7z compression level (default: project value, or 9)")
     p_dl.add_argument("--archive-password", default=None, metavar="PASS",
                       dest="archive_password",
@@ -1806,7 +1807,8 @@ def _cmd_archive_download(args):
         _die(f"Invalid --volume-size: {opts['volume_size']!r}", EXIT_INPUT)
 
     if opts["compression"] < 0 or opts["compression"] > 9:
-        _die(f"--compression must be 0..9, got {opts['compression']}", EXIT_INPUT)
+        _die(f"--compression-level must be 0..9, got {opts['compression']}",
+             EXIT_INPUT)
 
     # Resolve notify mode (CLI flag > project field > auto-default).
     notify_mode = _resolve_notify_mode(
