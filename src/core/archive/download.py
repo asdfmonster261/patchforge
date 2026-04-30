@@ -47,6 +47,11 @@ EventKind = Literal[
     "upload_progress",
     "upload_finished",
     "paste_created",
+    # Phase 6.1: per-batch progress while query_app_info_batch / poll
+    # cycles probe Steam product-info.  `done` = apps fetched so far,
+    # `total` = total in this batch, `name` = app id whose info just
+    # came back (string-form so the existing field type is reused).
+    "app_info_progress",
 ]
 
 

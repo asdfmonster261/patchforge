@@ -118,6 +118,17 @@ class LiveDisplaySubscriber:
             sys.stdout.write(f"\n{_BOLD} >  {_RESET}{ev.stage_msg}\n")
             sys.stdout.flush()
 
+        elif kind == "app_info_progress":
+            # Per-app product-info batch progress.  Render as a
+            # single-line `app X / N (id)` so the rolling redraw greenlet
+            # doesn't fight the per-file rows of an active download.
+            self._erase()
+            sys.stdout.write(
+                f"{_BOLD}~  {_RESET}app-info {ev.done}/{ev.total}"
+                f"  (last: {ev.name})\n"
+            )
+            sys.stdout.flush()
+
         elif kind == "error":
             self._erase()
             target = f"  ({ev.name})" if ev.name else ""
@@ -407,6 +418,9 @@ class PlainLogSubscriber:
 
         elif kind == "stage":
             self._write(f"[stage]    {ev.stage_msg}")
+
+        elif kind == "app_info_progress":
+            self._write(f"[app-info] {ev.done}/{ev.total}  (last: {ev.name})")
 
         elif kind == "error":
             target = f" ({ev.name})" if ev.name else ""

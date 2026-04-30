@@ -23,7 +23,9 @@ def detect_changes(client,
                    *,
                    force_download: bool = False,
                    batch_size: int | None = None,
-                   max_retries: int = 1) -> list[tuple[int, str, str, dict]]:
+                   max_retries: int = 1,
+                   on_event=None,
+                   abort=None) -> list[tuple[int, str, str, dict]]:
     """Query product-info for every app in `apps_by_id` and return the
     subset whose Steam buildid differs from the AppEntry's persisted
     `current_buildid`.
@@ -53,12 +55,25 @@ def detect_changes(client,
     if not apps_by_id:
         return []
 
+    total = len(apps_by_id)
+    done  = 0
     out: list[tuple[int, str, str, dict]] = []
     for app_id, info in query_app_info_batch(
             client, cdn, list(apps_by_id),
             max_retries=max_retries,
             batch_size=batch_size,
             quiet=True):
+        done += 1
+        if on_event is not None:
+            from .download import DownloadEvent
+            on_event(DownloadEvent(
+                kind="app_info_progress",
+                name=str(app_id),
+                done=done,
+                total=total,
+            ))
+        if abort is not None and abort():
+            return out
         if not info:
             continue
         current = str(info.get("buildid") or "")

@@ -643,7 +643,8 @@ def test_polling_driver_loops_then_exits_on_keyboard_interrupt(tmp_path, monkeyp
     detect_calls: list[bool] = []
     info = {"name": "Game", "buildid": "new", "timeupdated": 1,
             "oslist": "windows", "installdir": "g"}
-    def fake_detect(client, cdn, apps, *, force_download, batch_size, max_retries):
+    def fake_detect(client, cdn, apps, *, force_download, batch_size,
+                    max_retries, on_event=None, abort=None):
         detect_calls.append(force_download)
         if len(detect_calls) == 1:
             return [(100, "old", "new", info)]

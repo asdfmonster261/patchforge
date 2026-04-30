@@ -127,6 +127,17 @@ class ArchiveRunView(QWidget):
         fg.addWidget(self.files_list)
         lleft.addWidget(self.files_grp, 1)
 
+        self.appinfo_grp = QGroupBox("App-info batch")
+        aig = QVBoxLayout(self.appinfo_grp)
+        self.appinfo_label = QLabel("(idle)")
+        self.appinfo_bar   = QProgressBar()
+        self.appinfo_bar.setRange(0, 1)
+        self.appinfo_bar.setValue(0)
+        self.appinfo_bar.setFormat("%v / %m")
+        aig.addWidget(self.appinfo_label)
+        aig.addWidget(self.appinfo_bar)
+        lleft.addWidget(self.appinfo_grp)
+
         self.agg_grp = QGroupBox("Overall")
         ag = QVBoxLayout(self.agg_grp)
         self.agg_label = QLabel("(idle)")
@@ -193,16 +204,37 @@ class ArchiveRunView(QWidget):
     # ---------------------------------------------------------- lifecycle
     def attach(self, worker) -> None:
         """Connect signals from an ArchiveWorker.  Reset UI state first
-        so re-runs in the same panel start clean."""
+        so re-runs in the same panel start clean.  Disconnect any prior
+        Stop-button connection so old (deleted) workers don't leak."""
         self._reset()
+        try:
+            self.btn_stop.clicked.disconnect()
+        except (RuntimeError, TypeError):
+            pass
         worker.event.connect(self._on_event)
         worker.log_line.connect(self._on_log)
         worker.countdown_tick.connect(self._on_countdown)
         worker.started.connect(self._on_started)
         worker.finished.connect(self._on_finished)
         worker.failed.connect(self._on_failed)
-        self.btn_stop.clicked.connect(worker.request_abort)
+        self.btn_stop.clicked.connect(self._on_stop_clicked)
+        self._worker_ref = worker
         self.btn_stop.setEnabled(True)
+        self.btn_stop.setText("Stop")
+
+    def _on_stop_clicked(self) -> None:
+        """Visible feedback so the user knows Stop registered even though
+        the abort takes effect at the next safe checkpoint (between
+        apps / between poll cycles).  In-flight downloads finish."""
+        worker = getattr(self, "_worker_ref", None)
+        if worker is None:
+            return
+        worker.request_abort()
+        self.btn_stop.setEnabled(False)
+        self.btn_stop.setText("Stopping…")
+        self.summary_label.setText(
+            "stopping after current download / poll cycle finishes…"
+        )
 
     def _reset(self) -> None:
         for s in STAGES:
@@ -215,6 +247,9 @@ class ArchiveRunView(QWidget):
         self._agg_done  = 0
         self.agg_bar.setValue(0)
         self.agg_label.setText("(starting…)")
+        self.appinfo_bar.setRange(0, 1)
+        self.appinfo_bar.setValue(0)
+        self.appinfo_label.setText("(starting…)")
         self.countdown_label.setText("running")
         self.log_view.clear()
         self.summary_label.setText("running…")
@@ -271,6 +306,17 @@ class ArchiveRunView(QWidget):
         stage = _KIND_TO_STAGE.get(kind)
         if stage:
             self.stage_strip.mark_active(stage)
+
+        if kind == "app_info_progress":
+            total = max(int(ev.total or 0), 1)
+            done  = max(int(ev.done or 0), 0)
+            self.appinfo_bar.setRange(0, total)
+            self.appinfo_bar.setValue(min(done, total))
+            self.appinfo_label.setText(
+                f"app {done} / {total}  •  last: {ev.name}"
+            )
+            self.stage_strip.mark_active("Poll")
+            return
 
         if kind == "stage":
             self.summary_label.setText(ev.stage_msg or "")

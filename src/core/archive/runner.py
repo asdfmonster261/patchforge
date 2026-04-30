@@ -354,7 +354,8 @@ def run_session(*,
                 upload_mod, notify_mod,
                 countdown_sleep: CountdownFn | None = None,
                 log: LogFn = print,
-                warn: LogFn = print) -> RunResult:
+                warn: LogFn = print,
+                abort=None) -> RunResult:
     """Run one full archive session — single-pass over `app_ids`, or
     polling driver when `opts["restart_delay"] > 0`.
 
@@ -379,11 +380,17 @@ def run_session(*,
         except Exception as exc:
             warn(f"Could not persist project to {project_path}: {exc}")
 
+    def _aborted() -> bool:
+        return abort is not None and abort()
+
     if poll_mode:
         from . import poll as poll_mod
         force = bool(opts["force_download"])
         iteration = 0
         while True:
+            if _aborted():
+                log("aborted before poll cycle")
+                break
             iteration += 1
             log(f"\n=== poll cycle {iteration} ===")
             try:
@@ -392,6 +399,8 @@ def run_session(*,
                     force_download=force,
                     batch_size=poll_batch_size,
                     max_retries=opts["max_retries"],
+                    on_event=subscriber,
+                    abort=abort,
                 )
             except Exception as exc:
                 warn(f"poll cycle failed: {exc}")
@@ -399,6 +408,9 @@ def run_session(*,
             if not changes:
                 log("no buildid changes detected this cycle")
             for app_id, prev, _curr, info in changes:
+                if _aborted():
+                    log("aborted between apps")
+                    break
                 run_one_app(
                     app_id, prev, app_info_hint=info,
                     client=client, cdn=cdn, output_dir=output_dir,
@@ -415,12 +427,29 @@ def run_session(*,
                 )
             _save_project_now()
             force = False
+            if _aborted():
+                break
             if countdown_sleep is None:
                 break
             if not countdown_sleep(restart_delay):
                 break
     else:
-        for app_id in app_ids:
+        # Single-pass: emit a synthetic app_info_progress so the GUI /
+        # cli display can show "X / N apps processed" the same way poll
+        # mode does, even though we don't pre-fetch product-info here.
+        total = len(app_ids)
+        for i, app_id in enumerate(app_ids, 1):
+            if _aborted():
+                log("aborted between apps")
+                break
+            if subscriber is not None:
+                from .download import DownloadEvent
+                subscriber(DownloadEvent(
+                    kind="app_info_progress",
+                    name=str(app_id),
+                    done=i,
+                    total=total,
+                ))
             entry = apps_by_id.get(app_id)
             previous_buildid = entry.current_buildid if entry else ""
             run_one_app(

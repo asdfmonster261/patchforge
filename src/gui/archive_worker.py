@@ -163,6 +163,7 @@ class ArchiveWorker(QObject):
                     countdown_sleep=self._countdown_sleep,
                     log=lambda m: self.log_line.emit(str(m), "info"),
                     warn=lambda m: self.log_line.emit(str(m), "warn"),
+                    abort=self._abort.is_set,
                 )
             finally:
                 try:

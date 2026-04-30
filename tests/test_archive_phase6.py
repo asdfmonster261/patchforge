@@ -442,3 +442,158 @@ def test_archive_worker_countdown_aborts(qapp):
     with patch.object(aw.time, "sleep", lambda s: None):
         ok = w._countdown_sleep(10)
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.1 — stop button + app-info progress
+# ---------------------------------------------------------------------------
+
+def test_runner_single_pass_emits_app_info_progress(tmp_path):
+    """Single-pass mode synthesises app_info_progress events so the
+    GUI / cli display can show 'X / N apps processed' without a poll cycle."""
+    proj = _project_with_one_app()
+    creds = _stub_creds()
+
+    events: list = []
+    def subscriber(ev):
+        events.append((ev.kind, ev.done, ev.total, ev.name))
+
+    fake_archives = [tmp_path / "a.7z"]
+    download_app = MagicMock(return_value=(
+        fake_archives,
+        {"windows": []},
+        {"appid": 730, "name": "Foo", "buildid": "200"},
+    ))
+
+    with patch("src.core.archive.download.download_app", download_app):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=None,
+            creds=creds, output_dir=tmp_path,
+            app_ids=[730, 999], opts=_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=subscriber,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    appinfo_events = [e for e in events if e[0] == "app_info_progress"]
+    # one per app
+    assert [(d, t) for _, d, t, _ in appinfo_events] == [(1, 2), (2, 2)]
+
+
+def test_runner_aborts_single_pass_between_apps(tmp_path):
+    """abort callable returning True between apps must short-circuit
+    the single-pass loop."""
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(app_id=1))
+    proj.apps.append(project_mod.AppEntry(app_id=2))
+    proj.apps.append(project_mod.AppEntry(app_id=3))
+    creds = _stub_creds()
+
+    seen = []
+    def fake_dl(client, cdn, app_id, *a, **kw):
+        seen.append(app_id)
+        return ([tmp_path / f"{app_id}.7z"],
+                {"windows": []},
+                {"appid": app_id, "name": str(app_id), "buildid": "10"})
+
+    aborted = {"flag": False}
+    def abort_after_one():
+        if seen:  # abort after first app processed
+            aborted["flag"] = True
+        return aborted["flag"]
+
+    with patch("src.core.archive.download.download_app", side_effect=fake_dl):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=None,
+            creds=creds, output_dir=tmp_path,
+            app_ids=[1, 2, 3], opts=_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+            abort=abort_after_one,
+        )
+
+    # First app ran; abort fired before app 2.
+    assert seen == [1]
+
+
+def test_poll_detect_changes_emits_progress():
+    """detect_changes must emit one app_info_progress per app probed,
+    counting up to the total."""
+    from src.core.archive import poll
+    from src.core.archive.project import AppEntry
+
+    apps_by_id = {
+        100: AppEntry(app_id=100, current_buildid="111"),
+        200: AppEntry(app_id=200, current_buildid="222"),
+    }
+    infos = {
+        100: {"name": "A", "buildid": "111", "timeupdated": 1, "oslist": "", "installdir": ""},
+        200: {"name": "B", "buildid": "999", "timeupdated": 2, "oslist": "", "installdir": ""},
+    }
+
+    def fake_qaib(client, cdn, app_ids, **kw):
+        for aid in app_ids:
+            yield aid, infos[aid]
+
+    seen = []
+    with patch.object(poll, "query_app_info_batch", fake_qaib):
+        poll.detect_changes(None, None, apps_by_id,
+                            on_event=lambda ev: seen.append(ev))
+
+    progress = [(e.name, e.done, e.total) for e in seen
+                if e.kind == "app_info_progress"]
+    assert progress == [("100", 1, 2), ("200", 2, 2)]
+
+
+def test_archive_run_view_handles_app_info_progress(qapp):
+    from src.gui.archive_run_view import ArchiveRunView
+    v = ArchiveRunView()
+    v._on_event(DownloadEvent(kind="app_info_progress",
+                               name="730", done=1, total=3))
+    assert v.appinfo_bar.maximum() == 3
+    assert v.appinfo_bar.value() == 1
+    assert "1 / 3" in v.appinfo_label.text()
+    v._on_event(DownloadEvent(kind="app_info_progress",
+                               name="440", done=3, total=3))
+    assert v.appinfo_bar.value() == 3
+
+
+def test_archive_run_view_stop_button_uses_indirection(qapp):
+    """Stop click must route through _on_stop_clicked + worker
+    request_abort, then disable the button + update label so the user
+    sees feedback even if the abort takes effect at the next checkpoint."""
+    from src.gui.archive_run_view import ArchiveRunView
+    from PySide6.QtCore import QObject, Signal
+
+    class FakeWorker(QObject):
+        event           = Signal(object)
+        log_line        = Signal(str, str)
+        countdown_tick  = Signal(int)
+        started         = Signal()
+        finished        = Signal(object)
+        failed          = Signal(str)
+        def __init__(self):
+            super().__init__()
+            self.aborted = False
+        def request_abort(self):
+            self.aborted = True
+
+    v = ArchiveRunView()
+    w = FakeWorker()
+    v.attach(w)
+    v.btn_stop.click()
+    assert w.aborted is True
+    assert v.btn_stop.isEnabled() is False
+    assert v.btn_stop.text().lower().startswith("stopping")
+    assert "stopping" in v.summary_label.text().lower()
