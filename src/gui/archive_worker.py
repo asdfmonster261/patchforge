@@ -36,20 +36,22 @@ class ArchiveWorker(QObject):
                  app_ids: list[int],
                  platform: str | None = None,
                  branch: str = "public",
-                 crack: bool = False,
+                 crack_mode: str | None = None,   # "coldclient" | "gse" | None
                  force_download: bool = False,
                  notify_mode_override: str | None = None,
-                 output_dir: Path | None = None):
+                 output_dir: Path | None = None,
+                 log_file: Path | None = None):
         super().__init__()
         self._project_obj    = project_obj
         self._project_path   = project_path
         self._app_ids        = list(app_ids)
         self._platform       = platform
         self._branch         = branch
-        self._crack          = crack
+        self._crack_mode     = crack_mode
         self._force_download = force_download
         self._notify_mode_override = notify_mode_override
         self._output_dir     = output_dir
+        self._log_file       = log_file
         self._abort = threading.Event()
 
     # ---------------------------------------------------------- public
@@ -118,7 +120,7 @@ class ArchiveWorker(QObject):
             )
 
             unstub_options = None
-            if self._crack and project_obj is not None:
+            if self._crack_mode and project_obj is not None:
                 u = project_obj.unstub
                 unstub_options = {
                     "keepbind":       u.keepbind,
@@ -130,7 +132,7 @@ class ArchiveWorker(QObject):
                 }
 
             crack_identity = None
-            if self._crack:
+            if self._crack_mode:
                 from src.core.archive import project as project_mod
                 crack_identity = (project_obj.crack
                                   if project_obj else project_mod.CrackIdentity())
@@ -144,6 +146,23 @@ class ArchiveWorker(QObject):
 
             depot_names = depots_ini.load()
 
+            # Optional log-file tee — mirrors the CLI's --log flag.
+            log_fh = None
+            if self._log_file is not None:
+                try:
+                    log_fh = open(self._log_file, "a", encoding="utf-8")
+                except OSError as exc:
+                    self.log_line.emit(f"could not open log file {self._log_file}: {exc}", "warn")
+
+            def _emit_log(msg: str, level: str = "info") -> None:
+                self.log_line.emit(str(msg), level)
+                if log_fh is not None:
+                    try:
+                        log_fh.write(f"[{level}] {msg}\n")
+                        log_fh.flush()
+                    except OSError:
+                        pass
+
             try:
                 result = runner_mod.run_session(
                     client=client, cdn=cdn,
@@ -153,7 +172,7 @@ class ArchiveWorker(QObject):
                     opts=opts,
                     platform=platform,
                     notify_mode=notify_mode,
-                    branch=self._branch, crack=self._crack,
+                    branch=self._branch, crack=self._crack_mode,
                     crack_identity=crack_identity,
                     unstub_options=unstub_options,
                     volume_size=volume_size,
@@ -161,8 +180,8 @@ class ArchiveWorker(QObject):
                     subscriber=self._on_event,
                     upload_mod=upload_mod, notify_mod=notify_mod,
                     countdown_sleep=self._countdown_sleep,
-                    log=lambda m: self.log_line.emit(str(m), "info"),
-                    warn=lambda m: self.log_line.emit(str(m), "warn"),
+                    log=lambda m: _emit_log(m, "info"),
+                    warn=lambda m: _emit_log(m, "warn"),
                     abort=self._abort.is_set,
                 )
             finally:
@@ -170,6 +189,11 @@ class ArchiveWorker(QObject):
                     client.logout()
                 except Exception:
                     pass
+                if log_fh is not None:
+                    try:
+                        log_fh.close()
+                    except Exception:
+                        pass
         except Exception as exc:
             self.failed.emit(str(exc))
             return

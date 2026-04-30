@@ -12,9 +12,9 @@ from typing import Optional
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPushButton, QStackedWidget, QTabWidget,
-    QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+    QStackedWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from ..core.archive import project as project_mod
@@ -116,9 +116,41 @@ class ArchivePanel(QWidget):
         self.body_tabs.addTab(self.run_view, "Live run")
         root.addWidget(self.body_tabs, 1)
 
-        # ── Run row ─────────────────────────────────────────────────
+        # ── Per-run options + Run button ────────────────────────────
+        # These mirror the CLI flags that aren't persisted in the .xarchive:
+        #   --crack {coldclient,gse}, --force-download, --branch, --log
         run_row = QHBoxLayout()
-        run_row.addStretch(1)
+        run_row.addWidget(QLabel("Branch:"))
+        self.run_branch = QLineEdit("public")
+        self.run_branch.setFixedWidth(100)
+        run_row.addWidget(self.run_branch)
+
+        run_row.addSpacing(12)
+        run_row.addWidget(QLabel("Crack:"))
+        self.run_crack = QComboBox()
+        self.run_crack.addItem("(off)",       userData=None)
+        self.run_crack.addItem("coldclient",  userData="coldclient")
+        self.run_crack.addItem("gse",         userData="gse")
+        run_row.addWidget(self.run_crack)
+
+        run_row.addSpacing(12)
+        self.run_force = QCheckBox("Force download")
+        self.run_force.setToolTip(
+            "Download every tracked app's current build regardless of\n"
+            "whether the buildid changed since the last run."
+        )
+        run_row.addWidget(self.run_force)
+
+        run_row.addSpacing(12)
+        run_row.addWidget(QLabel("Log file:"))
+        self.run_log_path = QLineEdit()
+        self.run_log_path.setPlaceholderText("(blank — no file log)")
+        run_row.addWidget(self.run_log_path, 1)
+        self.btn_log_browse = QPushButton("…")
+        self.btn_log_browse.setObjectName("browse")
+        self.btn_log_browse.clicked.connect(self._on_log_browse)
+        run_row.addWidget(self.btn_log_browse)
+
         self.btn_run = QPushButton("Start Archive Run")
         self.btn_run.setObjectName("accent")
         self.btn_run.clicked.connect(self._on_run)
@@ -224,6 +256,14 @@ class ArchivePanel(QWidget):
         self.path_label.setText(str(path))
         self.project_changed.emit()
 
+    def _on_log_browse(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Choose log file", self.run_log_path.text() or "",
+            "Log files (*.log *.txt);;All files (*)",
+        )
+        if path:
+            self.run_log_path.setText(path)
+
     def _on_run(self) -> None:
         for page in self._pages.values():
             page.flush()
@@ -238,14 +278,18 @@ class ArchivePanel(QWidget):
                                 "Add at least one app on the Apps page first.")
             return
 
+        log_text = self.run_log_path.text().strip()
+        log_path = Path(log_text) if log_text else None
+
         self._worker = ArchiveWorker(
             project_obj=self._project,
             project_path=self._project_path,
             app_ids=app_ids,
             platform=self._project.default_platform or None,
-            branch="public",
-            crack=False,
-            force_download=False,
+            branch=self.run_branch.text().strip() or "public",
+            crack_mode=self.run_crack.currentData(),
+            force_download=self.run_force.isChecked(),
+            log_file=log_path,
         )
         self._worker_thread = QThread(self)
         self._worker.moveToThread(self._worker_thread)

@@ -569,6 +569,59 @@ def test_archive_run_view_handles_app_info_progress(qapp):
     assert v.appinfo_bar.value() == 3
 
 
+def test_archive_panel_per_run_options_construct(qapp):
+    """Smoke-test that the per-run controls (branch / crack / force /
+    log) all exist on the panel after construction."""
+    from src.gui.archive_panel import ArchivePanel
+    p = ArchivePanel()
+    assert p.run_branch.text() == "public"
+    # Crack combo should expose three choices: (off) / coldclient / gse
+    items = [p.run_crack.itemText(i) for i in range(p.run_crack.count())]
+    assert "coldclient" in items and "gse" in items
+    assert p.run_crack.itemData(0) is None
+    assert p.run_force.isChecked() is False
+    assert p.run_log_path.text() == ""
+
+
+def test_archive_worker_forwards_per_run_options_to_runner(qapp, tmp_path):
+    """ArchiveWorker must thread crack_mode / branch / force_download
+    into the runner's kwargs verbatim."""
+    from src.gui.archive_worker import ArchiveWorker
+
+    proj = _project_with_one_app()
+    creds = _stub_creds()
+
+    fake_result = runner_mod.RunResult()
+    captured = {}
+
+    def fake_run(**kw):
+        captured.update(kw)
+        return fake_result
+
+    with patch("src.core.archive.credentials.load", return_value=creds), \
+         patch("src.core.archive.depots_ini.load", return_value={}), \
+         patch("src.core.archive.appinfo.login",
+               return_value=(MagicMock(), MagicMock())), \
+         patch("src.core.archive.runner.run_session", side_effect=fake_run):
+        w = ArchiveWorker(
+            project_obj=proj, project_path=None,
+            app_ids=[730], platform="windows",
+            branch="beta", crack_mode="coldclient",
+            force_download=True, log_file=tmp_path / "run.log",
+        )
+        w.run()
+
+    assert captured["branch"] == "beta"
+    assert captured["crack"]  == "coldclient"
+    assert captured["opts"]["force_download"] is True
+    # crack_identity must be populated when crack_mode is set
+    assert captured["crack_identity"] is not None
+    assert captured["unstub_options"] is not None
+    # Log file should be created (we wrote the open header into it)
+    # — open with mode "a" creates the file if missing.
+    assert (tmp_path / "run.log").exists()
+
+
 def test_archive_run_view_stop_button_uses_indirection(qapp):
     """Stop click must route through _on_stop_clicked + worker
     request_abort, then disable the button + update label so the user
