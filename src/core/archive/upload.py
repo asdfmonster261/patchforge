@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -277,10 +276,21 @@ def upload_archives(archive_paths: list[Path],
                 # close needed.  Just record the failure for the caller loop.
                 return file_path, None, str(e)
 
-        # max_concurrent is the per-project parallelism.  The default of 1
-        # keeps the live UI legible; bump it for fast outbound links.
-        with ThreadPoolExecutor(max_workers=max_concurrent) as ex:
-            results = list(ex.map(_upload_one, queue))
+        # max_concurrent is the per-project parallelism.  Use gevent's
+        # green Pool rather than concurrent.futures.ThreadPoolExecutor —
+        # `steam.monkey.patch_minimal()` only patches socket/ssl, leaving
+        # threading real; ex.map would block the main thread on
+        # threading.Event.wait, starving the live-display redraw greenlet
+        # for the entire upload.  Pool.imap_unordered keeps everything
+        # cooperative on the same hub, so socket writes inside
+        # _upload_file yield to the redraw greenlet between chunks and
+        # the per-file progress rows actually update.
+        if max_concurrent <= 1:
+            results = [_upload_one(item) for item in queue]
+        else:
+            from gevent.pool import Pool as _GreenPool
+            pool = _GreenPool(max_concurrent)
+            results = list(pool.imap_unordered(_upload_one, queue))
 
         urls: list[str] = []
         uploaded: list[Path] = []

@@ -228,6 +228,76 @@ def test_upload_archives_groups_by_stem(monkeypatch, tmp_path):
     assert kinds.count("paste_created") == 2
 
 
+def test_upload_archives_uses_gevent_pool_when_max_concurrent_gt_1(monkeypatch, tmp_path):
+    """max_concurrent > 1 must dispatch via gevent.pool.Pool, not
+    concurrent.futures.ThreadPoolExecutor — patch_minimal() leaves
+    threading unpatched, so a thread-pool-based upload would block the
+    main hub and starve the live-display redraw greenlet."""
+    from src.core.archive import upload as up
+
+    monkeypatch.setattr(up, "_login",              lambda u, p: "uid")
+    monkeypatch.setattr(up, "_get_hosts",          lambda u, p: ["h"])
+    monkeypatch.setattr(up, "_get_fastest_server", lambda: "https://srv")
+    monkeypatch.setattr(up, "_create_project",     lambda *a, **kw: "ph")
+    monkeypatch.setattr(up, "_upload_file",
+                        lambda *a, **kw: "https://multiup.io/download/x/y")
+
+    # Sentinel: assert thread executor is NOT touched on the parallel
+    # path.  If a future change reintroduces it the test fails loudly.
+    import concurrent.futures as cf
+    boom = mock.Mock(side_effect=AssertionError(
+        "ThreadPoolExecutor must not be used for upload concurrency"
+    ))
+    monkeypatch.setattr(cf, "ThreadPoolExecutor", boom)
+
+    pool_calls: list[int] = []
+    real_pool_cls = __import__("gevent.pool", fromlist=["Pool"]).Pool
+    class _SpyPool(real_pool_cls):
+        def __init__(self, size):
+            pool_calls.append(size)
+            super().__init__(size)
+    monkeypatch.setattr("gevent.pool.Pool", _SpyPool)
+
+    files = [tmp_path / f"Game.7z.{i:03d}" for i in (1, 2, 3)]
+    for f in files:
+        f.write_bytes(b"x")
+
+    result = up.upload_archives(
+        files, username="alice", password="pw", max_concurrent=3,
+        links_dir=None, bin_url=None,
+        on_event=None,
+    )
+    assert pool_calls == [3]
+    assert "Game" in result
+
+
+def test_upload_archives_inline_path_when_max_concurrent_le_1(monkeypatch, tmp_path):
+    """max_concurrent <= 1 calls _upload_one directly on the main
+    greenlet so socket writes inside requests.post yield to the live
+    display's redraw loop chunk-by-chunk."""
+    from src.core.archive import upload as up
+
+    monkeypatch.setattr(up, "_login",              lambda u, p: "uid")
+    monkeypatch.setattr(up, "_get_hosts",          lambda u, p: ["h"])
+    monkeypatch.setattr(up, "_get_fastest_server", lambda: "https://srv")
+    monkeypatch.setattr(up, "_create_project",     lambda *a, **kw: "ph")
+    monkeypatch.setattr(up, "_upload_file",
+                        lambda *a, **kw: "https://multiup.io/download/x/y")
+
+    boom_pool = mock.Mock(side_effect=AssertionError(
+        "gevent.pool.Pool must not be used when max_concurrent <= 1"
+    ))
+    monkeypatch.setattr("gevent.pool.Pool", boom_pool)
+
+    f = tmp_path / "Game.7z"
+    f.write_bytes(b"x")
+    result = up.upload_archives(
+        [f], username="alice", password="pw", max_concurrent=1,
+        links_dir=None, bin_url=None, on_event=None,
+    )
+    assert "Game" in result
+
+
 def test_upload_emits_started_progress_finished_per_archive(monkeypatch, tmp_path):
     """_upload_file must bracket every archive in started/finished events
     and forward MultipartEncoderMonitor progress through upload_progress."""
