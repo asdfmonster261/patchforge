@@ -181,6 +181,10 @@ class RunOptionsPage(ArchivePageBase):
         self.notify_mode = QComboBox()
         for _key, label in self.NOTIFY_MODES:
             self.notify_mode.addItem(label)
+        self.crack_mode = QComboBox()
+        self.crack_mode.addItem("(off)",      userData="")
+        self.crack_mode.addItem("coldclient", userData="coldclient")
+        self.crack_mode.addItem("gse",        userData="gse")
         self.experimental = QCheckBox("Experimental download path")
         self.unstub_keepbind   = QCheckBox("unstub: keep bind section")
         self.unstub_keepstub   = QCheckBox("unstub: keep DOS stub")
@@ -189,6 +193,7 @@ class RunOptionsPage(ArchivePageBase):
         self.unstub_realign    = QCheckBox("unstub: realign sections")
         self.unstub_recalc     = QCheckBox("unstub: recalc checksum")
         mf.addRow("Notify mode:",  self.notify_mode)
+        mf.addRow("Crack mode:",   self.crack_mode)
         mf.addRow(self.experimental)
         for cb in (self.unstub_keepbind, self.unstub_keepstub,
                    self.unstub_dumppayload, self.unstub_dumpdrmp,
@@ -202,7 +207,7 @@ class RunOptionsPage(ArchivePageBase):
         for w in (self.archive_password, self.volume_size, self.language,
                   self.output_dir, self.upload_description):
             w.editingFinished.connect(self._on_changed)
-        for w in (self.platform, self.notify_mode):
+        for w in (self.platform, self.notify_mode, self.crack_mode):
             w.currentIndexChanged.connect(self._on_changed)
         for w in (self.workers, self.compression, self.max_retries,
                   self.max_concurrent_uploads):
@@ -238,6 +243,10 @@ class RunOptionsPage(ArchivePageBase):
             self.notify_mode.setCurrentIndex(
                 keys.index(p.notify_mode) if p.notify_mode in keys else 0
             )
+            crack_keys = ["", "coldclient", "gse"]
+            self.crack_mode.setCurrentIndex(
+                crack_keys.index(p.crack_mode) if p.crack_mode in crack_keys else 0
+            )
             u = p.unstub
             self.unstub_keepbind.setChecked(u.keepbind)
             self.unstub_keepstub.setChecked(u.keepstub)
@@ -263,6 +272,7 @@ class RunOptionsPage(ArchivePageBase):
         p.delete_archives  = self.delete_archives.isChecked()
         p.experimental     = self.experimental.isChecked()
         p.notify_mode      = self.NOTIFY_MODES[self.notify_mode.currentIndex()][0]
+        p.crack_mode       = self.crack_mode.currentData() or ""
         u = p.unstub
         u.keepbind       = self.unstub_keepbind.isChecked()
         u.keepstub       = self.unstub_keepstub.isChecked()

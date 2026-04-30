@@ -184,6 +184,12 @@ class ArchivePanel(QWidget):
         for page in self._pages.values():
             page.refresh()
         self.path_label.setText(str(self._project_path or ""))
+        # Default the per-run crack picker from the project's stored
+        # crack_mode whenever a project is loaded / cleared.
+        crack_keys = {"": 0, "coldclient": 1, "gse": 2}
+        self.run_crack.setCurrentIndex(
+            crack_keys.get(self._project.crack_mode, 0)
+        )
 
     # ─── Project ops ────────────────────────────────────────────────
     def _confirm_discard(self) -> bool:
@@ -281,13 +287,21 @@ class ArchivePanel(QWidget):
         log_text = self.run_log_path.text().strip()
         log_path = Path(log_text) if log_text else None
 
+        # Persist the per-run crack pick into the project so the next
+        # load defaults to the same choice.  Mirrors the CLI's
+        # _persist_archive_run_options behaviour for --crack.
+        chosen_crack = self.run_crack.currentData() or ""
+        if chosen_crack != self._project.crack_mode:
+            self._project.crack_mode = chosen_crack
+            self.mark_dirty()
+
         self._worker = ArchiveWorker(
             project_obj=self._project,
             project_path=self._project_path,
             app_ids=app_ids,
             platform=self._project.default_platform or None,
             branch=self.run_branch.text().strip() or "public",
-            crack_mode=self.run_crack.currentData(),
+            crack_mode=chosen_crack or None,
             force_download=self.run_force.isChecked(),
             log_file=log_path,
         )

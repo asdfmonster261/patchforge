@@ -1472,6 +1472,9 @@ def _resolve_archive_run_options(args, project_obj) -> dict:
                                  "restart_delay", 0),
         "batch_size":       pick(getattr(args, "batch_size", None),
                                  "batch_size", 0),
+        # Resolved crack mode: CLI --crack > project.crack_mode > "".
+        "crack":            pick(getattr(args, "crack", None),
+                                 "crack_mode", "") or None,
     }
 
 
@@ -1524,6 +1527,11 @@ def _persist_archive_run_options(args, project_obj) -> bool:
     bs = getattr(args, "batch_size", None)
     if bs is not None and bs != P.batch_size:
         P.batch_size = bs; changed = True
+    # Phase 6.2: --crack persists as the project's sticky default so
+    # the next run picks the same unpacker without re-supplying it.
+    cm = getattr(args, "crack", None)
+    if cm is not None and cm != P.crack_mode:
+        P.crack_mode = cm; changed = True
     return changed
 
 
@@ -1746,19 +1754,22 @@ def _cmd_archive_download(args):
         except Exception as exc:
             _die(f"Failed to load archive project: {exc}", EXIT_INPUT)
 
+    # Resolve every per-run knob: CLI > project > built-in default.
+    # Includes crack mode (--crack > project.crack_mode > none), so we
+    # build the crack identity below using opts["crack"], not args.crack.
+    opts = _resolve_archive_run_options(args, project_obj)
+    effective_crack = opts.get("crack")
+
     # Crack identity falls out of the project when present, or a fresh
     # CrackIdentity that prompts will fill in.  Crack functions mutate it
     # in place; we save back to .xarchive after the run so users don't
     # get re-prompted on every invocation.
     crack_identity = None
-    if args.crack:
+    if effective_crack:
         crack_identity = (
             project_obj.crack if project_obj is not None
             else project_mod.CrackIdentity()
         )
-
-    # Resolve every per-run knob: CLI > project > built-in default.
-    opts = _resolve_archive_run_options(args, project_obj)
 
     # --platform: CLI flag > project.default_platform > "windows".  The
     # argparse default is None on purpose so we can tell "user didn't
@@ -1805,7 +1816,7 @@ def _cmd_archive_download(args):
             "realign":        opts["unstub"].realign,
             "recalcchecksum": opts["unstub"].recalcchecksum,
         }
-        if args.crack else None
+        if effective_crack else None
     )
     # ---- Phase 5 polling-mode validation ------------------------------
     restart_delay = int(opts.get("restart_delay") or 0)
@@ -1827,7 +1838,7 @@ def _cmd_archive_download(args):
             creds=creds, output_dir=output_dir,
             app_ids=app_ids, opts=opts,
             platform=effective_platform, notify_mode=notify_mode,
-            branch=args.branch, crack=args.crack,
+            branch=args.branch, crack=effective_crack,
             crack_identity=crack_identity,
             unstub_options=unstub_options,
             volume_size=volume_size, depot_names=depot_names,
@@ -1863,7 +1874,7 @@ def _cmd_archive_download(args):
     # flip them off.  Only writes when something actually changed.
     if project_obj is not None and project_path is not None:
         proj_dirty = _persist_archive_run_options(args, project_obj)
-        if args.crack and crack_identity is not None:
+        if effective_crack and crack_identity is not None:
             project_obj.crack = crack_identity
             proj_dirty = True
         # current_buildid was already mutated in the per-app loop —

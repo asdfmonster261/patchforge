@@ -193,6 +193,7 @@ def _full_args(**overrides):
         keepbind=False, keepstub=False,
         dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
         restart_delay=None, batch_size=None, force_download=False,
+        crack=None,
     )
     base.update(overrides)
     return mock.Mock(**base)

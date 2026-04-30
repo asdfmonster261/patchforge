@@ -139,6 +139,12 @@ class ArchiveProject:
     experimental: bool          = False                 # --experimental
     unstub:       UnstubOptions = field(default_factory=UnstubOptions)
 
+    # Crack mode default for runs against this project.  "" = no crack;
+    # "coldclient" / "gse" pick the unpacker.  CLI's --crack flag and
+    # the GUI's per-run combo override this on a per-run basis but
+    # also persist back here when supplied (sticky default).
+    crack_mode:   str           = ""
+
     # Polling loop (Phase 5):
     #   restart_delay > 0 enables poll-on-change mode — the CLI loops
     #   forever, fetching product-info every restart_delay seconds and

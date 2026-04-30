@@ -740,6 +740,7 @@ def test_resolve_archive_run_options_priority():
         keepbind=False, keepstub=True,
         dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
         restart_delay=None, batch_size=None, force_download=False,
+        crack=None,
     )
     opts = _resolve_archive_run_options(args, proj)
     assert opts["workers"]      == 32     # CLI wins
@@ -763,6 +764,7 @@ def test_resolve_archive_run_options_no_project():
         keepbind=False, keepstub=False,
         dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
         restart_delay=None, batch_size=None, force_download=False,
+        crack=None,
     )
     opts = _resolve_archive_run_options(args, None)
     assert opts["workers"]                == 8
@@ -791,6 +793,7 @@ def test_persist_archive_run_options_writes_cli_values():
         keepbind=False, keepstub=True,
         dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
         restart_delay=None, batch_size=None, force_download=False,
+        crack=None,
     )
     changed = _persist_archive_run_options(args, proj)
     assert changed is True
@@ -814,6 +817,7 @@ def test_persist_archive_run_options_returns_false_when_nothing_changed():
         keepbind=False, keepstub=False,
         dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
         restart_delay=None, batch_size=None, force_download=False,
+        crack=None,
     )
     assert _persist_archive_run_options(args, proj) is False
 

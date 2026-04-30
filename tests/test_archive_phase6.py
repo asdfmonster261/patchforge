@@ -569,6 +569,71 @@ def test_archive_run_view_handles_app_info_progress(qapp):
     assert v.appinfo_bar.value() == 3
 
 
+def test_archive_project_persists_crack_mode_field(tmp_path):
+    """ArchiveProject grows a `crack_mode` field that survives round-trip."""
+    proj = project_mod.new_project(name="t")
+    proj.crack_mode = "coldclient"
+    target = tmp_path / "p.xarchive"
+    project_mod.save(proj, target)
+    loaded = project_mod.load(target)
+    assert loaded.crack_mode == "coldclient"
+
+
+def test_resolve_archive_run_options_picks_project_crack_mode():
+    """When the CLI doesn't pass --crack, opts["crack"] falls back to
+    the project's stored crack_mode."""
+    from src.cli.main         import _resolve_archive_run_options
+    from src.core.archive     import project as pm
+    proj = pm.new_project(name="t")
+    proj.crack_mode = "gse"
+
+    from unittest.mock import Mock
+    args = Mock(
+        workers=None, compression=None, language=None, max_retries=None,
+        archive_password=None, volume_size=None,
+        description=None, max_concurrent_uploads=None,
+        delete_archives=False, experimental=False,
+        keepbind=False, keepstub=False,
+        dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
+        restart_delay=None, batch_size=None, force_download=False,
+        crack=None,
+    )
+    opts = _resolve_archive_run_options(args, proj)
+    assert opts["crack"] == "gse"
+
+    args.crack = "coldclient"
+    opts2 = _resolve_archive_run_options(args, proj)
+    assert opts2["crack"] == "coldclient"   # CLI overrides
+
+
+def test_persist_archive_run_options_writes_crack_mode():
+    from src.cli.main         import _persist_archive_run_options
+    from src.core.archive     import project as pm
+    from unittest.mock import Mock
+    proj = pm.new_project(name="t")
+    args = Mock(
+        workers=None, compression=None, language=None, max_retries=None,
+        archive_password=None, volume_size=None,
+        description=None, max_concurrent_uploads=None,
+        delete_archives=False, experimental=False,
+        keepbind=False, keepstub=False,
+        dumppayload=False, dumpdrmp=False, realign=False, recalcchecksum=False,
+        restart_delay=None, batch_size=None, force_download=False,
+        crack="coldclient",
+    )
+    assert _persist_archive_run_options(args, proj) is True
+    assert proj.crack_mode == "coldclient"
+
+
+def test_archive_panel_run_crack_defaults_from_project(qapp):
+    from src.gui.archive_panel import ArchivePanel
+    p = ArchivePanel()
+    p.project().crack_mode = "gse"
+    p._refresh_pages()
+    # Run-row picker should now have gse selected (index 2).
+    assert p.run_crack.currentData() == "gse"
+
+
 def test_archive_panel_per_run_options_construct(qapp):
     """Smoke-test that the per-run controls (branch / crack / force /
     log) all exist on the panel after construction."""
