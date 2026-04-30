@@ -1008,9 +1008,10 @@ def _add_archive(sub):
     p_dl.add_argument("--output-dir", metavar="DIR",
                       help="Where the resulting .7z archives are written. "
                            "Falls back to project.output_dir then to current dir.")
-    p_dl.add_argument("--platform", default="windows",
+    p_dl.add_argument("--platform", default=None,
                       choices=["windows", "linux", "macos", "all"],
-                      help="Platform filter (default: windows)")
+                      help="Platform filter "
+                           "(default: project.default_platform, or windows)")
     p_dl.add_argument("--workers", type=int, default=None, metavar="N",
                       help="Parallel CDN connections per depot "
                            "(default: project value, or 8)")
@@ -1679,7 +1680,9 @@ def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
                                 description: str | None = None,
                                 max_concurrent: int = 1,
                                 delete_archives: bool = False,
-                                force_download: bool = False) -> None:
+                                force_download: bool = False,
+                                manifests: dict | None = None,
+                                bbcode_template: str = "") -> None:
     """Upload archives and (when notify_mode in {'delay','both'}) fire the
     post-upload notification with platform links.
 
@@ -1713,12 +1716,53 @@ def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
         except Exception as exc:
             _warn(f"Upload failed for app {app_meta.get('appid')}: {exc}")
 
-    # Build platform -> url map for notify + any future bbcode rendering.
+    # Build platform -> url map for notify + bbcode rendering.
     platform_links: dict[str, str] = {}
     for stem, url in stem_to_url.items():
         plat = _platform_from_archive_stem(stem)
         if plat:
             platform_links[plat] = url
+
+    # ---- bbcode post --------------------------------------------------
+    # Renders the project's stored bbcode_template into a single
+    # <safe_name>.<buildid>.post.txt next to the archives, replacing the
+    # per-stem .txt link files upload_archives writes (paste URLs are
+    # already inlined into the post via {ALL_LINKS}).  Only fires when
+    # we actually have upload links — without them the placeholders
+    # would render an incomplete post.
+    if stem_to_url and bbcode_template and bbcode_template.strip():
+        try:
+            from src.core.archive import bbcode as bbcode_mod
+            from src.core.archive.notify import _steam_image_url
+            data = bbcode_mod.build_data(
+                name=str(app_meta.get("name", "")),
+                appid=app_meta.get("appid", ""),
+                buildid=str(app_meta.get("buildid", "")),
+                previous_buildid=previous_buildid or "",
+                timeupdated=app_meta.get("timeupdated", 0),
+                upload_links=platform_links or None,
+                manifests=manifests or {},
+                header_image=_steam_image_url(app_meta.get("appid", "")),
+            )
+            rendered = bbcode_mod.render(bbcode_template, data)
+            sname = bbcode_mod.safe_name(
+                str(app_meta.get("name", "")) or str(app_meta.get("appid", ""))
+            )
+            buildid = str(app_meta.get("buildid", "")) or "build"
+            out_path = Path(output_dir) / f"{sname}.{buildid}.post.txt"
+            out_path.write_text(rendered, encoding="utf-8")
+            print(f"BBCode post: {out_path.name}")
+            # Drop the per-stem .txt link sidecars now that the post
+            # carries the same URLs in template-friendly form.
+            for stem in stem_to_url:
+                sidecar = Path(output_dir) / f"{stem}.txt"
+                if sidecar.exists():
+                    try:
+                        sidecar.unlink()
+                    except OSError as exc:
+                        _warn(f"Could not remove {sidecar.name}: {exc}")
+        except Exception as exc:
+            _warn(f"BBCode render failed for app {app_meta.get('appid')}: {exc}")
 
     # ---- post-upload notify -------------------------------------------
     if notify_mode not in ("delay", "both"):
@@ -1802,6 +1846,15 @@ def _cmd_archive_download(args):
     # Resolve every per-run knob: CLI > project > built-in default.
     opts = _resolve_archive_run_options(args, project_obj)
 
+    # --platform: CLI flag > project.default_platform > "windows".  The
+    # argparse default is None on purpose so we can tell "user didn't
+    # supply" from "user supplied 'windows'".
+    effective_platform = (
+        args.platform
+        or (project_obj.default_platform if project_obj is not None else None)
+        or "windows"
+    )
+
     try:
         volume_size = parse_size(opts["volume_size"]) if opts["volume_size"] else None
     except ValueError:
@@ -1884,7 +1937,7 @@ def _cmd_archive_download(args):
         try:
             archives, platform_manifests, app_meta = download_app(
                 client, cdn, app_id, output_dir,
-                platform=args.platform, workers=opts["workers"],
+                platform=effective_platform, workers=opts["workers"],
                 password=opts["archive_password"],
                 compression_level=opts["compression"],
                 volume_size=volume_size,
@@ -1917,10 +1970,21 @@ def _cmd_archive_download(args):
             max_concurrent=opts["max_concurrent_uploads"],
             delete_archives=opts["delete_archives"],
             force_download=opts["force_download"],
+            manifests=platform_manifests,
+            bbcode_template=(project_obj.bbcode_template
+                             if project_obj is not None else ""),
         )
         entry_local = apps_by_id.get(app_id)
         if entry_local is not None and app_meta.get("buildid"):
-            entry_local.current_buildid = str(app_meta["buildid"])
+            new_bid = str(app_meta["buildid"])
+            old_bid = entry_local.current_buildid
+            # Shift the persisted history one slot when the buildid
+            # actually moves; a re-download of the same buildid (e.g.
+            # --force-download against an unchanged Steam state) leaves
+            # previous_buildid alone so we don't lose the real history.
+            if old_bid and old_bid != new_bid:
+                entry_local.previous_buildid = old_bid
+            entry_local.current_buildid = new_bid
 
     def _save_project_now() -> None:
         """Persist project state mid-run (poll mode flushes after each

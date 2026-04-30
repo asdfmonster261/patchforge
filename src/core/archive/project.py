@@ -42,6 +42,10 @@ class AppEntry:
     # Last seen build for poll-on-change.  Embedded here rather than in a
     # sidecar buildids.json file (D3 decision, 2026-04-28).
     current_buildid:  str  = ""
+    # Build ID before the latest change.  Set by the CLI when current_-
+    # buildid moves, so BBCode posts and notifications can reference the
+    # actual previous version even after multiple polling cycles.
+    previous_buildid: str  = ""
 
 
 @dataclass
