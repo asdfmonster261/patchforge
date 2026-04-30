@@ -1655,6 +1655,50 @@ def _send_notifications(notify_data: dict,
             _warn(f"Telegram notify failed: {exc}")
 
 
+def _poll_countdown(seconds: int) -> bool:
+    """Sleep `seconds` while updating a single-line countdown on a TTY,
+    or print a one-shot "sleeping Ns" line on non-TTY (so log files
+    don't fill with `\\r` spam).
+
+    Returns True when the wait completed normally, False on
+    KeyboardInterrupt — caller treats False as "user wants out".
+    """
+    import sys as _sys
+    import time as _time
+    if seconds <= 0:
+        return True
+    is_tty = hasattr(_sys.stdout, "isatty") and _sys.stdout.isatty()
+    if not is_tty:
+        print(f"sleeping {seconds}s until next poll cycle "
+              f"(Ctrl-C to stop)")
+        try:
+            _time.sleep(seconds)
+        except KeyboardInterrupt:
+            print()
+            print("polling interrupted, exiting")
+            return False
+        return True
+    try:
+        for remaining in range(seconds, 0, -1):
+            mins, secs = divmod(remaining, 60)
+            disp = f"{mins}:{secs:02d}" if mins else f"{secs}s"
+            _sys.stdout.write(
+                f"\rnext poll cycle in {disp:<8} (Ctrl-C to stop)"
+            )
+            _sys.stdout.flush()
+            _time.sleep(1)
+        # Erase the countdown line so the next cycle's "=== poll cycle N ==="
+        # isn't appended to a stale "next poll cycle in 1s ..." remnant.
+        _sys.stdout.write("\r\033[2K")
+        _sys.stdout.flush()
+        return True
+    except KeyboardInterrupt:
+        _sys.stdout.write("\r\033[2K")
+        _sys.stdout.flush()
+        print("polling interrupted, exiting")
+        return False
+
+
 def _archive_run_pre_pipeline(app_meta: dict, previous_buildid: str,
                               creds, notify_mode: str,
                               *, notify_mod,
@@ -1998,7 +2042,6 @@ def _cmd_archive_download(args):
 
     try:
         if poll_mode:
-            import time as _time
             from src.core.archive import poll as poll_mod
             force = bool(opts["force_download"])
             iteration = 0
@@ -2021,13 +2064,7 @@ def _cmd_archive_download(args):
                     _run_one_app(app_id, prev, app_info_hint=info)
                 _save_project_now()
                 force = False
-                print(f"sleeping {restart_delay}s until next poll cycle "
-                      f"(Ctrl-C to stop)")
-                try:
-                    _time.sleep(restart_delay)
-                except KeyboardInterrupt:
-                    print()
-                    print("polling interrupted, exiting")
+                if not _poll_countdown(restart_delay):
                     break
         else:
             for app_id in app_ids:

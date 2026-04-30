@@ -538,6 +538,54 @@ def test_post_pipeline_skips_bbcode_when_no_template():
     )
 
 
+def test_poll_countdown_tty_decrements_per_second(monkeypatch, capsys):
+    """On a TTY the helper writes a one-line \\r-overwritten countdown
+    that ticks down once per second."""
+    from src.cli import main as cli_main
+    import sys
+
+    # Force the TTY branch.
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda n: sleeps.append(n))
+
+    assert cli_main._poll_countdown(3) is True
+    assert sleeps == [1, 1, 1]                         # 3 ticks
+    out = capsys.readouterr().out
+    # Each remaining value rendered as its own \r-prefixed frame.
+    assert "next poll cycle in 3s" in out
+    assert "next poll cycle in 2s" in out
+    assert "next poll cycle in 1s" in out
+
+
+def test_poll_countdown_non_tty_single_print(monkeypatch, capsys):
+    """Non-TTY path must NOT write per-second \\r frames — log files
+    would fill with carriage-return spam.  One-shot 'sleeping Xs' line
+    + a single time.sleep(X) call instead."""
+    from src.cli import main as cli_main
+    import sys
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
+    sleeps: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda n: sleeps.append(n))
+
+    cli_main._poll_countdown(7)
+    assert sleeps == [7]
+    assert "sleeping 7s" in capsys.readouterr().out
+
+
+def test_poll_countdown_returns_false_on_keyboard_interrupt(monkeypatch):
+    from src.cli import main as cli_main
+    import sys
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    def boom(_):
+        raise KeyboardInterrupt
+    monkeypatch.setattr("time.sleep", boom)
+    assert cli_main._poll_countdown(5) is False
+
+
 def test_polling_driver_loops_then_exits_on_keyboard_interrupt(tmp_path, monkeypatch):
     """One full cycle:
       iteration 1: detect_changes returns one app -> download fires
