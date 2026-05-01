@@ -108,8 +108,8 @@ def test_runner_single_pass_collects_archives(tmp_path):
 
     assert result.archives == fake_archives
     # current_buildid should have shifted: previous becomes 100, current 200
-    assert proj.apps[0].current_buildid  == "200"
-    assert proj.apps[0].previous_buildid == "100"
+    assert proj.apps[0].current_buildid.buildid  == "200"
+    assert proj.apps[0].previous_buildid.buildid == "100"
 
 
 def test_runner_single_pass_continues_after_app_failure(tmp_path):
@@ -195,8 +195,8 @@ def test_runner_poll_mode_only_runs_changed_apps(tmp_path):
 
     # download_app called exactly once (cycle 1 had a change, cycle 2 didn't)
     assert download_app.call_count == 1
-    assert proj.apps[0].current_buildid  == "200"
-    assert proj.apps[0].previous_buildid == "100"
+    assert proj.apps[0].current_buildid.buildid  == "200"
+    assert proj.apps[0].previous_buildid.buildid == "100"
     assert len(result.archives) == 1
 
 

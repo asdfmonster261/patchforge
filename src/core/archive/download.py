@@ -486,6 +486,199 @@ def _move_archives(archives: list[Path], dest_dir: Path,
               stage_msg=f"Moved {archive.name} → {dest_dir}")
 
 
+# ---------------------------------------------------------------------------
+# Single-manifest download (DepotDownloader-style historical pulls)
+# ---------------------------------------------------------------------------
+
+def download_manifest(client, cdn, app_id: int, depot_id: int,
+                      manifest_gid: int, output_dir: Path,
+                      branch: str = "public",
+                      branch_password: str | None = None,
+                      workers: int = 8, max_retries: int = 1,
+                      on_event: EventCallback | None = None,
+                      ) -> Path:
+    """Download one (app, depot, manifest) triple into output_dir.
+
+    Equivalent of `depotdownloader -app X -depot Y -manifest Z` — bypasses
+    PICS branch lookup so historical / non-current manifest GIDs work.
+    Files land in output_dir/<app_id>_<depot_id>_<manifest_gid>/ in the
+    same relative layout the manifest describes.  The serialised manifest
+    is written to output_dir/depotcache/<depot_id>_<manifest_gid>.manifest
+    for Steam compatibility.
+
+    Returns the depot dest directory.
+
+    Raises SessionDead on repeated CM timeouts.  Raises ValueError if the
+    branch password check fails.
+    """
+    GreenPool, GeventTimeout, _, _, EResult, ManifestError = _import_steam()
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    depotcache = output_dir / "depotcache"
+    depotcache.mkdir(parents=True, exist_ok=True)
+    dest_dir = output_dir / f"{app_id}_{depot_id}_{manifest_gid}"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # Branch-password unlock: feed plaintext through check_beta_password,
+    # then pull the resulting hash bytes out of cdn.beta_passwords so we
+    # can pass branch_password_hash to get_manifest_request_code.
+    pw_hash: str | None = None
+    if branch_password and branch.lower() != "public":
+        result = cdn.check_beta_password(app_id, branch_password)
+        if result != EResult.OK:
+            raise ValueError(f"Branch password check failed: {result!r}")
+        pw_bytes = cdn.beta_passwords.get((app_id, branch.lower()))
+        if pw_bytes:
+            pw_hash = pw_bytes.hex()
+
+    _emit(on_event, kind="stage",
+          stage_msg=f"Fetching manifest {manifest_gid} for depot {depot_id}")
+
+    request_code = 0
+    for attempt in range(max_retries + 1):
+        try:
+            request_code = cdn.get_manifest_request_code(
+                app_id, depot_id, int(manifest_gid),
+                branch=branch, branch_password_hash=pw_hash,
+            )
+            break
+        except (GeventTimeout, ManifestError) as e:
+            is_timeout = isinstance(e, GeventTimeout) or (
+                isinstance(e, ManifestError)
+                and getattr(e, "eresult", None) == EResult.Timeout
+            )
+            if attempt < max_retries:
+                _emit(on_event, kind="error",
+                      error_msg=f"Request-code fetch failed: {e}, retrying "
+                                f"({attempt + 1}/{max_retries})")
+            elif is_timeout:
+                raise SessionDead(
+                    f"Timed out fetching manifest request code for "
+                    f"{app_id}/{depot_id}/{manifest_gid}."
+                )
+            else:
+                raise
+
+    manifest = None
+    for attempt in range(max_retries + 1):
+        try:
+            manifest = cdn.get_manifest(
+                app_id, depot_id, int(manifest_gid),
+                manifest_request_code=request_code,
+            )
+            break
+        except (GeventTimeout, ManifestError) as e:
+            is_timeout = isinstance(e, GeventTimeout) or (
+                isinstance(e, ManifestError)
+                and getattr(e, "eresult", None) == EResult.Timeout
+            )
+            if attempt < max_retries:
+                _emit(on_event, kind="error",
+                      error_msg=f"Manifest fetch failed: {e}, retrying "
+                                f"({attempt + 1}/{max_retries})")
+            elif is_timeout:
+                raise SessionDead(
+                    f"Timed out fetching manifest "
+                    f"{app_id}/{depot_id}/{manifest_gid}."
+                )
+            else:
+                raise
+
+    if manifest is None:
+        raise SessionDead(
+            f"Failed to retrieve manifest {app_id}/{depot_id}/{manifest_gid}."
+        )
+
+    # Persist serialised manifest to depotcache/.
+    mpath = depotcache / f"{depot_id}_{manifest_gid}.manifest"
+    if not mpath.exists():
+        manifest.metadata.crc_clear = (
+            adler32(manifest.payload.SerializeToString()) & 0xFFFFFFFF
+        )
+        manifest.signature.Clear()
+        mpath.write_bytes(manifest.serialize(compress=False))
+
+    # Per-file download — same pattern as _download_platform, scoped to
+    # this single manifest.
+    def _do_download(depot_file) -> tuple[int, int]:
+        fpath = dest_dir / depot_file.filename
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        if fpath.exists() and fpath.stat().st_size == depot_file.size:
+            _emit(on_event, kind="file_skipped",
+                  name=depot_file.filename, total=depot_file.size,
+                  done=depot_file.size)
+            return 0, depot_file.size
+        started = time.monotonic()
+        _emit(on_event, kind="file_started",
+              name=depot_file.filename, total=depot_file.size)
+        chunk_size = 1024 * 1024
+        done = 0
+        with open(fpath, "wb") as fh:
+            while True:
+                data = depot_file.read(chunk_size)
+                if not data:
+                    break
+                fh.write(data)
+                done += len(data)
+                _emit(on_event, kind="file_progress",
+                      name=depot_file.filename,
+                      total=depot_file.size, done=done)
+        if depot_file.is_executable:
+            fpath.chmod(fpath.stat().st_mode | 0o111)
+        _emit(on_event, kind="file_finished",
+              name=depot_file.filename,
+              total=depot_file.size, done=done,
+              elapsed=time.monotonic() - started)
+        return done, 0
+
+    files_to_download = []
+    for depot_file in manifest:
+        fpath = dest_dir / depot_file.filename
+        if depot_file.is_directory:
+            fpath.mkdir(parents=True, exist_ok=True)
+        elif depot_file.is_symlink:
+            target = Path(depot_file.linktarget)
+            if fpath.exists() or fpath.is_symlink():
+                fpath.unlink()
+            try:
+                fpath.symlink_to(target)
+            except OSError as e:
+                _emit(on_event, kind="error",
+                      name=depot_file.filename,
+                      error_msg=f"Symlink failed: {e}")
+        else:
+            files_to_download.append(depot_file)
+
+    def _try(df):
+        try:
+            dl, sk = _do_download(df)
+            return ("ok", dl, sk)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            _emit(on_event, kind="error",
+                  name=df.filename, error_msg=str(exc))
+            return ("err", df.filename, exc)
+
+    downloaded = 0
+    skipped    = 0
+    pool = GreenPool(size=workers)
+    try:
+        for result in pool.imap_unordered(_try, files_to_download):
+            if result[0] == "ok":
+                downloaded += result[1]
+                skipped    += result[2]
+    except KeyboardInterrupt:
+        pool.kill()
+        raise
+
+    _emit(on_event, kind="stage",
+          stage_msg=f"Done ({downloaded} bytes downloaded, {skipped} skipped)")
+
+    return dest_dir
+
+
 def download_app(client, cdn, app_id: int, output_dir: Path,
                  platform: str, workers: int = 8,
                  password: str | None = None, compression_level: int = 0,

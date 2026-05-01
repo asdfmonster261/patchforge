@@ -80,7 +80,9 @@ def detect_changes(client,
         if not current or current == "Unknown":
             continue
         entry = apps_by_id.get(app_id)
-        previous = str(getattr(entry, "current_buildid", "") or "") if entry else ""
+        previous = (
+            str(entry.current_buildid.buildid or "") if entry is not None else ""
+        )
 
         # Backfill the display name on every cycle when the entry's name
         # is blank — cheap, idempotent, and gets new apps a real label
@@ -89,10 +91,16 @@ def detect_changes(client,
             entry.name = str(info["name"])
 
         if not previous:
-            # First-time observation: seed the buildid silently.  Caller
-            # persists the project after detect_changes returns.
+            # First-time observation: seed buildid + timeupdated silently.
+            # Caller persists the project after detect_changes returns.
             if entry is not None:
-                entry.current_buildid = current
+                entry.current_buildid.buildid = current
+                try:
+                    ts = int(info.get("timeupdated") or 0)
+                except (TypeError, ValueError):
+                    ts = 0
+                if ts:
+                    entry.current_buildid.timeupdated = ts
             continue
 
         if force_download or current != previous:

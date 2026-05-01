@@ -27,3 +27,10 @@ engines/_build/
 ISXPM/
 
 mockups/
+
+# archive depot / download outputs
+depotcache/
+[0-9]*_[0-9]*_[0-9]*/
+*.7z
+*.xarchive
+*.post.txt

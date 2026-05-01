@@ -173,7 +173,7 @@ def test_project_roundtrip(tmp_path):
     assert loaded.name == "test"
     assert len(loaded.apps) == 2
     assert loaded.apps[0].app_id == 730
-    assert loaded.apps[0].current_buildid == "12345"
+    assert loaded.apps[0].current_buildid.buildid == "12345"
     assert loaded.apps[1].branch == "beta"
     assert loaded.crack.steam_id == 76561198000000000
     assert loaded.crack.username == "alice"

@@ -31,6 +31,43 @@ _CURRENT_SCHEMA = 1
 
 
 @dataclass
+class BuildIdRecord:
+    """Nested per-build record on AppEntry.{current,previous}_buildid.
+
+    Holds the Steam buildid string plus the PICS branches.<branch>.timeupdated
+    timestamp (Unix seconds) for that buildid.  An empty record means
+    "never observed" — buildid="" + timeupdated=0.
+
+    Stored nested in JSON so the timestamp lives next to the buildid it
+    describes.  _load_app_entry accepts legacy string form
+    ("current_buildid": "200") and lifts it into BuildIdRecord(buildid="200")
+    for forward compat with .xarchive files predating this field.
+    """
+    buildid:     str = ""
+    timeupdated: int = 0
+
+
+@dataclass
+class ManifestRecord:
+    """One historical (depot, manifest) pair captured after a successful
+    download.  Lets future runs replay an old build via `archive depot
+    --app/--depot/--manifest` even after Steam advances the live buildid.
+
+    Recorded per-platform: when --platform all triggers Windows + Linux,
+    each platform produces its own row, never the literal 'all'.  The
+    same depot under two platforms (shared content depot) appears twice
+    with the same depot_id/manifest_gid but different platform.
+    """
+    buildid:      str = ""
+    branch:       str = "public"
+    platform:     str = ""             # actual platform name, never "all"
+    depot_id:     int = 0
+    depot_name:   str = ""
+    manifest_gid: str = ""
+    timeupdated:  int = 0              # PICS branches.<branch>.timeupdated; 0 = unknown
+
+
+@dataclass
 class AppEntry:
     """One Steam app being tracked.  Per-app overrides go here; missing fields
     fall back to project-level defaults."""
@@ -44,13 +81,31 @@ class AppEntry:
     branch_password:  str  = ""            # for password-protected branches
     platform:         str  = ""            # "" = use project default
 
-    # Last seen build for poll-on-change.  Embedded here rather than in a
-    # sidecar buildids.json file (D3 decision, 2026-04-28).
-    current_buildid:  str  = ""
-    # Build ID before the latest change.  Set by the CLI when current_-
-    # buildid moves, so BBCode posts and notifications can reference the
-    # actual previous version even after multiple polling cycles.
-    previous_buildid: str  = ""
+    # Last seen build for poll-on-change, plus the PICS timeupdated for
+    # that build.  Nested record so the timestamp lives next to its
+    # buildid.  Embedded here rather than in a sidecar buildids.json
+    # file (D3 decision, 2026-04-28).
+    current_buildid:  BuildIdRecord = field(default_factory=BuildIdRecord)
+    # The build before the latest change.  Set by runner.run_one_app
+    # when current_buildid moves so BBCode posts and notifications can
+    # reference the actual previous version.
+    previous_buildid: BuildIdRecord = field(default_factory=BuildIdRecord)
+
+    # Append-only history of (buildid, branch, platform, depot, manifest_gid)
+    # tuples seen across all runs.  Lets users feed an old build back into
+    # `archive depot` later.  Dedup key = full tuple — same buildid under
+    # two platforms intentionally produces two rows.
+    manifest_history: list[ManifestRecord] = field(default_factory=list)
+
+    def __post_init__(self):
+        # Allow ergonomic construction with bare strings:
+        # `AppEntry(current_buildid="200")` still works and lifts to
+        # BuildIdRecord(buildid="200").  Keeps callers (tests, GUI
+        # row-readers) from having to wrap every assignment.
+        if isinstance(self.current_buildid, str):
+            self.current_buildid = BuildIdRecord(buildid=self.current_buildid)
+        if isinstance(self.previous_buildid, str):
+            self.previous_buildid = BuildIdRecord(buildid=self.previous_buildid)
 
 
 @dataclass
@@ -198,7 +253,50 @@ def _load_app_entry(d: dict) -> AppEntry:
     if not isinstance(d, dict):
         return AppEntry()
     known = set(AppEntry.__dataclass_fields__)
-    return AppEntry(**{k: v for k, v in d.items() if k in known})
+    history_raw = d.get("manifest_history", []) or []
+    nested_keys = {"current_buildid", "previous_buildid", "manifest_history"}
+    filtered = {
+        k: v for k, v in d.items()
+        if k in known and k not in nested_keys
+    }
+
+    # Backward compat: pre-nesting .xarchive files stored the matching
+    # timestamps as flat top-level fields.  Lift them into the new nested
+    # records when loading legacy projects.
+    legacy_curr_ts = int(d.get("current_buildid_timeupdated") or 0)
+    legacy_prev_ts = int(d.get("previous_buildid_timeupdated") or 0)
+
+    entry = AppEntry(**filtered)
+    entry.current_buildid  = _load_buildid_record(
+        d.get("current_buildid"),  legacy_ts=legacy_curr_ts,
+    )
+    entry.previous_buildid = _load_buildid_record(
+        d.get("previous_buildid"), legacy_ts=legacy_prev_ts,
+    )
+    entry.manifest_history = [_load_manifest_record(r) for r in history_raw]
+    return entry
+
+
+def _load_buildid_record(d, *, legacy_ts: int = 0) -> BuildIdRecord:
+    """Accept either the new nested dict, the legacy bare string, or
+    None.  legacy_ts gets folded in only when d came in as a string."""
+    if d is None or d == "":
+        return BuildIdRecord(timeupdated=legacy_ts) if legacy_ts else BuildIdRecord()
+    if isinstance(d, str):
+        return BuildIdRecord(buildid=d, timeupdated=legacy_ts)
+    if isinstance(d, dict):
+        return BuildIdRecord(
+            buildid     = str(d.get("buildid", "") or ""),
+            timeupdated = int(d.get("timeupdated", 0) or 0),
+        )
+    return BuildIdRecord()
+
+
+def _load_manifest_record(d: dict) -> ManifestRecord:
+    if not isinstance(d, dict):
+        return ManifestRecord()
+    known = set(ManifestRecord.__dataclass_fields__)
+    return ManifestRecord(**{k: v for k, v in d.items() if k in known})
 
 
 def _load_crack_identity(d: dict) -> CrackIdentity:

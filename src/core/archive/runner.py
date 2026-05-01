@@ -317,19 +317,63 @@ def run_one_app(app_id: int, previous_buildid: str, *,
         entry_local = apps_by_id.get(app_id)
         if entry_local is not None and app_meta.get("buildid"):
             new_bid = str(app_meta["buildid"])
-            old_bid = entry_local.current_buildid
+            old_bid = entry_local.current_buildid.buildid
+            new_ts  = int(app_meta.get("timeupdated", 0) or 0)
+            old_ts  = int(entry_local.current_buildid.timeupdated or 0)
             # Shift the persisted history one slot when the buildid
             # actually moves; a re-download of the same buildid (e.g.
             # --force-download against an unchanged Steam state) leaves
             # previous_buildid alone so we don't lose the real history.
             if old_bid and old_bid != new_bid:
-                entry_local.previous_buildid = old_bid
-            entry_local.current_buildid = new_bid
+                entry_local.previous_buildid = project_mod.BuildIdRecord(
+                    buildid=old_bid, timeupdated=old_ts,
+                )
+            entry_local.current_buildid.buildid = new_bid
+            if new_ts:
+                entry_local.current_buildid.timeupdated = new_ts
         # Refresh the cached display name whenever we have one — keeps
         # the .xarchive showing the latest Steam name even after a
         # rename, with negligible cost.
         if entry_local is not None and app_meta.get("name"):
             entry_local.name = str(app_meta["name"])
+
+        # Append-only manifest history.  Dedup on the full
+        # (buildid, branch, platform, depot_id, manifest_gid) tuple so
+        # repeated --force-download runs against the same buildid don't
+        # bloat the list, while a shared content depot under two
+        # platforms intentionally produces two distinct rows.
+        if (entry_local is not None
+                and platform_manifests
+                and app_meta.get("buildid")):
+            bid = str(app_meta["buildid"])
+            timeupdated = int(app_meta.get("timeupdated", 0) or 0)
+            existing = {
+                (r.buildid, r.branch, r.platform,
+                 int(r.depot_id), str(r.manifest_gid))
+                for r in entry_local.manifest_history
+            }
+            for plat_name, plat_records in platform_manifests.items():
+                # Defensive: download_app keys this dict by actual
+                # platform name even under --platform all, but skip the
+                # literal "all" if a future caller ever lands it here.
+                if plat_name == "all":
+                    continue
+                for depot_id, depot_name, gid in plat_records:
+                    key = (bid, branch, plat_name,
+                           int(depot_id), str(gid))
+                    if key in existing:
+                        continue
+                    entry_local.manifest_history.append(
+                        project_mod.ManifestRecord(
+                            buildid=bid, branch=branch,
+                            platform=plat_name,
+                            depot_id=int(depot_id),
+                            depot_name=depot_name or "",
+                            manifest_gid=str(gid),
+                            timeupdated=timeupdated,
+                        )
+                    )
+                    existing.add(key)
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +495,7 @@ def run_session(*,
                     total=total,
                 ))
             entry = apps_by_id.get(app_id)
-            previous_buildid = entry.current_buildid if entry else ""
+            previous_buildid = entry.current_buildid.buildid if entry else ""
             run_one_app(
                 app_id, previous_buildid,
                 client=client, cdn=cdn, output_dir=output_dir,

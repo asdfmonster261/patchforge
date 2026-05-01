@@ -87,8 +87,8 @@ class AppsPage(ArchivePageBase):
             entry.branch or "public",
             entry.branch_password,
             entry.platform,
-            entry.current_buildid,
-            entry.previous_buildid,
+            entry.current_buildid.buildid,
+            entry.previous_buildid.buildid,
         ]
         for col, val in enumerate(values):
             item = QTableWidgetItem(val)
@@ -108,8 +108,8 @@ class AppsPage(ArchivePageBase):
             branch           = _t(2) or "public",
             branch_password  = _t(3),
             platform         = _t(4),
-            current_buildid  = _t(5),
-            previous_buildid = _t(6),
+            current_buildid  = project_mod.BuildIdRecord(buildid=_t(5)),
+            previous_buildid = project_mod.BuildIdRecord(buildid=_t(6)),
         )
 
     # ---------------------------------------------------------- buttons
@@ -151,7 +151,26 @@ class AppsPage(ArchivePageBase):
 
     def flush(self):
         p = self._panel.project()
-        p.apps = [self._read_row(r) for r in range(self.table.rowCount())]
+        # Preserve fields not surfaced in the table (manifest_history,
+        # timeupdated nested in BuildIdRecord) by merging row values into
+        # the existing AppEntry keyed on app_id.  Without this, editing
+        # any visible cell would silently wipe historical state.
+        prior = {e.app_id: e for e in p.apps if e.app_id}
+        new_apps = []
+        for r in range(self.table.rowCount()):
+            row_entry = self._read_row(r)
+            existing  = prior.get(row_entry.app_id)
+            if existing is not None:
+                existing.name             = row_entry.name
+                existing.branch           = row_entry.branch
+                existing.branch_password  = row_entry.branch_password
+                existing.platform         = row_entry.platform
+                existing.current_buildid.buildid  = row_entry.current_buildid.buildid
+                existing.previous_buildid.buildid = row_entry.previous_buildid.buildid
+                new_apps.append(existing)
+            else:
+                new_apps.append(row_entry)
+        p.apps = new_apps
 
 
 __all__ = ["AppsPage"]

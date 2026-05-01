@@ -1154,6 +1154,36 @@ def _add_archive(sub):
 
     p_dl.set_defaults(func=_cmd_archive_download)
 
+    # ---- archive depot: DepotDownloader-style historical pulls --------
+    p_depot = asub.add_parser(
+        "depot",
+        help="Download a single depot manifest (historical builds OK)",
+        allow_abbrev=False,
+    )
+    p_depot.add_argument("--app",      type=int, required=True, metavar="APPID",
+                         dest="app_id", help="App ID")
+    p_depot.add_argument("--depot",    type=int, required=True, metavar="DEPOTID",
+                         dest="depot_id", help="Depot ID")
+    p_depot.add_argument("--manifest", type=int, required=True, metavar="GID",
+                         dest="manifest_gid",
+                         help="Manifest GID (e.g. 5520155637093182018)")
+    p_depot.add_argument("--branch", default="public", metavar="NAME",
+                         help="Branch the manifest belongs to (default: public)")
+    p_depot.add_argument("--branch-password", default=None, metavar="PASS",
+                         dest="branch_password",
+                         help="Plaintext password for restricted branches")
+    p_depot.add_argument("--output-dir", default=".", metavar="DIR",
+                         dest="output_dir",
+                         help="Where the depot files land (default: cwd)")
+    p_depot.add_argument("--workers", type=int, default=8, metavar="N",
+                         help="Parallel CDN connections (default: 8)")
+    p_depot.add_argument("--max-retries", type=int, default=1, metavar="N",
+                         dest="max_retries",
+                         help="Retries on CM/manifest timeouts (default: 1)")
+    p_depot.add_argument("--no-progress", action="store_true", dest="no_progress",
+                         help="Plain log mode instead of tqdm progress bars")
+    p_depot.set_defaults(func=_cmd_archive_depot)
+
     p_new = asub.add_parser("new-project",
                             help="Create a new .xarchive project file with default settings")
     p_new.add_argument("--output", metavar="FILE", required=True,
@@ -1264,6 +1294,58 @@ def _cmd_archive_info(args):
         client.logout()
 
 
+def _cmd_archive_depot(args):
+    """Download one (app, depot, manifest) triple — historical-build mode."""
+    _archive_require_extras_or_die()
+
+    from src.core.archive            import credentials   as creds_mod
+    from src.core.archive.appinfo    import login as cm_login
+    from src.core.archive.cli_progress import build_subscriber
+    from src.core.archive.download   import download_manifest
+
+    creds = creds_mod.load()
+    if not creds.has_login_tokens():
+        _die("No saved tokens.  Run `patchforge archive login` first.", EXIT_INPUT)
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    tokens = {
+        "username":             creds.username,
+        "steam_id":             creds.steam_id,
+        "client_refresh_token": creds.client_refresh_token,
+    }
+    try:
+        client, cdn = cm_login(tokens)
+    except Exception as exc:
+        _die(f"CM login failed: {exc}", EXIT_INPUT)
+
+    subscriber = build_subscriber(plain=args.no_progress)
+    try:
+        dest = download_manifest(
+            client, cdn,
+            app_id=args.app_id,
+            depot_id=args.depot_id,
+            manifest_gid=args.manifest_gid,
+            output_dir=output_dir,
+            branch=args.branch,
+            branch_password=args.branch_password,
+            workers=args.workers,
+            max_retries=args.max_retries,
+            on_event=subscriber,
+        )
+    except ValueError as exc:
+        _die(str(exc), EXIT_INPUT)
+    finally:
+        subscriber.close() if hasattr(subscriber, "close") else None
+        try:
+            client.logout()
+        except Exception:
+            pass
+
+    print(f"Depot files written to {dest}")
+
+
 def _cmd_archive_new_project(args):
     from src.core.archive.project import (
         AppEntry, new_project, save as save_proj,
@@ -1307,8 +1389,18 @@ def _cmd_archive_show_project(args):
                 extras.append(f"branch={a['branch']}")
             if a.get("platform"):
                 extras.append(f"platform={a['platform']}")
-            if a.get("current_buildid"):
-                extras.append(f"buildid={a['current_buildid']}")
+            curr = a.get("current_buildid") or {}
+            if isinstance(curr, dict) and curr.get("buildid"):
+                bid_extra = f"buildid={curr['buildid']}"
+                ts = int(curr.get("timeupdated") or 0)
+                if ts:
+                    from datetime import datetime, timezone
+                    bid_extra += f" @{datetime.fromtimestamp(ts, timezone.utc).strftime('%Y-%m-%d')}"
+                extras.append(bid_extra)
+            history = a.get("manifest_history") or []
+            if history:
+                buildids = sorted({r.get("buildid", "") for r in history if r.get("buildid")})
+                extras.append(f"manifests={len(history)} across {len(buildids)} build(s)")
             if extras:
                 line += "  [" + ", ".join(extras) + "]"
             print(line)
@@ -1882,7 +1974,7 @@ def _cmd_archive_download(args):
         # whenever any AppEntry has a different buildid than what was
         # loaded.  Cheaper to just always re-save when buildids may
         # have changed: any successful download_app call sets it.
-        if any(e.current_buildid for e in project_obj.apps):
+        if any(e.current_buildid.buildid for e in project_obj.apps):
             proj_dirty = True
         if proj_dirty:
             try:

@@ -53,8 +53,8 @@ def test_detect_changes_returns_only_changed_apps():
     assert by_id[200] == (200, "222", "999", infos[200]) # bumped
     # 300 was first-seen this cycle: seeded silently, no download.
     assert 300 not in by_id
-    assert apps_by_id[300].current_buildid == "333"
-    assert apps_by_id[300].name            == "C"
+    assert apps_by_id[300].current_buildid.buildid == "333"
+    assert apps_by_id[300].name                    == "C"
     # Existing entries also get their name backfilled when missing.
     assert apps_by_id[100].name == "A"
     assert apps_by_id[200].name == "B"
@@ -98,10 +98,10 @@ def test_detect_changes_skips_apps_without_usable_buildid():
     # 300 has a usable buildid but is first-seen → seeded, not returned.
     # 100 / 200 have no usable buildid → skipped entirely.
     assert changes == []
-    assert apps_by_id[300].current_buildid == "999"
-    assert apps_by_id[300].name            == "C"
-    assert apps_by_id[100].current_buildid == ""    # untouched (no info)
-    assert apps_by_id[200].current_buildid == ""    # untouched (Unknown)
+    assert apps_by_id[300].current_buildid.buildid == "999"
+    assert apps_by_id[300].name                    == "C"
+    assert apps_by_id[100].current_buildid.buildid == ""    # untouched (no info)
+    assert apps_by_id[200].current_buildid.buildid == ""    # untouched (Unknown)
 
 
 def test_detect_changes_first_seen_not_returned_even_with_force_download():
@@ -125,8 +125,8 @@ def test_detect_changes_first_seen_not_returned_even_with_force_download():
     # 600 has a known prior buildid → force_download includes it.
     # 500 is first-seen → seeded silently regardless of force_download.
     assert {row[0] for row in changes} == {600}
-    assert apps_by_id[500].current_buildid == "777"
-    assert apps_by_id[500].name            == "Newcomer"
+    assert apps_by_id[500].current_buildid.buildid == "777"
+    assert apps_by_id[500].name                    == "Newcomer"
 
 
 def test_detect_changes_passes_batch_size_through():
@@ -356,14 +356,14 @@ def test_app_entry_previous_buildid_roundtrips(tmp_path):
     path = tmp_path / "p.xarchive"
     pm.save(proj, path)
     loaded = pm.load(path)
-    assert loaded.apps[0].previous_buildid == "50"
-    assert loaded.apps[0].current_buildid  == "100"
+    assert loaded.apps[0].previous_buildid.buildid == "50"
+    assert loaded.apps[0].current_buildid.buildid  == "100"
 
 
 def test_app_entry_previous_buildid_default_blank():
     from src.core.archive.project import AppEntry
     e = AppEntry(app_id=1, current_buildid="123")
-    assert e.previous_buildid == ""
+    assert e.previous_buildid.buildid == ""
 
 
 def test_default_platform_all_in_project_used_when_cli_omits_platform(
@@ -468,20 +468,20 @@ def test_run_one_app_shifts_previous_buildid_when_current_changes(tmp_path):
     # to assert it too.
     e = AppEntry(app_id=1, current_buildid="100", previous_buildid="")
     new_bid = "200"
-    if e.current_buildid and e.current_buildid != new_bid:
-        e.previous_buildid = e.current_buildid
-    e.current_buildid = new_bid
-    assert e.previous_buildid == "100"
-    assert e.current_buildid  == "200"
+    if e.current_buildid.buildid and e.current_buildid.buildid != new_bid:
+        e.previous_buildid.buildid = e.current_buildid.buildid
+    e.current_buildid.buildid = new_bid
+    assert e.previous_buildid.buildid == "100"
+    assert e.current_buildid.buildid  == "200"
 
     # Same buildid re-download: previous_buildid must NOT shift to the
     # current value (would erase real history under --force-download).
     e2 = AppEntry(app_id=2, current_buildid="100", previous_buildid="50")
     same_bid = "100"
-    if e2.current_buildid and e2.current_buildid != same_bid:
-        e2.previous_buildid = e2.current_buildid
-    e2.current_buildid = same_bid
-    assert e2.previous_buildid == "50"   # untouched
+    if e2.current_buildid.buildid and e2.current_buildid.buildid != same_bid:
+        e2.previous_buildid.buildid = e2.current_buildid.buildid
+    e2.current_buildid.buildid = same_bid
+    assert e2.previous_buildid.buildid == "50"   # untouched
 
     # Pipeline acceptance: bbcode kwarg shouldn't blow up when no template
     # and no links are present (smoke).
@@ -744,4 +744,4 @@ def test_polling_driver_loops_then_exits_on_keyboard_interrupt(tmp_path, monkeyp
 
     # Project saved at end of each iteration -> current_buildid persisted.
     reloaded = pm.load(project_path)
-    assert reloaded.apps[0].current_buildid == "new"
+    assert reloaded.apps[0].current_buildid.buildid == "new"
