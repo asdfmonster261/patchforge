@@ -1512,6 +1512,15 @@ class MainWindow(QMainWindow):
             self.open_folder_btn.setVisible(False)
 
     def closeEvent(self, event):
+        # Disconnect mode_tabs.currentChanged before Qt starts tearing
+        # down children — without this, a stray currentChanged emission
+        # during destruction reaches _on_mode_changed and explodes when
+        # it touches widgets whose underlying C++ objects are gone.
+        try:
+            self.mode_tabs.currentChanged.disconnect(self._on_mode_changed)
+        except (TypeError, RuntimeError):
+            pass
+
         # G4: if a build is in progress, ask before exiting.  We don't have
         # a clean cancellation channel into core (engines run as
         # subprocesses), so the choice is "let it run to completion" or
