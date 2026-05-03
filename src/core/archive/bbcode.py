@@ -158,3 +158,102 @@ def safe_name(app_name: str) -> str:
     """Return a filesystem-safe variant of an app name (used for output filenames)."""
     s = re.sub(r"[^a-zA-Z0-9.\-]", "", app_name.replace(" ", "."))
     return re.sub(r"\.{2,}", ".", s).strip(".")
+
+
+# ---------------------------------------------------------------------------
+# BBCode -> HTML preview (forum-style rendering)
+# ---------------------------------------------------------------------------
+# Subset rendered by Qt's rich-text engine (QTextEdit):
+#   bold, italic, underline, strikethrough, color, size, url, img, list,
+#   quote, code, spoiler (rendered as <blockquote> with header), youtube
+#   (rendered as a thumbnail+link block).  Tags not in the subset pass
+#   through verbatim so the user still sees them.
+
+_HTML_ESCAPE = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}
+
+
+def _escape_html(s: str) -> str:
+    for k, v in _HTML_ESCAPE.items():
+        s = s.replace(k, v)
+    return s
+
+
+_INLINE_PAIRS = [
+    (re.compile(r"\[b\](.*?)\[/b\]",      re.DOTALL | re.IGNORECASE), r"<b>\1</b>"),
+    (re.compile(r"\[i\](.*?)\[/i\]",      re.DOTALL | re.IGNORECASE), r"<i>\1</i>"),
+    (re.compile(r"\[u\](.*?)\[/u\]",      re.DOTALL | re.IGNORECASE), r"<u>\1</u>"),
+    (re.compile(r"\[s\](.*?)\[/s\]",      re.DOTALL | re.IGNORECASE), r"<s>\1</s>"),
+    (re.compile(r"\[code\](.*?)\[/code\]", re.DOTALL | re.IGNORECASE),
+     r"<pre style='background:#1d1d28;padding:6px;border-radius:3px;'>\1</pre>"),
+    (re.compile(r"\[quote\](.*?)\[/quote\]", re.DOTALL | re.IGNORECASE),
+     r"<blockquote style='border-left:3px solid #555;padding-left:8px;margin:4px 0;color:#bbb;'>\1</blockquote>"),
+]
+
+_COLOR_RE   = re.compile(r"\[color=([^\]]+)\](.*?)\[/color\]", re.DOTALL | re.IGNORECASE)
+_SIZE_RE    = re.compile(r"\[size=(\d+)\](.*?)\[/size\]", re.DOTALL | re.IGNORECASE)
+_URL_NAMED  = re.compile(r"\[url=([^\]]+)\](.*?)\[/url\]", re.DOTALL | re.IGNORECASE)
+_URL_BARE   = re.compile(r"\[url\](.*?)\[/url\]", re.DOTALL | re.IGNORECASE)
+_IMG_RE     = re.compile(r"\[img\](.*?)\[/img\]", re.DOTALL | re.IGNORECASE)
+_SPOIL_NAMED = re.compile(r'\[spoiler="([^"]*)"\](.*?)\[/spoiler\]', re.DOTALL | re.IGNORECASE)
+_SPOIL_BARE  = re.compile(r"\[spoiler\](.*?)\[/spoiler\]", re.DOTALL | re.IGNORECASE)
+_YOUTUBE_RE  = re.compile(r"\[youtube\](.*?)\[/youtube\]", re.DOTALL | re.IGNORECASE)
+_LIST_NUM    = re.compile(r"\[list=1\](.*?)\[/list\]", re.DOTALL | re.IGNORECASE)
+_LIST_BUL    = re.compile(r"\[list\](.*?)\[/list\]", re.DOTALL | re.IGNORECASE)
+
+
+def _render_list(body: str, ordered: bool) -> str:
+    items = re.split(r"\[\*\]", body)
+    items = [it.strip() for it in items if it.strip()]
+    tag = "ol" if ordered else "ul"
+    lis = "".join(f"<li>{it}</li>" for it in items)
+    return f"<{tag}>{lis}</{tag}>"
+
+
+def bbcode_to_html(text: str) -> str:
+    """Convert BBCode source to HTML suitable for QTextEdit's rich-text mode.
+
+    Best-effort, not a full BBCode parser — handles the tag subset the
+    in-app editor produces.  Unknown tags pass through verbatim so the
+    user still sees them in the preview.
+    """
+    s = _escape_html(text)
+
+    # Inline pairs first.
+    for pat, repl in _INLINE_PAIRS:
+        # Repeat until stable so nested same-name tags collapse.
+        prev = None
+        while prev != s:
+            prev = s
+            s = pat.sub(repl, s)
+
+    # color / size — Qt supports inline style on <span>.
+    s = _COLOR_RE.sub(lambda m: f"<span style='color:{m.group(1)}'>{m.group(2)}</span>", s)
+    s = _SIZE_RE.sub(lambda m: f"<span style='font-size:{m.group(1)}%'>{m.group(2)}</span>", s)
+
+    # url / img.
+    s = _URL_NAMED.sub(lambda m: f"<a href='{m.group(1)}'>{m.group(2)}</a>", s)
+    s = _URL_BARE.sub(lambda m: f"<a href='{m.group(1)}'>{m.group(1)}</a>", s)
+    s = _IMG_RE.sub(lambda m: f"<img src='{m.group(1)}'>", s)
+
+    # Spoilers — Qt has no <details>, so render as a labelled blockquote.
+    spoiler_style = ("border:1px solid #555;padding:4px 8px;margin:4px 0;"
+                     "background:#252535;border-radius:3px;")
+    s = _SPOIL_NAMED.sub(
+        lambda m: (f"<div style='{spoiler_style}'>"
+                   f"<b>Spoiler:</b> <i>{m.group(1)}</i><br>{m.group(2)}</div>"), s)
+    s = _SPOIL_BARE.sub(
+        lambda m: f"<div style='{spoiler_style}'><b>Spoiler</b><br>{m.group(1)}</div>", s)
+
+    # YouTube — render a small placeholder card.
+    s = _YOUTUBE_RE.sub(
+        lambda m: (f"<div style='border:1px solid #555;padding:6px;margin:4px 0;'>"
+                   f"<b>YouTube:</b> {m.group(1)}</div>"), s)
+
+    # Lists last so item bodies have already been rendered.
+    s = _LIST_NUM.sub(lambda m: _render_list(m.group(1), ordered=True),  s)
+    s = _LIST_BUL.sub(lambda m: _render_list(m.group(1), ordered=False), s)
+
+    # Newlines -> <br> outside block elements (ul/ol/blockquote/pre/div
+    # already break visually).  Cheap approach: replace remaining \n.
+    s = s.replace("\n", "<br>")
+    return s

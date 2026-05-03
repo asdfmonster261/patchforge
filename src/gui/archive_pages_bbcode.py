@@ -16,7 +16,8 @@ from PySide6.QtCore import QTimer, Qt, QRect, QSize, QPoint
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout, QMenu, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QVBoxLayout, QWidget,
+    QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QTextEdit,
+    QVBoxLayout, QWidget,
 )
 
 from ..core.archive import bbcode as bbcode_mod
@@ -195,6 +196,7 @@ class BBCodePage(ArchivePageBase):
     def __init__(self, panel):
         super().__init__(panel)
         self._building = False
+        self._preview_mode = "raw"   # "raw" | "forum"
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -207,6 +209,19 @@ class BBCodePage(ArchivePageBase):
         sep.setFrameShape(QFrame.Shape.HLine)
         outer.addWidget(sep)
 
+        # Preview-mode toggle row.
+        toggle_row = QHBoxLayout()
+        toggle_row.addStretch(1)
+        toggle_row.addWidget(QLabel("Preview:"))
+        self.btn_preview_mode = QPushButton("Raw text")
+        self.btn_preview_mode.setCheckable(True)
+        self.btn_preview_mode.setFixedHeight(24)
+        self.btn_preview_mode.setStyleSheet('QPushButton { padding: 2px 12px; }')
+        self.btn_preview_mode.setToolTip("Toggle between raw (.txt) and forum-rendered preview")
+        self.btn_preview_mode.clicked.connect(self._toggle_preview_mode)
+        toggle_row.addWidget(self.btn_preview_mode)
+        outer.addLayout(toggle_row)
+
         body = QHBoxLayout()
         body.setSpacing(6)
 
@@ -214,7 +229,8 @@ class BBCodePage(ArchivePageBase):
         self.editor = QPlainTextEdit()
         self.editor.setFont(QFont('Monospace', 10))
         self.editor.setPlaceholderText("(empty template)")
-        self.preview = QPlainTextEdit()
+        # QTextEdit so forum-mode HTML renders.  Raw mode uses plain text.
+        self.preview = QTextEdit()
         self.preview.setReadOnly(True)
         self.preview.setPlaceholderText("(preview)")
         split.addWidget(self.editor)
@@ -412,13 +428,24 @@ class BBCodePage(ArchivePageBase):
         self._panel.mark_dirty()
         self._preview_timer.start()
 
+    def _toggle_preview_mode(self):
+        self._preview_mode = "forum" if self.btn_preview_mode.isChecked() else "raw"
+        self.btn_preview_mode.setText(
+            "Forum post" if self._preview_mode == "forum" else "Raw text"
+        )
+        self._refresh_preview()
+
     def _refresh_preview(self):
         try:
             data = bbcode_mod.build_data(**_SAMPLE)
             rendered = bbcode_mod.render(self.editor.toPlainText(), data)
         except Exception as exc:
-            rendered = f"(preview error: {exc})"
-        self.preview.setPlainText(rendered)
+            self.preview.setPlainText(f"(preview error: {exc})")
+            return
+        if self._preview_mode == "forum":
+            self.preview.setHtml(bbcode_mod.bbcode_to_html(rendered))
+        else:
+            self.preview.setPlainText(rendered)
 
     # ── ArchivePageBase protocol ───────────────────────────────────────
 
