@@ -191,3 +191,48 @@ def send_discord_notification(webhook_url: str,
         return bool(getattr(response, "ok", False))
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# System alerts (CM outage etc.) — plain-text, not a build-change event
+# ---------------------------------------------------------------------------
+
+def send_alert(creds, subject: str, body: str) -> bool:
+    """Send a plain-text alert to whichever notify channels are configured.
+
+    Used for "Steam CM still unreachable" / extended-outage warnings —
+    distinct from the per-build send_*_notification functions which want
+    structured app_data.  Returns True iff at least one channel accepted
+    the message.
+    """
+    delivered = False
+
+    if creds.telegram.is_set():
+        try:
+            from origamibot import OrigamiBot as Bot
+            bot = Bot(creds.telegram.token)
+            text = f"⚠️ *{subject}*\n{body}"
+            for chat_id in creds.telegram.chat_ids:
+                try:
+                    bot.send_message(chat_id, text=text, parse_mode="Markdown")
+                    delivered = True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    if creds.discord.is_set():
+        try:
+            from discord_webhook import DiscordWebhook
+            content = f"⚠️ **{subject}**\n{body}"
+            mention_ids = getattr(creds.discord, "mention_role_ids", None) or []
+            if mention_ids:
+                content = " ".join(f"<@&{rid}>" for rid in mention_ids) + "\n" + content
+            webhook = DiscordWebhook(url=creds.discord.webhook_url, content=content)
+            response = webhook.execute()
+            if getattr(response, "ok", False):
+                delivered = True
+        except Exception:
+            pass
+
+    return delivered

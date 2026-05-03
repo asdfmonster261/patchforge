@@ -461,6 +461,33 @@ def run_session(*,
         log("Re-authenticated.")
         return True
 
+    # Outage state: when a SessionDead burst exhausts max_retries we
+    # don't break out — we sleep restart_delay and try again.  The first
+    # such timeout silently retries; the second consecutive timeout
+    # triggers a one-shot user notification (if creds are set) so the
+    # user knows a Tuesday CM maintenance window is dragging long enough
+    # to be worth checking on.
+    outage_cycles = 0      # number of restart_delay waits we've done in a row
+    outage_alerted = False
+
+    def _alert_outage() -> None:
+        nonlocal outage_alerted
+        if outage_alerted or notify_mod is None:
+            return
+        if not (creds.telegram.is_set() or creds.discord.is_set()):
+            return
+        try:
+            notify_mod.send_alert(
+                creds,
+                "PatchForge — Steam CM unreachable",
+                "Login attempts have failed across two consecutive "
+                f"{restart_delay}s wait windows.  Likely Valve maintenance; "
+                "the run is still retrying and will resume automatically.",
+            )
+            outage_alerted = True
+        except Exception as exc:
+            warn(f"could not send outage alert: {exc}")
+
     if poll_mode:
         from . import poll as poll_mod
         force = bool(opts["force_download"])
@@ -502,8 +529,21 @@ def run_session(*,
                     )
             except SessionDead:
                 if not _recover_session():
-                    warn("Steam CM session could not be recovered. Stopping.")
-                    break
+                    # Burst of max_retries relogin attempts exhausted.
+                    # Wait out a restart_delay and try again instead of
+                    # giving up — typical Tuesday CM maintenance is much
+                    # shorter than a single restart_delay window.
+                    outage_cycles += 1
+                    if outage_cycles >= 2:
+                        _alert_outage()
+                    warn(f"Steam CM still unreachable; waiting "
+                         f"{restart_delay}s before next login attempt "
+                         f"(outage cycle {outage_cycles}).")
+                    if countdown_sleep is None or not countdown_sleep(restart_delay):
+                        break
+                    retries_remaining = max_retries  # fresh budget
+                    iteration -= 1
+                    continue
                 # retry this cycle without sleeping
                 iteration -= 1
                 continue
@@ -511,6 +551,8 @@ def run_session(*,
                 warn(f"poll cycle failed: {exc}")
 
             retries_remaining = max_retries  # clean cycle — reset counter
+            outage_cycles = 0
+            outage_alerted = False
             _save_project_now()
             force = False
             if _aborted():
