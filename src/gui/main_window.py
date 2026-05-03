@@ -1,10 +1,21 @@
 """PatchForge main window — dark-theme PySide6 GUI."""
 
-import sys
-from pathlib import Path
-from typing import Optional
+# Archive-mode requires gevent's socket/ssl monkey-patches applied BEFORE
+# anything else imports urllib3 / ssl / requests.  PySide6 + this module's
+# downstream imports pull urllib3 transitively, so patching after them
+# leaves stale ssl refs and triggers RecursionError on first network IO.
+# No-op when steam[client] isn't installed.
+try:
+    import steam.monkey  # type: ignore
+    steam.monkey.patch_minimal()
+except ImportError:
+    pass
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QUrl
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import Optional  # noqa: E402
+
+from PySide6.QtCore import Qt, QThread, QTimer, Signal, QObject, QUrl  # noqa: E402
 from PySide6.QtGui import QTextCursor, QColor, QDesktopServices, QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,

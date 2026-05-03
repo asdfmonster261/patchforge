@@ -166,7 +166,10 @@ def run_post_pipeline(archives, app_meta, previous_buildid, creds, *,
                 on_event=subscriber,
             )
         except Exception as exc:
+            import traceback
             warn(f"Upload failed for app {app_meta.get('appid')}: {exc}")
+            for tb_line in traceback.format_exc().splitlines():
+                warn(tb_line)
 
     # platform -> url map for notify + bbcode rendering
     from . import notify as _notify_helpers  # for _platform_from_archive_stem
