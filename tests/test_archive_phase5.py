@@ -262,7 +262,7 @@ def test_persist_polling_knobs_idempotent_when_unchanged():
 # ---------------------------------------------------------------------------
 
 def test_pre_pipeline_passes_force_download_into_telegram_and_discord():
-    from src.cli.main         import _archive_run_pre_pipeline
+    from src.core.archive.runner import run_pre_notify
     from src.core.archive     import credentials as creds_mod
     creds = creds_mod.Credentials()
     creds.discord = creds_mod.DiscordCreds(webhook_url="https://hook")
@@ -272,7 +272,7 @@ def test_pre_pipeline_passes_force_download_into_telegram_and_discord():
     fake_notify.send_discord_notification.return_value  = True
     fake_notify.send_telegram_notification.return_value = True
 
-    _archive_run_pre_pipeline(
+    run_pre_notify(
         app_meta={"appid": 1, "name": "X", "buildid": "5", "timeupdated": 0},
         previous_buildid="4", creds=creds, notify_mode="pre",
         notify_mod=fake_notify,
@@ -283,7 +283,7 @@ def test_pre_pipeline_passes_force_download_into_telegram_and_discord():
 
 
 def test_post_pipeline_passes_force_download_into_notifications(tmp_path):
-    from src.cli.main         import _archive_run_post_pipeline
+    from src.core.archive.runner import run_post_pipeline
     from src.core.archive     import credentials as creds_mod
 
     creds = creds_mod.Credentials()
@@ -297,7 +297,7 @@ def test_post_pipeline_passes_force_download_into_notifications(tmp_path):
     archive = tmp_path / "x.7z"
     archive.write_bytes(b"x")
 
-    _archive_run_post_pipeline(
+    run_post_pipeline(
         [archive],
         {"appid": 1, "name": "X", "buildid": "5", "timeupdated": 0},
         previous_buildid="4", creds=creds,
@@ -462,7 +462,7 @@ def test_run_one_app_shifts_previous_buildid_when_current_changes(tmp_path):
     before overwriting it.  Validated by reaching into _cmd_archive_download
     via the same harness used by the polling-driver test (one-cycle, no
     real network)."""
-    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive.runner import run_post_pipeline
     from src.core.archive.project import AppEntry
 
     # Direct-test the buildid-shift logic with a fake AppEntry mutation
@@ -489,7 +489,7 @@ def test_run_one_app_shifts_previous_buildid_when_current_changes(tmp_path):
     # Pipeline acceptance: bbcode kwarg shouldn't blow up when no template
     # and no links are present (smoke).
     from src.core.archive import credentials as creds_mod
-    _archive_run_post_pipeline(
+    run_post_pipeline(
         archives=[],
         app_meta={"appid": 1, "name": "X", "buildid": "200",
                   "timeupdated": 0},
@@ -508,7 +508,7 @@ def test_post_pipeline_renders_bbcode_when_template_and_links_present(
     bbcode_template + at least one upload URL, the post-pipeline must
     write <safe_name>.<buildid>.post.txt and remove the per-stem
     sidecar .txt files."""
-    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive.runner import run_post_pipeline
     from src.core.archive import credentials as creds_mod
 
     creds = creds_mod.Credentials()
@@ -530,7 +530,7 @@ def test_post_pipeline_renders_bbcode_when_template_and_links_present(
         "All:     {ALL_LINKS}\n"
     )
 
-    _archive_run_post_pipeline(
+    run_post_pipeline(
         archives=[tmp_path / "Game.7z"],
         app_meta={"appid": 100, "name": "Cool Game",
                   "buildid": "123", "timeupdated": 0},
@@ -561,7 +561,7 @@ def test_post_pipeline_renders_bbcode_when_template_and_links_present(
 
 
 def test_post_pipeline_skips_bbcode_when_no_template():
-    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive.runner import run_post_pipeline
     from src.core.archive import credentials as creds_mod
     creds = creds_mod.Credentials()
     creds.multiup = creds_mod.MultiUpCreds(username="u", password="p")
@@ -569,7 +569,7 @@ def test_post_pipeline_skips_bbcode_when_no_template():
     fake_upload.upload_archives.return_value = {"x": "https://y"}
     # Pure smoke: empty template -> no exception, no file written
     # anywhere we'd notice.
-    _archive_run_post_pipeline(
+    run_post_pipeline(
         archives=[mock.Mock()],
         app_meta={"appid": 1, "name": "X", "buildid": "1", "timeupdated": 0},
         previous_buildid="0", creds=creds,

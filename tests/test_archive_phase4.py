@@ -451,14 +451,14 @@ def test_cli_platform_from_archive_stem():
 def test_cli_post_pipeline_skips_when_no_creds_set(tmp_path):
     """No upload creds, no notify creds → upload_archives must not be called
     and the helper must complete without raising."""
-    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive.runner import run_post_pipeline
     from src.core.archive import credentials as creds_mod
 
     upload_mod = mock.MagicMock()
     notify_mod = mock.MagicMock()
     creds = creds_mod.Credentials()  # all blocks empty
 
-    _archive_run_post_pipeline(
+    run_post_pipeline(
         archives=[tmp_path / "x.7z"],
         app_meta={"appid": 1, "name": "G", "buildid": "2", "timeupdated": 0},
         previous_buildid="1",
@@ -474,7 +474,7 @@ def test_cli_post_pipeline_skips_when_no_creds_set(tmp_path):
 def test_cli_resolve_notify_mode_priority():
     """CLI flag wins over project field; project field wins over auto-default;
     auto-default falls back to 'delay' iff multiup creds are set."""
-    from src.cli.main import _resolve_notify_mode
+    from src.core.archive.runner import resolve_notify_mode
     from src.core.archive import credentials as creds_mod
 
     creds = creds_mod.Credentials()
@@ -483,29 +483,29 @@ def test_cli_resolve_notify_mode_priority():
     # No notify creds → "none" regardless of flag/field.
     no_notify = creds_mod.Credentials()
     no_notify.multiup.username = "u"
-    assert _resolve_notify_mode("pre", "delay", no_notify) == "none"
+    assert resolve_notify_mode("pre", "delay", no_notify) == "none"
 
     # CLI flag overrides everything.
-    assert _resolve_notify_mode("pre",   "delay", creds) == "pre"
-    assert _resolve_notify_mode("both",  "delay", creds) == "both"
+    assert resolve_notify_mode("pre",   "delay", creds) == "pre"
+    assert resolve_notify_mode("both",  "delay", creds) == "both"
 
     # Project field used when CLI flag absent.
-    assert _resolve_notify_mode(None, "pre",   creds) == "pre"
-    assert _resolve_notify_mode(None, "delay", creds) == "delay"
-    assert _resolve_notify_mode(None, "both",  creds) == "both"
+    assert resolve_notify_mode(None, "pre",   creds) == "pre"
+    assert resolve_notify_mode(None, "delay", creds) == "delay"
+    assert resolve_notify_mode(None, "both",  creds) == "both"
 
     # Auto-default: 'delay' when uploads can produce links, else 'pre'.
     creds.multiup.username = "u"
-    assert _resolve_notify_mode(None, "", creds) == "delay"
+    assert resolve_notify_mode(None, "", creds) == "delay"
     creds.multiup.username = ""
-    assert _resolve_notify_mode(None, "", creds) == "pre"
+    assert resolve_notify_mode(None, "", creds) == "pre"
 
     # Invalid project field is ignored, falls through to auto.
-    assert _resolve_notify_mode(None, "garbage", creds) == "pre"
+    assert resolve_notify_mode(None, "garbage", creds) == "pre"
 
 
 def test_cli_pre_pipeline_fires_only_in_pre_or_both(tmp_path):
-    from src.cli.main import _archive_run_pre_pipeline
+    from src.core.archive.runner import run_pre_notify
     from src.core.archive import credentials as creds_mod
 
     notify_mod = mock.MagicMock()
@@ -517,10 +517,10 @@ def test_cli_pre_pipeline_fires_only_in_pre_or_both(tmp_path):
         previous_buildid="100",
         creds=creds, notify_mod=notify_mod,
     )
-    _archive_run_pre_pipeline(notify_mode="delay", **base)
+    run_pre_notify(notify_mode="delay", **base)
     notify_mod.send_discord_notification.assert_not_called()
-    _archive_run_pre_pipeline(notify_mode="pre", **base)
-    _archive_run_pre_pipeline(notify_mode="both", **base)
+    run_pre_notify(notify_mode="pre", **base)
+    run_pre_notify(notify_mode="both", **base)
     assert notify_mod.send_discord_notification.call_count == 2
 
     # Pre-notify must NOT include upload links.
@@ -532,7 +532,7 @@ def test_cli_post_pipeline_skips_post_notify_when_mode_pre(tmp_path):
     """notify_mode='pre' means upload still runs (so links land in the
     paste/links file) but the *post* notify is suppressed — the pre-notify
     already fired, sending a second one would duplicate."""
-    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive.runner import run_post_pipeline
     from src.core.archive import credentials as creds_mod
 
     upload_mod = mock.MagicMock()
@@ -543,7 +543,7 @@ def test_cli_post_pipeline_skips_post_notify_when_mode_pre(tmp_path):
     creds.multiup.username    = "alice"
     creds.discord.webhook_url = "https://hook"
 
-    _archive_run_post_pipeline(
+    run_post_pipeline(
         archives=[tmp_path / "Game.1.windows.public.7z"],
         app_meta={"appid": 9, "name": "G", "buildid": "200", "timeupdated": 0},
         previous_buildid="100",
@@ -643,7 +643,7 @@ def test_log_tee_strips_ansi_to_file_passes_raw_to_stream(tmp_path):
 def test_cli_post_pipeline_forwards_upload_knobs(tmp_path):
     """description / max_concurrent / delete_archives must reach
     upload_archives()."""
-    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive.runner import run_post_pipeline
     from src.core.archive import credentials as creds_mod
 
     upload_mod = mock.MagicMock()
@@ -652,7 +652,7 @@ def test_cli_post_pipeline_forwards_upload_knobs(tmp_path):
     creds = creds_mod.Credentials()
     creds.multiup.username = "u"
 
-    _archive_run_post_pipeline(
+    run_post_pipeline(
         archives=[tmp_path / "x.7z"],
         app_meta={"appid": 1, "name": "G", "buildid": "1", "timeupdated": 0},
         previous_buildid="0",
@@ -849,7 +849,7 @@ def test_apply_archive_creds_overrides_returns_dirty_flag():
 def test_cli_post_pipeline_routes_upload_links_to_notify(tmp_path):
     """When upload + discord creds are set, the platform_links dict must
     be derived from the upload result and forwarded to send_discord."""
-    from src.cli.main import _archive_run_post_pipeline
+    from src.core.archive.runner import run_post_pipeline
     from src.core.archive import credentials as creds_mod
 
     upload_mod = mock.MagicMock()
@@ -865,7 +865,7 @@ def test_cli_post_pipeline_routes_upload_links_to_notify(tmp_path):
 
     archive_paths = [tmp_path / "Game.1.windows.public.7z",
                      tmp_path / "Game.1.linux.public.7z"]
-    _archive_run_post_pipeline(
+    run_post_pipeline(
         archives=archive_paths,
         app_meta={"appid": 9, "name": "Game", "buildid": "200", "timeupdated": 0},
         previous_buildid="100",

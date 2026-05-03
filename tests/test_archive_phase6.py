@@ -255,29 +255,6 @@ def test_resolve_notify_mode_priority_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# CLI shims still delegate correctly (safety net for existing callers).
-# ---------------------------------------------------------------------------
-
-def test_cli_shim_resolve_notify_mode_delegates():
-    from src.cli.main import _resolve_notify_mode
-    creds = _stub_creds(telegram=True)
-    assert _resolve_notify_mode(None, "pre", creds) == "pre"
-
-
-def test_cli_shim_pre_pipeline_delegates():
-    from src.cli.main import _archive_run_pre_pipeline
-    creds = _stub_creds(telegram=True)
-    notify_mod = MagicMock()
-    notify_mod.send_telegram_notification = MagicMock()
-    _archive_run_pre_pipeline(
-        {"appid": 1, "name": "X", "buildid": "10", "timeupdated": 0},
-        previous_buildid="9", creds=creds, notify_mode="pre",
-        notify_mod=notify_mod,
-    )
-    assert notify_mod.send_telegram_notification.called
-
-
-# ---------------------------------------------------------------------------
 # GUI: ArchivePanel + ArchiveWorker
 # ---------------------------------------------------------------------------
 

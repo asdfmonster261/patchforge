@@ -1685,29 +1685,6 @@ def _platform_from_archive_stem(stem: str) -> str | None:
 _VALID_NOTIFY_MODES = ("pre", "delay", "both", "none")
 
 
-# Phase 6: notify primitives + per-app pipeline + run driver moved to
-# src.core.archive.runner so the GUI can drive the same plumbing without
-# subprocess'ing the CLI.  These shims keep the historical CLI helper
-# names so existing tests + ad-hoc importers continue to work.
-def _resolve_notify_mode(cli_flag, project_field, creds):
-    from src.core.archive import runner as _runner
-    return _runner.resolve_notify_mode(cli_flag, project_field, creds)
-
-
-def _build_notify_data(app_meta, previous_buildid):
-    from src.core.archive import runner as _runner
-    return _runner.build_notify_data(app_meta, previous_buildid)
-
-
-def _send_notifications(notify_data, upload_links, creds, *, notify_mod,
-                        force_download=False):
-    from src.core.archive import runner as _runner
-    return _runner.send_notifications(
-        notify_data, upload_links, creds, notify_mod=notify_mod,
-        force_download=force_download, warn=_warn,
-    )
-
-
 def _poll_countdown(seconds: int) -> bool:
     """Sleep `seconds` while updating a single-line countdown on a TTY,
     or print a one-shot "sleeping Ns" line on non-TTY (so log files
@@ -1754,35 +1731,6 @@ def _poll_countdown(seconds: int) -> bool:
         _sys.stdout.flush()
         print("polling interrupted, exiting")
         return False
-
-
-def _archive_run_pre_pipeline(app_meta, previous_buildid, creds, notify_mode,
-                              *, notify_mod, force_download=False):
-    from src.core.archive import runner as _runner
-    return _runner.run_pre_notify(
-        app_meta, previous_buildid, creds,
-        notify_mode=notify_mode, notify_mod=notify_mod,
-        force_download=force_download, warn=_warn,
-    )
-
-
-def _archive_run_post_pipeline(archives, app_meta, previous_buildid, creds,
-                               *, upload_mod, notify_mod, output_dir, subscriber,
-                               notify_mode="delay", description=None,
-                               max_concurrent=1, delete_archives=False,
-                               force_download=False, manifests=None,
-                               bbcode_template=""):
-    from src.core.archive import runner as _runner
-    return _runner.run_post_pipeline(
-        archives, app_meta, previous_buildid, creds,
-        upload_mod=upload_mod, notify_mod=notify_mod,
-        output_dir=output_dir, subscriber=subscriber,
-        notify_mode=notify_mode, description=description,
-        max_concurrent=max_concurrent, delete_archives=delete_archives,
-        force_download=force_download, manifests=manifests,
-        bbcode_template=bbcode_template,
-        log=print, warn=_warn,
-    )
 
 
 def _cmd_archive_download(args):
@@ -1877,7 +1825,8 @@ def _cmd_archive_download(args):
              EXIT_INPUT)
 
     # Resolve notify mode (CLI flag > project field > auto-default).
-    notify_mode = _resolve_notify_mode(
+    from src.core.archive import runner as _runner
+    notify_mode = _runner.resolve_notify_mode(
         getattr(args, "notify_mode_flag", None),
         project_obj.notify_mode if project_obj is not None else "",
         creds,
