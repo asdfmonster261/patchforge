@@ -47,10 +47,25 @@ def _copy_with_crc(src_path: Path, dst_f, chunk_size: int = 1024 * 1024) -> int:
 
 
 def _stub_path(engine: str, arch: str, compression: str) -> Path:
-    """Return the correct prebuilt stub for the given engine/arch/compression."""
+    """Return the correct prebuilt stub for the given engine/arch/compression.
+
+    The BASIC hdiffpatch stub only links the LZMA + LZMA2 decompressor
+    plugins.  Any preset that compresses with bzip2 / pbzip2 / zlib /
+    deflate needs the FULL stub which links those plugins too — without
+    it the patcher's _pick_decompressor returns NULL and the patch
+    apply crashes deep inside HDiffPatch with a NULL-this vtable call.
+    """
     needs_full = False
     if engine == "hdiffpatch":
-        needs_full = compression in {"zip/1", "zip/9", "bzip/5", "bzip/9"}
+        # Current preset keys are "set{1..6}_lzma2" and "set{1..6}_bzip2"
+        # (see core/engines/hdiffpatch.py:_build_presets).  Anything other
+        # than the LZMA / LZMA2 family needs the full stub.
+        needs_full = (
+            compression.endswith("_bzip2")
+            or compression.endswith("_pbzip2")
+            or compression.endswith("_zlib")
+            or compression.endswith("_deflate")
+        )
         variant = "full_" if needs_full else ""
         name = f"hdiffpatch_{variant}{arch}.exe"
     else:

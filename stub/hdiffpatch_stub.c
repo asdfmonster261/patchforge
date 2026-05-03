@@ -177,6 +177,21 @@ static int apply_dir_hdiff(const char *game_dir,
 
     hpatch_TDecompress *dec = _pick_decompressor(
         (const char*)ddi.hdiffInfo.compressType);
+    /* Guard rather than passing NULL into the HDiffPatch lib — the lib
+     * calls dec->open through the function-pointer table without a
+     * NULL check and crashes with a NULL-this vtable call.  This stub
+     * variant only links a subset of decompressors; if the patch was
+     * built with a compression we can't decode, fail with a real error
+     * instead of a SIGSEGV. */
+    if (!dec && ddi.hdiffInfo.compressType[0]) {
+        snprintf(msg, sizeof(msg),
+            "ERROR: this build of the patcher cannot decompress '%s' "
+            "data.  Rebuild with the 'full' stub variant or pick an "
+            "LZMA2 compression preset.",
+            (const char *)ddi.hdiffInfo.compressType);
+        PostMessageA(g_hwnd, WM_LOG_MSG, 0, (LPARAM)_strdup(msg));
+        goto cleanup_stream;
+    }
 
     /* Initialise patcher */
     TDirPatcher patcher;
