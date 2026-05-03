@@ -238,12 +238,16 @@ def query_app_info_batch(client, cdn, app_ids: list[int],
                          batch_size: int | None = None,
                          quiet: bool = False) -> Iterator[tuple[int, dict | None]]:
     """Yield (app_id, info_dict | None) for each app, streamed as the
-    PICS responses arrive (one per app, not one per batch).
+    PICS responses arrive (one tuple per app, not per batch).
 
-    `batch_size` is preserved for API compatibility but no longer
-    affects progress granularity — Steam already chunks the response
-    so a single request stream yields per-app updates as the data
-    comes in.
+    When `batch_size` is set, app_ids are split into chunks of that
+    size and each chunk becomes its own ClientPICSProductInfoRequest
+    — useful for limiting how much data the CM has to gather in one
+    round-trip on accounts with hundreds of licensed apps.  When
+    None, all apps go in a single request.  Within each batch the
+    streaming loop emits per-app as Steam's response chunks arrive,
+    so the progress bar still ticks individual apps regardless of
+    batch_size.
 
     When `quiet` is True the per-app human-readable summary is skipped
     and only the structured info dict is returned — used by the Phase 5
