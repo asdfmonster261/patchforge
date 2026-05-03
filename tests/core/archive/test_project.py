@@ -187,3 +187,16 @@ def test_app_entry_previous_buildid_default_blank():
     from src.core.archive.project import AppEntry
     e = AppEntry(app_id=1, current_buildid="123")
     assert e.previous_buildid.buildid == ""
+
+
+def test_archive_project_persists_crack_mode_field(tmp_path):
+    """ArchiveProject.crack_mode round-trips through save/load —
+    saved per-project so users don't need to re-pick coldclient/gse
+    every run."""
+    from src.core.archive import project as project_mod
+    proj = project_mod.new_project(name="t")
+    proj.crack_mode = "coldclient"
+    target = tmp_path / "p.xarchive"
+    project_mod.save(proj, target)
+    loaded = project_mod.load(target)
+    assert loaded.crack_mode == "coldclient"
