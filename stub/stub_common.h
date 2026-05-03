@@ -956,18 +956,30 @@ static void pfg_load_backdrop(void)
 
     if (!frame) { factory->lpVtbl->Release(factory); return; }
 
-    /* Convert to 32bpp BGR */
+    /* Convert to 32bpp BGR.  CreateFormatConverter / Initialize can both
+     * fail under Wine's WIC implementation when handed image formats it
+     * doesn't fully support; without NULL- and HRESULT-checks the next
+     * vtable call dereferences a NULL `conv` and the patcher faults
+     * with `callq *8(%rcx)` (rcx = NULL `this`). */
     IWICFormatConverter *conv = NULL;
-    factory->lpVtbl->CreateFormatConverter(factory, &conv);
-    conv->lpVtbl->Initialize(conv, (IWICBitmapSource *)frame,
+    HRESULT hr = factory->lpVtbl->CreateFormatConverter(factory, &conv);
+    if (FAILED(hr) || !conv) {
+        frame->lpVtbl->Release(frame);
+        factory->lpVtbl->Release(factory);
+        return;
+    }
+    hr = conv->lpVtbl->Initialize(conv, (IWICBitmapSource *)frame,
         &GUID_WICPixelFormat32bppBGR, WICBitmapDitherTypeNone,
         NULL, 0.0, WICBitmapPaletteTypeCustom);
     frame->lpVtbl->Release(frame);
+    if (FAILED(hr)) {
+        conv->lpVtbl->Release(conv);
+        factory->lpVtbl->Release(factory);
+        return;
+    }
 
     UINT w = 0, h = 0;
-    conv->lpVtbl->GetSize(conv, &w, &h);
-
-    if (w == 0 || h == 0) {
+    if (FAILED(conv->lpVtbl->GetSize(conv, &w, &h)) || w == 0 || h == 0) {
         conv->lpVtbl->Release(conv);
         factory->lpVtbl->Release(factory);
         return;
