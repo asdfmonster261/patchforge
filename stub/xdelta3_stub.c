@@ -102,13 +102,22 @@ static int xd3_decode_file(const char *old_path, const unsigned char *patch_data
         onlastblk  = (usize_t)((uint64_t)src_size - (uint64_t)max_blkno * SRC_BLKSIZE);
     }
 
-    source.blksize   = SRC_BLKSIZE;
-    source.curblkno  = (xoff_t)-1;          /* nothing loaded yet */
-    source.curblk    = src_buf;
-    source.onblk     = 0;
-    source.eof_known = 1;
-    source.max_blkno = max_blkno;
-    source.onlastblk = onlastblk;
+    source.blksize     = SRC_BLKSIZE;
+    source.curblkno    = (xoff_t)-1;          /* nothing loaded yet */
+    source.curblk      = src_buf;
+    source.onblk       = 0;
+    source.eof_known   = 1;
+    source.max_blkno   = max_blkno;
+    source.onlastblk   = onlastblk;
+    /* max_winsize is the back-reference budget xdelta3 lets a single
+     * window reach into the source.  Default is 64 MiB; with the old
+     * single-buffer code that ceiling was always >= src_size so it
+     * never mattered.  With streaming source we must let the encoder's
+     * window reach anywhere in the source — otherwise large patches
+     * over multi-GB paks fail with XD3_TOOFARBACK / XD3_INVALID
+     * errors when a copy instruction targets a block outside the
+     * default window. */
+    source.max_winsize = (xoff_t)src_size;
     xd3_set_source(&stream, &source);
 
     size_t inp_pos = 0;
