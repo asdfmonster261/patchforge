@@ -181,6 +181,8 @@ def _streaming_product_info(client, app_ids: list[int],
 
     seen: set[int] = set()
 
+    import gevent as _gevent
+
     def _attempt():
         # Resolve access tokens up-front the same way get_product_info does.
         tokens = client.get_access_tokens(app_ids=list(app_ids))
@@ -211,6 +213,13 @@ def _streaming_product_info(client, app_ids: list[int],
                 info["_size"]          = app.size
                 seen.add(app.appid)
                 yield app.appid, info
+                # Steam packs multiple apps into one PICS response
+                # chunk, so without an explicit yield the for-loop
+                # emits all of them in <1 ms and the terminal /
+                # Qt event loop never renders intermediate progress.
+                # 10 ms per app gives a visible, consistent tick
+                # without measurable network overhead.
+                _gevent.sleep(0.01)
             if not chunk.response_pending:
                 break
 
