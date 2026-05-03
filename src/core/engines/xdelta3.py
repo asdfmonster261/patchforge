@@ -32,6 +32,23 @@ _PRESETS: dict[str, tuple[str, list[str]]] = {
 _DEFAULT_PRESET = "paul44"
 
 
+def _strip_flag_with_value(args: list[str], flag: str) -> list[str]:
+    """Remove `flag <value>` (or `flag=value`) pairs from an arg list."""
+    out: list[str] = []
+    skip_next = False
+    for a in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == flag:
+            skip_next = True
+            continue
+        if a.startswith(flag + "="):
+            continue
+        out.append(a)
+    return out
+
+
 class XDelta3Engine(PatchEngine):
     name = "xdelta3"
     label = "xdelta3 3.0.8"
@@ -98,13 +115,26 @@ class XDelta3Engine(PatchEngine):
         extra = shlex.split(extra_diff_args) if extra_diff_args else []
         binary = str(self._binary())
 
+        # Strip any preset-supplied `-B` so we can size the source window
+        # per-file below.  xdelta3 takes the LAST `-B` on the cmdline, but
+        # being explicit keeps the cmdline readable in error messages.
+        args_no_B = _strip_flag_with_value(args, "-B")
+
         def make_patch(src_file: Path, tgt_file: Path) -> bytes:
             with tempfile.NamedTemporaryFile(suffix=".xd3", delete=False) as tmp:
                 tmp_path = Path(tmp.name)
             try:
-                cmd = [binary, "-e", "-f"] + args + extra + [
-                    "-s", str(src_file), str(tgt_file), str(tmp_path)
-                ]
+                # Size the source window to cover the whole source file so
+                # back-references from late target windows can always reach
+                # any earlier source position — xdelta3's encoder otherwise
+                # bails with XD3_TOOFARBACK on multi-GB sources.  Floor at
+                # the preset's 512 MB so small files don't shrink the window
+                # unnecessarily.
+                src_size = src_file.stat().st_size
+                srcwin   = max(src_size, 512 * 1024 * 1024)
+                cmd = ([binary, "-e", "-f"] + args_no_B
+                       + ["-B", str(srcwin)] + extra
+                       + ["-s", str(src_file), str(tgt_file), str(tmp_path)])
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     raise RuntimeError(
