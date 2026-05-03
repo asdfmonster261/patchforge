@@ -313,24 +313,27 @@ def test_post_pipeline_passes_force_download_into_notifications(tmp_path):
 # appinfo quiet path (used by detect_changes)
 # ---------------------------------------------------------------------------
 
-def test_query_app_info_batch_quiet_does_not_print(capsys):
-    from src.core.archive.appinfo import query_app_info_batch
+def test_query_app_info_batch_quiet_does_not_print(capsys, monkeypatch):
+    from src.core.archive import appinfo
+
+    def fake_stream(client, app_ids, max_retries, timeout=15):
+        for aid in app_ids:
+            yield aid, {
+                "common":  {"name": "Q", "oslist": ""},
+                "config":  {"installdir": "Q"},
+                "depots":  {"branches": {"public": {"buildid": "9",
+                                                    "timeupdated": 7}}},
+            }
+    monkeypatch.setattr(appinfo, "_streaming_product_info", fake_stream)
 
     fake_client = mock.Mock()
-    fake_client.get_product_info.return_value = {
-        "apps": {
-            42: {"common":  {"name": "Q", "oslist": ""},
-                 "config":  {"installdir": "Q"},
-                 "depots":  {"branches": {"public": {"buildid": "9", "timeupdated": 7}}}},
-        }
-    }
     fake_cdn = mock.Mock()
-    # licensed_app_ids must not be touched in quiet mode
     type(fake_cdn).licensed_app_ids = mock.PropertyMock(side_effect=AssertionError(
         "quiet=True must not request licensed_app_ids"
     ))
 
-    rows = list(query_app_info_batch(fake_client, fake_cdn, [42], quiet=True))
+    rows = list(appinfo.query_app_info_batch(fake_client, fake_cdn, [42],
+                                             quiet=True))
     captured = capsys.readouterr()
     assert captured.out == ""             # no per-app summary
     assert rows == [(42, {
