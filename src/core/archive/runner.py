@@ -291,6 +291,11 @@ def run_one_app(app_id: int, previous_buildid: str, *,
     except NotImplementedError:
         raise
     except Exception as exc:
+        # SessionDead must bubble up to the run_session driver so it can
+        # disconnect + relogin; swallowing it would mask CM timeouts.
+        from .errors import SessionDead
+        if isinstance(exc, SessionDead):
+            raise
         warn(f"app {app_id} failed: {exc}")
         return
 
@@ -400,6 +405,7 @@ def run_session(*,
                 subscriber: SubscriberFn | None,
                 upload_mod, notify_mod,
                 countdown_sleep: CountdownFn | None = None,
+                relogin=None,
                 log: LogFn = print,
                 warn: LogFn = print,
                 abort=None) -> RunResult:
@@ -430,6 +436,32 @@ def run_session(*,
     def _aborted() -> bool:
         return abort is not None and abort()
 
+    from .errors import SessionDead
+
+    max_retries = int(opts.get("max_retries") or 1)
+    retries_remaining = max_retries
+
+    def _recover_session() -> bool:
+        """Disconnect the dead client and re-authenticate via the
+        caller-supplied `relogin` callback.  Returns True on success."""
+        nonlocal client, cdn, retries_remaining
+        if relogin is None or retries_remaining <= 0:
+            return False
+        retries_remaining -= 1
+        warn(f"Steam CM session lost — re-authenticating "
+             f"({max_retries - retries_remaining}/{max_retries})…")
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+        try:
+            client, cdn = relogin()
+        except Exception as exc:
+            warn(f"Re-login failed: {exc}")
+            return False
+        log("Re-authenticated.")
+        return True
+
     if poll_mode:
         from . import poll as poll_mod
         force = bool(opts["force_download"])
@@ -445,33 +477,41 @@ def run_session(*,
                     client, cdn, apps_by_id,
                     force_download=force,
                     batch_size=poll_batch_size,
-                    max_retries=opts["max_retries"],
+                    max_retries=max_retries,
                     on_event=subscriber,
                     abort=abort,
                 )
+                if not changes:
+                    log("no buildid changes detected this cycle")
+                for app_id, prev, _curr, info in changes:
+                    if _aborted():
+                        log("aborted between apps")
+                        break
+                    run_one_app(
+                        app_id, prev, app_info_hint=info,
+                        client=client, cdn=cdn, output_dir=output_dir,
+                        platform=platform, opts=opts,
+                        creds=creds, branch=branch, crack=crack,
+                        crack_identity=crack_identity,
+                        unstub_options=unstub_options,
+                        volume_size=volume_size, depot_names=depot_names,
+                        subscriber=subscriber, notify_mode=notify_mode,
+                        project_obj=project_obj,
+                        upload_mod=upload_mod, notify_mod=notify_mod,
+                        log=log, warn=warn,
+                        result=result, apps_by_id=apps_by_id,
+                    )
+            except SessionDead:
+                if not _recover_session():
+                    warn("Steam CM session could not be recovered. Stopping.")
+                    break
+                # retry this cycle without sleeping
+                iteration -= 1
+                continue
             except Exception as exc:
                 warn(f"poll cycle failed: {exc}")
-                changes = []
-            if not changes:
-                log("no buildid changes detected this cycle")
-            for app_id, prev, _curr, info in changes:
-                if _aborted():
-                    log("aborted between apps")
-                    break
-                run_one_app(
-                    app_id, prev, app_info_hint=info,
-                    client=client, cdn=cdn, output_dir=output_dir,
-                    platform=platform, opts=opts,
-                    creds=creds, branch=branch, crack=crack,
-                    crack_identity=crack_identity,
-                    unstub_options=unstub_options,
-                    volume_size=volume_size, depot_names=depot_names,
-                    subscriber=subscriber, notify_mode=notify_mode,
-                    project_obj=project_obj,
-                    upload_mod=upload_mod, notify_mod=notify_mod,
-                    log=log, warn=warn,
-                    result=result, apps_by_id=apps_by_id,
-                )
+
+            retries_remaining = max_retries  # clean cycle — reset counter
             _save_project_now()
             force = False
             if _aborted():
@@ -485,7 +525,9 @@ def run_session(*,
         # cli display can show "X / N apps processed" the same way poll
         # mode does, even though we don't pre-fetch product-info here.
         total = len(app_ids)
-        for i, app_id in enumerate(app_ids, 1):
+        i = 0
+        while i < total:
+            app_id = app_ids[i]
             if _aborted():
                 log("aborted between apps")
                 break
@@ -494,24 +536,32 @@ def run_session(*,
                 subscriber(DownloadEvent(
                     kind="app_info_progress",
                     name=str(app_id),
-                    done=i,
+                    done=i + 1,
                     total=total,
                 ))
             entry = apps_by_id.get(app_id)
             previous_buildid = entry.current_buildid.buildid if entry else ""
-            run_one_app(
-                app_id, previous_buildid,
-                client=client, cdn=cdn, output_dir=output_dir,
-                platform=platform, opts=opts,
-                creds=creds, branch=branch, crack=crack,
-                crack_identity=crack_identity,
-                unstub_options=unstub_options,
-                volume_size=volume_size, depot_names=depot_names,
-                subscriber=subscriber, notify_mode=notify_mode,
-                project_obj=project_obj,
-                upload_mod=upload_mod, notify_mod=notify_mod,
-                log=log, warn=warn,
-                result=result, apps_by_id=apps_by_id,
-            )
+            try:
+                run_one_app(
+                    app_id, previous_buildid,
+                    client=client, cdn=cdn, output_dir=output_dir,
+                    platform=platform, opts=opts,
+                    creds=creds, branch=branch, crack=crack,
+                    crack_identity=crack_identity,
+                    unstub_options=unstub_options,
+                    volume_size=volume_size, depot_names=depot_names,
+                    subscriber=subscriber, notify_mode=notify_mode,
+                    project_obj=project_obj,
+                    upload_mod=upload_mod, notify_mod=notify_mod,
+                    log=log, warn=warn,
+                    result=result, apps_by_id=apps_by_id,
+                )
+            except SessionDead:
+                if not _recover_session():
+                    warn("Steam CM session could not be recovered. Stopping.")
+                    break
+                # retry the same app on the new session
+                continue
+            i += 1
 
     return result

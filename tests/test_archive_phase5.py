@@ -586,7 +586,8 @@ def test_poll_countdown_tty_decrements_per_second(monkeypatch, capsys):
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
 
     sleeps: list[float] = []
-    monkeypatch.setattr("time.sleep", lambda n: sleeps.append(n))
+    import gevent
+    monkeypatch.setattr(gevent, "sleep", lambda n: sleeps.append(n))
 
     assert cli_main._poll_countdown(3) is True
     assert sleeps == [1, 1, 1]                         # 3 ticks
@@ -606,7 +607,8 @@ def test_poll_countdown_non_tty_single_print(monkeypatch, capsys):
 
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
     sleeps: list[float] = []
-    monkeypatch.setattr("time.sleep", lambda n: sleeps.append(n))
+    import gevent
+    monkeypatch.setattr(gevent, "sleep", lambda n: sleeps.append(n))
 
     cli_main._poll_countdown(7)
     assert sleeps == [7]
@@ -620,7 +622,8 @@ def test_poll_countdown_returns_false_on_keyboard_interrupt(monkeypatch):
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
     def boom(_):
         raise KeyboardInterrupt
-    monkeypatch.setattr("time.sleep", boom)
+    import gevent
+    monkeypatch.setattr(gevent, "sleep", boom)
     assert cli_main._poll_countdown(5) is False
 
 
@@ -712,7 +715,8 @@ def test_polling_driver_loops_then_exits_on_keyboard_interrupt(tmp_path, monkeyp
     monkeypatch.setitem(__import__("sys").modules,
                         "src.core.archive.notify", fake_notify)
 
-    monkeypatch.setattr("time.sleep", fake_sleep)
+    import gevent
+    monkeypatch.setattr(gevent, "sleep", fake_sleep)
 
     args = mock.Mock(
         log=None,

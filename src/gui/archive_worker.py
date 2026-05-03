@@ -15,7 +15,6 @@ nested QThread + threading.Event deadlocks here.
 from __future__ import annotations
 
 import threading
-import time
 from pathlib import Path
 from typing import Callable
 
@@ -180,6 +179,7 @@ class ArchiveWorker(QObject):
                     subscriber=self._on_event,
                     upload_mod=upload_mod, notify_mod=notify_mod,
                     countdown_sleep=self._countdown_sleep,
+                    relogin=lambda: cm_login(tokens),
                     log=lambda m: _emit_log(m, "info"),
                     warn=lambda m: _emit_log(m, "warn"),
                     abort=self._abort.is_set,
@@ -213,14 +213,21 @@ class ArchiveWorker(QObject):
     def _countdown_sleep(self, seconds: int) -> bool:
         """Replacement for cli/main._poll_countdown — emits ticks back to
         the GUI instead of redrawing a TTY line.  Returns False when the
-        user clicked Stop (abort flag set)."""
+        user clicked Stop (abort flag set).
+
+        Uses gevent.sleep so the Steam CM heartbeat greenlet keeps
+        firing during the delay — time.sleep blocks the gevent hub on
+        this QThread for the entire wait, which kills the CM session
+        on long restart_delay values.
+        """
         if seconds <= 0:
             return True
+        import gevent as _gevent
         for remaining in range(seconds, 0, -1):
             if self._abort.is_set():
                 return False
             self.countdown_tick.emit(remaining)
-            time.sleep(1)
+            _gevent.sleep(1)
         self.countdown_tick.emit(0)
         return not self._abort.is_set()
 

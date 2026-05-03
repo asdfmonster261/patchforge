@@ -1722,11 +1722,15 @@ def _poll_countdown(seconds: int) -> bool:
     or print a one-shot "sleeping Ns" line on non-TTY (so log files
     don't fill with `\\r` spam).
 
+    Uses gevent.sleep so the CM heartbeat greenlet keeps running during
+    the wait — time.sleep would block the gevent hub for the entire
+    delay and let the CM session time out.
+
     Returns True when the wait completed normally, False on
     KeyboardInterrupt — caller treats False as "user wants out".
     """
     import sys as _sys
-    import time as _time
+    import gevent as _gevent
     if seconds <= 0:
         return True
     is_tty = hasattr(_sys.stdout, "isatty") and _sys.stdout.isatty()
@@ -1734,7 +1738,7 @@ def _poll_countdown(seconds: int) -> bool:
         print(f"sleeping {seconds}s until next poll cycle "
               f"(Ctrl-C to stop)")
         try:
-            _time.sleep(seconds)
+            _gevent.sleep(seconds)
         except KeyboardInterrupt:
             print()
             print("polling interrupted, exiting")
@@ -1748,7 +1752,7 @@ def _poll_countdown(seconds: int) -> bool:
                 f"\rnext poll cycle in {disp:<8} (Ctrl-C to stop)"
             )
             _sys.stdout.flush()
-            _time.sleep(1)
+            _gevent.sleep(1)
         # Erase the countdown line so the next cycle's "=== poll cycle N ==="
         # isn't appended to a stale "next poll cycle in 1s ..." remnant.
         _sys.stdout.write("\r\033[2K")
@@ -1937,6 +1941,7 @@ def _cmd_archive_download(args):
             subscriber=subscriber,
             upload_mod=upload_mod, notify_mod=notify_mod,
             countdown_sleep=_poll_countdown,
+            relogin=lambda: cm_login(tokens),
             log=print, warn=_warn,
         )
         all_archives        = run_result.archives

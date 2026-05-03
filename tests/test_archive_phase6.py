@@ -411,10 +411,11 @@ def test_archive_worker_emits_failed_when_no_login_tokens(qapp, tmp_path):
     assert fails and "tokens" in fails[0].lower()
 
 
-def test_archive_worker_countdown_sleep_emits_ticks(qapp):
+def test_archive_worker_countdown_sleep_emits_ticks(qapp, monkeypatch):
     """Drive _countdown_sleep directly without spawning a thread.  We
-    install a fake time.sleep so the test stays sub-second."""
+    install a fake gevent.sleep so the test stays sub-second."""
     from src.gui import archive_worker as aw
+    import gevent
 
     w = aw.ArchiveWorker(
         project_obj=project_mod.new_project(), project_path=None,
@@ -424,23 +425,24 @@ def test_archive_worker_countdown_sleep_emits_ticks(qapp):
     ticks: list[int] = []
     w.countdown_tick.connect(lambda n: ticks.append(n))
 
-    with patch.object(aw.time, "sleep", lambda s: None):
-        ok = w._countdown_sleep(3)
+    monkeypatch.setattr(gevent, "sleep", lambda s: None)
+    ok = w._countdown_sleep(3)
 
     assert ok is True
     assert ticks == [3, 2, 1, 0]
 
 
-def test_archive_worker_countdown_aborts(qapp):
+def test_archive_worker_countdown_aborts(qapp, monkeypatch):
     from src.gui import archive_worker as aw
+    import gevent
 
     w = aw.ArchiveWorker(
         project_obj=project_mod.new_project(), project_path=None,
         app_ids=[], platform=None,
     )
     w.request_abort()
-    with patch.object(aw.time, "sleep", lambda s: None):
-        ok = w._countdown_sleep(10)
+    monkeypatch.setattr(gevent, "sleep", lambda s: None)
+    ok = w._countdown_sleep(10)
     assert ok is False
 
 
@@ -525,6 +527,81 @@ def test_runner_aborts_single_pass_between_apps(tmp_path):
 
     # First app ran; abort fired before app 2.
     assert seen == [1]
+
+
+def test_runner_recovers_from_session_dead_in_single_pass(tmp_path):
+    """A SessionDead raised by run_one_app should disconnect the dead
+    client, call relogin(), and retry the same app on the new client."""
+    from src.core.archive.errors import SessionDead
+
+    proj = _project_with_one_app(app_id=42, current="1")
+    creds = _stub_creds()
+
+    call_count = {"n": 0}
+    def flaky_dl(client, cdn, app_id, *a, **kw):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise SessionDead("CM timed out")
+        return ([tmp_path / "ok.7z"],
+                {"windows": []},
+                {"appid": app_id, "name": "x", "buildid": "2"})
+
+    new_client, new_cdn = MagicMock(), MagicMock()
+    relogin_calls = {"n": 0}
+    def relogin():
+        relogin_calls["n"] += 1
+        return new_client, new_cdn
+
+    initial_client = MagicMock()
+
+    with patch("src.core.archive.download.download_app", side_effect=flaky_dl):
+        runner_mod.run_session(
+            client=initial_client, cdn=MagicMock(),
+            project_obj=proj, project_path=None,
+            creds=creds, output_dir=tmp_path,
+            app_ids=[42], opts=_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            relogin=relogin,
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    initial_client.disconnect.assert_called_once()
+    assert relogin_calls["n"] == 1
+    assert call_count["n"] == 2  # first failed, retry succeeded
+
+
+def test_runner_session_dead_no_relogin_aborts(tmp_path):
+    """Without a relogin callback the runner must stop the loop instead
+    of spinning forever."""
+    from src.core.archive.errors import SessionDead
+
+    proj = _project_with_one_app(app_id=42, current="1")
+    creds = _stub_creds()
+
+    def always_dead(*a, **kw):
+        raise SessionDead("cm dead")
+
+    with patch("src.core.archive.download.download_app", side_effect=always_dead):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=None,
+            creds=creds, output_dir=tmp_path,
+            app_ids=[42], opts=_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            relogin=None,
+            log=lambda m: None, warn=lambda m: None,
+        )
+    # Test passes if we returned without hanging.
 
 
 def test_poll_detect_changes_emits_progress():
