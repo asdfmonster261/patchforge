@@ -75,16 +75,22 @@ static int xd3_decode_file(const char *old_path, const unsigned char *patch_data
     config.winsize = 1024 * 1024;
     xd3_config_stream(&stream, &config);
 
-    /* Load source (old) file into memory */
-    fseek(fold, 0, SEEK_END);
-    long src_size = ftell(fold);
+    /* Load source (old) file into memory.  Use 64-bit ftell on Windows
+     * so source files >2 GB don't silently fail under 32-bit `long`.
+     * xdelta3's own usize_t is still 32-bit, so a 4 GB cap remains;
+     * reject sources at/above that boundary cleanly. */
+    _fseeki64(fold, 0, SEEK_END);
+    int64_t src_size = _ftelli64(fold);
     if (src_size < 0) { fclose(fold); fclose(fnew); return 0; }
-    fseek(fold, 0, SEEK_SET);
+    if ((uint64_t)src_size >= 0xFFFFFFFFULL) {
+        fclose(fold); fclose(fnew); return 0;
+    }
+    _fseeki64(fold, 0, SEEK_SET);
     uint8_t *src_buf = NULL;
     if (src_size > 0) {
-        src_buf = (uint8_t *)malloc(src_size);
+        src_buf = (uint8_t *)malloc((size_t)src_size);
         if (!src_buf) { fclose(fold); fclose(fnew); return 0; }
-        if ((long)fread(src_buf, 1, src_size, fold) != src_size) {
+        if (fread(src_buf, 1, (size_t)src_size, fold) != (size_t)src_size) {
             free(src_buf); fclose(fold); fclose(fnew); return 0;
         }
     }

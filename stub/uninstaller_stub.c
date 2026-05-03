@@ -154,25 +154,7 @@ static int json_get_bool(const char *json, const char *key, int def)
     return def;
 }
 
-/* Reject absolute paths, drive letters, UNC, and ".." components. Mirrors
- * pfg_path_is_safe() in stub_common.h. The uninstaller is its own translation
- * unit and doesn't include stub_common.h, so the check is duplicated here. */
-static int uninst_path_is_safe(const char *path)
-{
-    if (!path || !path[0]) return 0;
-    if (path[0] == '/' || path[0] == '\\') return 0;
-    if (path[1] == ':') return 0;
-    if (path[0] == '\\' && path[1] == '\\') return 0;
-    const char *p = path;
-    while (*p) {
-        if (p[0] == '.' && p[1] == '.' &&
-            (p[2] == '\0' || p[2] == '/' || p[2] == '\\'))
-            return 0;
-        while (*p && *p != '/' && *p != '\\') p++;
-        if (*p) p++;
-    }
-    return 1;
-}
+#include "path_safe.h"   /* pfg_path_is_safe() */
 
 /* Parse "files":[{path,component},...] into g_files/g_num_files. */
 static void json_parse_files(const char *json)
@@ -223,7 +205,7 @@ static void json_parse_files(const char *json)
         free(tmp);
 
         /* Refuse any entry whose path would escape the install dir. */
-        if (uf->path[0] && uninst_path_is_safe(uf->path)) g_num_files++;
+        if (uf->path[0] && pfg_path_is_safe(uf->path)) g_num_files++;
         p = q;
     }
 }

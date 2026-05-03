@@ -177,40 +177,18 @@ int do_patch(const char *target_path, const char *patch_data, size_t patch_size)
 /* ---- Path safety: reject absolute paths, drive letters, UNC, .. components.
  * Returned paths are always relative-and-contained; the caller can safely
  * snprintf("%s\\%s", base_dir, path) without escaping base_dir. */
-static int pfg_path_is_safe(const char *path)
-{
-    if (!path || !path[0]) return 0;
-    /* Reject absolute paths (leading separator) */
-    if (path[0] == '/' || path[0] == '\\') return 0;
-    /* Reject drive-letter paths "X:..." */
-    if (path[1] == ':') return 0;
-    /* Reject UNC paths "\\server\..." (the leading-backslash check above
-     * already catches this, but the explicit second-char test guards
-     * against any future loosening.) */
-    if (path[0] == '\\' && path[1] == '\\') return 0;
-    /* Reject any ".." path component */
-    const char *p = path;
-    while (*p) {
-        if (p[0] == '.' && p[1] == '.' &&
-            (p[2] == '\0' || p[2] == '/' || p[2] == '\\'))
-            return 0;
-        while (*p && *p != '/' && *p != '\\') p++;
-        if (*p) p++;
-    }
-    return 1;
-}
+#include "path_safe.h"   /* pfg_path_is_safe() */
 
 /* ---- Simple JSON key extraction (no external deps) ---- */
+/* Forward decl — defined below (json_find_key needs to come first
+ * for the str-extractors but logically belongs with int/double). */
+static const char *json_find_key(const char *json, const char *key);
+
 static const char *json_get_str(const char *json, const char *key,
                                 char *out, int out_len)
 {
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\"", key);
-    const char *p = strstr(json, search);
-    if (!p) return NULL;
-    p += strlen(search);
-    while (*p == ' ' || *p == ':') p++;
-    if (*p != '"') return NULL;
+    const char *p = json_find_key(json, key);
+    if (!p || *p != '"') return NULL;
     p++;
     int i = 0;
     while (*p && *p != '"' && i < out_len - 1) {
@@ -221,38 +199,47 @@ static const char *json_get_str(const char *json, const char *key,
     return out;
 }
 
-static int64_t json_get_int(const char *json, const char *key)
+/* Like the str-extractor above, find a key match in *key position* —
+ * a "<key>" followed (after optional whitespace) by ':'.  Returns NULL
+ * if the key is missing or only ever appears inside string values. */
+static const char *json_find_key(const char *json, const char *key)
 {
     char search[128];
     snprintf(search, sizeof(search), "\"%s\"", key);
-    const char *p = strstr(json, search);
+    const char *p = json;
+    for (;;) {
+        p = strstr(p, search);
+        if (!p) return NULL;
+        const char *q = p + strlen(search);
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+        if (*q == ':') {
+            q++;
+            while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+            return q;
+        }
+        p += 1;
+    }
+}
+
+static int64_t json_get_int(const char *json, const char *key)
+{
+    const char *p = json_find_key(json, key);
     if (!p) return 0;
-    p += strlen(search);
-    while (*p == ' ' || *p == ':') p++;
     return (int64_t)_atoi64(p);
 }
 
 static double json_get_double(const char *json, const char *key)
 {
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\"", key);
-    const char *p = strstr(json, search);
+    const char *p = json_find_key(json, key);
     if (!p) return 0.0;
-    p += strlen(search);
-    while (*p == ' ' || *p == ':') p++;
     return strtod(p, NULL);
 }
 
 /* Like json_get_str but malloc's the result — caller must free(). */
 static char *json_get_str_alloc(const char *json, const char *key)
 {
-    char search[128];
-    snprintf(search, sizeof(search), "\"%s\"", key);
-    const char *p = strstr(json, search);
-    if (!p) return NULL;
-    p += strlen(search);
-    while (*p == ' ' || *p == ':') p++;
-    if (*p != '"') return NULL;
+    const char *p = json_find_key(json, key);
+    if (!p || *p != '"') return NULL;
     p++;
     const char *start = p;
     size_t len = 0;
