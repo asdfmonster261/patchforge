@@ -75,34 +75,40 @@ static int xd3_decode_file(const char *old_path, const unsigned char *patch_data
     config.winsize = 1024 * 1024;
     xd3_config_stream(&stream, &config);
 
-    /* Load source (old) file into memory.  Use 64-bit ftell on Windows
-     * so source files >2 GB don't silently fail under 32-bit `long`.
-     * xdelta3's own usize_t is still 32-bit, so a 4 GB cap remains;
-     * reject sources at/above that boundary cleanly. */
+    /* Stream the source (old) file rather than slurping it in.  Earlier
+     * revisions read the whole file into a single malloc'd buffer, which
+     * meant 32-bit `long ftell` on MSVC capped sources at 2 GB and even
+     * with 64-bit ftell the in-memory buffer capped them at 4 GB (and
+     * required ~src_size of RAM).  Modern game paks are routinely
+     * tens of GB, so we feed xdelta3 one block at a time via the
+     * XD3_GETSRCBLK callback path.
+     *
+     * Block size is held to a power-of-two so xdelta3 can use its
+     * shift/mask optimisations (xd3_source.shiftby / maskby). */
+    enum { SRC_BLKSIZE = 1 << 20 };  /* 1 MiB */
+
     _fseeki64(fold, 0, SEEK_END);
     int64_t src_size = _ftelli64(fold);
     if (src_size < 0) { fclose(fold); fclose(fnew); return 0; }
-    if ((uint64_t)src_size >= 0xFFFFFFFFULL) {
-        fclose(fold); fclose(fnew); return 0;
-    }
     _fseeki64(fold, 0, SEEK_SET);
-    uint8_t *src_buf = NULL;
-    if (src_size > 0) {
-        src_buf = (uint8_t *)malloc((size_t)src_size);
-        if (!src_buf) { fclose(fold); fclose(fnew); return 0; }
-        if (fread(src_buf, 1, (size_t)src_size, fold) != (size_t)src_size) {
-            free(src_buf); fclose(fold); fclose(fnew); return 0;
-        }
-    }
-    fclose(fold);
 
-    source.blksize   = (usize_t)(src_size > 0 ? src_size : 1);
-    source.curblkno  = 0;
-    source.curblk    = src_buf ? src_buf : (const uint8_t *)"";
-    source.onblk     = (usize_t)src_size;
+    uint8_t *src_buf = (uint8_t *)malloc(SRC_BLKSIZE);
+    if (!src_buf) { fclose(fold); fclose(fnew); return 0; }
+
+    xoff_t  max_blkno  = 0;
+    usize_t onlastblk  = 0;
+    if (src_size > 0) {
+        max_blkno  = (xoff_t)((uint64_t)(src_size - 1) / SRC_BLKSIZE);
+        onlastblk  = (usize_t)((uint64_t)src_size - (uint64_t)max_blkno * SRC_BLKSIZE);
+    }
+
+    source.blksize   = SRC_BLKSIZE;
+    source.curblkno  = (xoff_t)-1;          /* nothing loaded yet */
+    source.curblk    = src_buf;
+    source.onblk     = 0;
     source.eof_known = 1;
-    source.max_blkno = 0;
-    source.onlastblk = (usize_t)src_size;
+    source.max_blkno = max_blkno;
+    source.onlastblk = onlastblk;
     xd3_set_source(&stream, &source);
 
     size_t inp_pos = 0;
@@ -135,11 +141,18 @@ static int xd3_decode_file(const char *old_path, const unsigned char *patch_data
                 { ret = -1; done = 1; break; }
             xd3_consume_output(&stream);
             goto process;
-        case XD3_GETSRCBLK:
-            stream.src->curblk   = src_buf ? src_buf : (const uint8_t *)"";
-            stream.src->onblk    = (usize_t)src_size;
-            stream.src->curblkno = stream.src->getblkno;
+        case XD3_GETSRCBLK: {
+            xoff_t  bno    = stream.src->getblkno;
+            int64_t off    = (int64_t)bno * SRC_BLKSIZE;
+            usize_t want   = (bno == max_blkno) ? onlastblk : SRC_BLKSIZE;
+            if (_fseeki64(fold, off, SEEK_SET) != 0) { ret = -1; done = 1; break; }
+            size_t got = fread(src_buf, 1, want, fold);
+            if (got != want) { ret = -1; done = 1; break; }
+            stream.src->curblk   = src_buf;
+            stream.src->curblkno = bno;
+            stream.src->onblk    = (usize_t)got;
             goto process;
+        }
         case XD3_GOTHEADER:
         case XD3_WINSTART:
         case XD3_WINFINISH:
@@ -150,6 +163,7 @@ static int xd3_decode_file(const char *old_path, const unsigned char *patch_data
         }
     }
 
+    fclose(fold);
     fclose(fnew);
     free(src_buf);
     int ok = (ret == 0 || ret == XD3_WINFINISH);
