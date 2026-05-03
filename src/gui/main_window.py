@@ -1411,11 +1411,8 @@ class MainWindow(QMainWindow):
 
         self.build_btn.setEnabled(False)
         self.progress_bar.setValue(0)
-        # Don't clear the log automatically — the user can use the
-        # Clear Log button if they want to start fresh.  Insert a thin
-        # separator so the new run is visually distinct from the prior.
-        if self.log.toPlainText():
-            self._log("─" * 60)
+        # Reset the log so a new build starts on a clean pane.
+        self.log.clear()
         self._log("Starting patch build…")
 
         if self._thread:
@@ -1438,8 +1435,7 @@ class MainWindow(QMainWindow):
         self.build_btn.setEnabled(False)
         self.progress_bar.setValue(0)
         self.stream_widget.setVisible(False)
-        if self.log.toPlainText():
-            self._log("─" * 60)
+        self.log.clear()
         self._log("Starting repack build…")
 
         if self._thread:
