@@ -323,10 +323,19 @@ def test_cmd_archive_depot_dispatches_to_download_manifest(monkeypatch, tmp_path
     fake_creds.steam_id             = 1
     fake_creds.client_refresh_token = "tok"
 
+    # Patch BOTH the sys.modules entry AND the package attribute.
+    # `from src.core.archive import credentials as creds_mod` resolves
+    # via the package's bound attribute, which doesn't update when
+    # sys.modules changes — so once credentials has been imported by
+    # any other test in this run, swapping sys.modules alone is not
+    # enough.  Patch the package's `credentials` attribute too.
     fake_creds_mod = mock.Mock()
     fake_creds_mod.load.return_value = fake_creds
     monkeypatch.setitem(__import__("sys").modules,
                         "src.core.archive.credentials", fake_creds_mod)
+    import src.core.archive as _archive_pkg
+    monkeypatch.setattr(_archive_pkg, "credentials", fake_creds_mod,
+                        raising=False)
 
     fake_client = mock.Mock()
     fake_cdn    = mock.Mock()
