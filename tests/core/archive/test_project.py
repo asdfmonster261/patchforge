@@ -189,6 +189,137 @@ def test_app_entry_previous_buildid_default_blank():
     assert e.previous_buildid.buildid == ""
 
 
+# ---------------------------------------------------------------------------
+# ManifestRecord — per-buildid manifest history persistence
+# ---------------------------------------------------------------------------
+
+def test_manifest_record_roundtrip(tmp_path):
+    """save() / load() preserves manifest_history list contents."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    entry = project_mod.AppEntry(app_id=730, current_buildid="200")
+    entry.manifest_history.extend([
+        project_mod.ManifestRecord(
+            buildid="200", branch="public", platform="windows",
+            depot_id=731, depot_name="csgo", manifest_gid="111",
+            timeupdated=1000,
+        ),
+        project_mod.ManifestRecord(
+            buildid="200", branch="public", platform="linux",
+            depot_id=731, depot_name="csgo", manifest_gid="111",
+            timeupdated=1000,
+        ),
+    ])
+    proj.apps.append(entry)
+
+    path = tmp_path / "p.xarchive"
+    project_mod.save(proj, path)
+
+    loaded = project_mod.load(path)
+    assert len(loaded.apps[0].manifest_history) == 2
+    rec = loaded.apps[0].manifest_history[0]
+    assert rec.buildid      == "200"
+    assert rec.platform     == "windows"
+    assert rec.depot_id     == 731
+    assert rec.manifest_gid == "111"
+    assert rec.timeupdated  == 1000
+
+
+def test_manifest_record_load_drops_unknown_fields(tmp_path):
+    """Forward compat: a future field on ManifestRecord is ignored
+    when read by an older PatchForge build."""
+    from src.core.archive import project as project_mod
+
+    raw = {
+        "schema_version": 1,
+        "apps": [{
+            "app_id": 730,
+            "manifest_history": [{
+                "buildid": "200", "branch": "public", "platform": "windows",
+                "depot_id": 731, "depot_name": "csgo",
+                "manifest_gid": "111", "timeupdated": 1000,
+                "future_field": "ignored",
+            }],
+        }],
+    }
+    path = tmp_path / "p.xarchive"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    proj = project_mod.load(path)
+    assert len(proj.apps[0].manifest_history) == 1
+    rec = proj.apps[0].manifest_history[0]
+    assert rec.depot_id == 731
+    assert not hasattr(rec, "future_field")
+
+
+def test_manifest_record_load_handles_missing_history():
+    """Apps written by an older PatchForge that didn't have
+    manifest_history must load with an empty list, not crash."""
+    from src.core.archive.project import _load_app_entry
+
+    entry = _load_app_entry({"app_id": 730, "current_buildid": "100"})
+    assert entry.manifest_history == []
+
+
+# ---------------------------------------------------------------------------
+# BuildIdRecord — nested {buildid, timeupdated} shape + legacy migration
+# ---------------------------------------------------------------------------
+
+def test_appentry_timeupdated_roundtrip(tmp_path):
+    """save() / load() preserves both nested BuildIdRecord fields."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(
+        app_id=730,
+        current_buildid=project_mod.BuildIdRecord(
+            buildid="200", timeupdated=1700000000,
+        ),
+        previous_buildid=project_mod.BuildIdRecord(
+            buildid="100", timeupdated=1600000000,
+        ),
+    ))
+    path = tmp_path / "p.xarchive"
+    project_mod.save(proj, path)
+
+    loaded = project_mod.load(path)
+    e = loaded.apps[0]
+    assert e.current_buildid.buildid      == "200"
+    assert e.current_buildid.timeupdated  == 1700000000
+    assert e.previous_buildid.buildid     == "100"
+    assert e.previous_buildid.timeupdated == 1600000000
+
+
+def test_appentry_legacy_flat_format_loads(tmp_path):
+    """Pre-nesting .xarchive files stored buildid as bare string +
+    timeupdated as separate top-level field.  Loader must lift them
+    into the new BuildIdRecord shape transparently."""
+    from src.core.archive import project as project_mod
+
+    raw = {
+        "schema_version": 1,
+        "apps": [{
+            "app_id": 730,
+            "current_buildid":  "200",
+            "previous_buildid": "100",
+            "current_buildid_timeupdated":  1700000000,
+            "previous_buildid_timeupdated": 1600000000,
+        }],
+    }
+    path = tmp_path / "p.xarchive"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    proj = project_mod.load(path)
+    e = proj.apps[0]
+    assert isinstance(e.current_buildid,  project_mod.BuildIdRecord)
+    assert isinstance(e.previous_buildid, project_mod.BuildIdRecord)
+    assert e.current_buildid.buildid      == "200"
+    assert e.current_buildid.timeupdated  == 1700000000
+    assert e.previous_buildid.buildid     == "100"
+    assert e.previous_buildid.timeupdated == 1600000000
+
+
 def test_archive_project_persists_crack_mode_field(tmp_path):
     """ArchiveProject.crack_mode round-trips through save/load —
     saved per-project so users don't need to re-pick coldclient/gse

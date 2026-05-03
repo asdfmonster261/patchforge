@@ -665,6 +665,307 @@ def test_runner_poll_aborts_via_countdown_returning_false(tmp_path,
     assert result.archives == []
 
 
+# ---------------------------------------------------------------------------
+# manifest_history append / dedup / per-platform / branch separation
+# ---------------------------------------------------------------------------
+
+def test_runner_appends_manifest_history(tmp_path, stub_creds, archive_run_opts):
+    """A successful download must append one ManifestRecord per
+    (platform, depot_id, manifest_gid) into entry.manifest_history."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(
+        app_id=730, branch="public", current_buildid="100",
+    ))
+
+    download_app = MagicMock(return_value=(
+        [tmp_path / "g.7z"],
+        {"windows": [(731, "main", "GID-A"), (732, "wbins", "GID-B")]},
+        {"appid": 730, "name": "Foo", "buildid": "200", "timeupdated": 5000},
+    ))
+
+    with patch("src.core.archive.download.download_app", download_app):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=tmp_path / "p.xarchive",
+            creds=stub_creds(), output_dir=tmp_path,
+            app_ids=[730], opts=archive_run_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    history = proj.apps[0].manifest_history
+    assert len(history) == 2
+    by_depot = {r.depot_id: r for r in history}
+    assert by_depot[731].manifest_gid == "GID-A"
+    assert by_depot[731].buildid      == "200"
+    assert by_depot[731].branch       == "public"
+    assert by_depot[731].platform     == "windows"
+    assert by_depot[731].timeupdated  == 5000
+    assert by_depot[732].manifest_gid == "GID-B"
+
+
+def test_runner_dedups_repeat_manifest_history(tmp_path, stub_creds,
+                                                  archive_run_opts):
+    """Re-running with the same buildid must NOT bloat manifest_history
+    — dedup on (buildid, branch, platform, depot, gid)."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(
+        app_id=730, branch="public", current_buildid="200",
+    ))
+    proj.apps[0].manifest_history.append(project_mod.ManifestRecord(
+        buildid="200", branch="public", platform="windows",
+        depot_id=731, depot_name="main", manifest_gid="GID-A",
+    ))
+
+    download_app = MagicMock(return_value=(
+        [tmp_path / "g.7z"],
+        {"windows": [(731, "main", "GID-A")]},   # identical to existing
+        {"appid": 730, "name": "Foo", "buildid": "200", "timeupdated": 0},
+    ))
+
+    with patch("src.core.archive.download.download_app", download_app):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=tmp_path / "p.xarchive",
+            creds=stub_creds(), output_dir=tmp_path,
+            app_ids=[730], opts=archive_run_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    assert len(proj.apps[0].manifest_history) == 1
+
+
+def test_runner_records_per_platform_under_platform_all(tmp_path, stub_creds,
+                                                          archive_run_opts):
+    """When download_app returns dict with multiple platform keys (the
+    --platform all path), each platform yields its own row.  The
+    literal 'all' must never appear in stored records."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(
+        app_id=730, branch="public", current_buildid="100",
+    ))
+
+    download_app = MagicMock(return_value=(
+        [],
+        {
+            "windows": [(731, "shared", "GID-A"), (732, "wbins", "GID-B")],
+            "linux":   [(731, "shared", "GID-A"), (733, "lbins", "GID-C")],
+        },
+        {"appid": 730, "name": "Foo", "buildid": "200", "timeupdated": 0},
+    ))
+
+    with patch("src.core.archive.download.download_app", download_app):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=tmp_path / "p.xarchive",
+            creds=stub_creds(), output_dir=tmp_path,
+            app_ids=[730], opts=archive_run_opts(),
+            platform="all", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    history = proj.apps[0].manifest_history
+    platforms = {r.platform for r in history}
+    assert "all" not in platforms
+    assert platforms == {"windows", "linux"}
+
+    # Shared depot 731 appears under both windows AND linux — same
+    # depot_id + gid, different platform, so two distinct rows.
+    shared_rows = [r for r in history if r.depot_id == 731]
+    assert len(shared_rows) == 2
+    assert {r.platform for r in shared_rows} == {"windows", "linux"}
+
+    # Total count: shared (2) + windows-only (1) + linux-only (1)
+    assert len(history) == 4
+
+
+def test_runner_separates_branches_in_manifest_history(tmp_path, stub_creds,
+                                                         archive_run_opts):
+    """Recording the same buildid on two different branches keeps both
+    rows (dedup key includes branch)."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(
+        app_id=730, branch="beta", current_buildid="200",
+    ))
+    proj.apps[0].manifest_history.append(project_mod.ManifestRecord(
+        buildid="200", branch="public", platform="windows",
+        depot_id=731, depot_name="main", manifest_gid="GID-A",
+    ))
+
+    download_app = MagicMock(return_value=(
+        [],
+        {"windows": [(731, "main", "GID-A")]},
+        {"appid": 730, "name": "Foo", "buildid": "200", "timeupdated": 0},
+    ))
+
+    with patch("src.core.archive.download.download_app", download_app):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=tmp_path / "p.xarchive",
+            creds=stub_creds(), output_dir=tmp_path,
+            app_ids=[730], opts=archive_run_opts(),
+            platform="windows", notify_mode="none",
+            branch="beta", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    history = proj.apps[0].manifest_history
+    branches = {r.branch for r in history}
+    assert branches == {"public", "beta"}
+    assert len(history) == 2
+
+
+# ---------------------------------------------------------------------------
+# timeupdated propagation
+# ---------------------------------------------------------------------------
+
+def test_runner_records_current_buildid_timeupdated(tmp_path, stub_creds,
+                                                      archive_run_opts):
+    """A successful download must stash app_meta.timeupdated into
+    AppEntry.current_buildid.timeupdated."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(
+        app_id=730, branch="public", current_buildid="100",
+    ))
+
+    download_app = MagicMock(return_value=(
+        [], {"windows": [(731, "main", "GID")]},
+        {"appid": 730, "name": "Foo", "buildid": "200",
+         "timeupdated": 1700000000},
+    ))
+
+    with patch("src.core.archive.download.download_app", download_app):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=tmp_path / "p.xarchive",
+            creds=stub_creds(), output_dir=tmp_path,
+            app_ids=[730], opts=archive_run_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    assert proj.apps[0].current_buildid.timeupdated == 1700000000
+
+
+def test_runner_shifts_timeupdated_alongside_buildid(tmp_path, stub_creds,
+                                                       archive_run_opts):
+    """When current_buildid moves, previous_buildid.timeupdated must
+    capture the previous current_buildid.timeupdated."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(
+        app_id=730, branch="public",
+        current_buildid=project_mod.BuildIdRecord(
+            buildid="100", timeupdated=1600000000,
+        ),
+    ))
+
+    download_app = MagicMock(return_value=(
+        [], {"windows": [(731, "main", "GID")]},
+        {"appid": 730, "name": "Foo", "buildid": "200",
+         "timeupdated": 1700000000},
+    ))
+
+    with patch("src.core.archive.download.download_app", download_app):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=tmp_path / "p.xarchive",
+            creds=stub_creds(), output_dir=tmp_path,
+            app_ids=[730], opts=archive_run_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    assert proj.apps[0].current_buildid.buildid      == "200"
+    assert proj.apps[0].current_buildid.timeupdated  == 1700000000
+    assert proj.apps[0].previous_buildid.buildid     == "100"
+    assert proj.apps[0].previous_buildid.timeupdated == 1600000000
+
+
+def test_runner_preserves_previous_ts_on_force_redownload(tmp_path, stub_creds,
+                                                            archive_run_opts):
+    """--force-download against an unchanged buildid must NOT shift
+    previous_buildid.timeupdated — same guard as previous_buildid
+    itself."""
+    from src.core.archive import project as project_mod
+
+    proj = project_mod.new_project()
+    proj.apps.append(project_mod.AppEntry(
+        app_id=730, branch="public",
+        current_buildid=project_mod.BuildIdRecord(
+            buildid="200", timeupdated=1700000000,
+        ),
+        previous_buildid=project_mod.BuildIdRecord(
+            buildid="100", timeupdated=1600000000,
+        ),
+    ))
+
+    download_app = MagicMock(return_value=(
+        [], {"windows": [(731, "main", "GID")]},
+        {"appid": 730, "name": "Foo", "buildid": "200",
+         "timeupdated": 1700000000},
+    ))
+
+    with patch("src.core.archive.download.download_app", download_app):
+        runner_mod.run_session(
+            client=MagicMock(), cdn=MagicMock(),
+            project_obj=proj, project_path=tmp_path / "p.xarchive",
+            creds=stub_creds(), output_dir=tmp_path,
+            app_ids=[730], opts=archive_run_opts(),
+            platform="windows", notify_mode="none",
+            branch="public", crack=False,
+            crack_identity=None, unstub_options=None,
+            volume_size=None, depot_names={},
+            subscriber=None,
+            upload_mod=MagicMock(), notify_mod=MagicMock(),
+            log=lambda m: None, warn=lambda m: None,
+        )
+
+    assert proj.apps[0].previous_buildid.buildid     == "100"
+    assert proj.apps[0].previous_buildid.timeupdated == 1600000000
+
+
 def test_runner_session_dead_no_relogin_aborts(tmp_path,
                                                archive_project_factory,
                                                stub_creds, archive_run_opts):

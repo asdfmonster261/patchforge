@@ -150,6 +150,32 @@ def test_detect_changes_empty_apps_returns_empty_list():
 # Progress events
 # ---------------------------------------------------------------------------
 
+def test_poll_first_seen_seeds_current_timeupdated(monkeypatch):
+    """detect_changes first-seen seeding records timeupdated alongside
+    the buildid so users see when a freshly-added app was last built
+    without needing to run a download."""
+    from src.core.archive import poll as poll_mod
+    from src.core.archive import project as project_mod
+
+    fake_results = [
+        (730, {"name": "Foo", "buildid": "200", "oslist": "windows",
+               "timeupdated": 1700000000, "installdir": "Foo"}),
+    ]
+    monkeypatch.setattr(
+        poll_mod, "query_app_info_batch",
+        lambda *a, **kw: iter(fake_results),
+    )
+
+    entry = project_mod.AppEntry(app_id=730, current_buildid="")
+    apps_by_id = {730: entry}
+    changes = poll_mod.detect_changes(
+        client=None, cdn=None, apps_by_id=apps_by_id,
+    )
+    assert changes == []  # silent seed
+    assert entry.current_buildid.buildid     == "200"
+    assert entry.current_buildid.timeupdated == 1700000000
+
+
 def test_detect_changes_emits_progress():
     """detect_changes must emit one app_info_progress per app probed,
     counting up to the total."""
