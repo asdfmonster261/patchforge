@@ -14,7 +14,6 @@ STRIP32 = i686-w64-mingw32-strip
 SRC_ROOT = ../..
 HDIFF    = $(SRC_ROOT)/source_code/hdiffpatch
 JOJO     = $(SRC_ROOT)/source_code/jojodiff
-XD3      = $(SRC_ROOT)/source_code/xdelta3
 LZMA     = $(SRC_ROOT)/source_code/lzma/C
 OUT      = prebuilt
 
@@ -33,7 +32,6 @@ CFLAGS_COMMON = -O2 -Wall -mwindows \
     -I$(HDIFF) -I$(HDIFF)/libHDiffPatch/HPatch \
     -I$(HDIFF)/dirDiffPatch \
     -I$(DIRPATCH) \
-    -I$(XD3) \
     -I$(JOJO)/headers \
     -I$(LZMA) \
     -DNDEBUG -D_LARGEFILE_SOURCE -D_FILE_OFFSET_BITS=64 \
@@ -68,18 +66,6 @@ CFLAGS_HDIFF_FULL32 = $(CFLAGS_HDIFF_BASE) \
     -I$(ZLIB32)/include \
     -I$(BZ2_32)/include
 
-CFLAGS_XD3_BASE = $(CFLAGS_COMMON) \
-    -DXD3_MAIN=0 -DXD3_WIN32=1 -DXD3_DEBUG=0 \
-    -DXD3_USE_LARGEFILE64=1 \
-    -DSECONDARY_DJW=1 -DSECONDARY_FGK=1 -DSECONDARY_LZMA=1 \
-    -DHAVE_LZMA_H=1 \
-    -DEXTERNAL_COMPRESSION=0
-
-CFLAGS_XD3 = $(CFLAGS_XD3_BASE) \
-    -I$(XZ64)/include
-CFLAGS_XD3_32 = $(CFLAGS_XD3_BASE) \
-    -I$(XZ32)/include
-
 CFLAGS_JOJO = $(CFLAGS_COMMON)
 
 # Installer stub flags: only needs liblzma
@@ -109,10 +95,10 @@ HDIFF_SRCS = \
 
 .PHONY: all win32 full full32 installer uninstaller clean deps
 
-all: $(OUT)/hdiffpatch_x64.exe $(OUT)/xdelta3_x64.exe $(OUT)/jojodiff_x64.exe
+all: $(OUT)/hdiffpatch_x64.exe $(OUT)/jojodiff_x64.exe
 	@echo "=== All x64 stubs built ==="
 
-win32: $(OUT)/hdiffpatch_x86.exe $(OUT)/xdelta3_x86.exe $(OUT)/jojodiff_x86.exe
+win32: $(OUT)/hdiffpatch_x86.exe $(OUT)/jojodiff_x86.exe
 	@echo "=== All x86 stubs built ==="
 
 installer: $(OUT)/installer_x64.exe $(OUT)/installer_x86.exe
@@ -122,10 +108,10 @@ uninstaller: $(OUT)/uninstaller_x64.exe $(OUT)/uninstaller_x86.exe
 	@echo "=== Uninstaller stubs built ==="
 
 # Full stubs with zlib+bzip2 support (requires build_deps.sh first)
-full: $(OUT)/hdiffpatch_full_x64.exe $(OUT)/xdelta3_x64.exe $(OUT)/jojodiff_x64.exe
+full: $(OUT)/hdiffpatch_full_x64.exe $(OUT)/jojodiff_x64.exe
 	@echo "=== All x64 full stubs built ==="
 
-full32: $(OUT)/hdiffpatch_full_x86.exe $(OUT)/xdelta3_x86.exe $(OUT)/jojodiff_x86.exe
+full32: $(OUT)/hdiffpatch_full_x86.exe $(OUT)/jojodiff_x86.exe
 	@echo "=== All x86 full stubs built ==="
 
 deps:
@@ -147,26 +133,6 @@ $(OUT)/hdiffpatch_x64.exe: hdiffpatch_stub.c stub_common.h $(HDIFF_SRCS) | $(OUT
 $(OUT)/hdiffpatch_x86.exe: hdiffpatch_stub.c stub_common.h $(HDIFF_SRCS) | $(OUT)
 	$(CC32) $(CFLAGS_HDIFF) \
 	    hdiffpatch_stub.c $(HDIFF_SRCS) \
-	    $(LIBS) \
-	    -o $@
-	$(STRIP32) $@
-	@echo "Built: $@  ($$(du -sh $@ | cut -f1))"
-
-# xdelta3 stub x64
-$(OUT)/xdelta3_x64.exe: xdelta3_stub.c stub_common.h | $(OUT)
-	$(CC64) $(CFLAGS_XD3) \
-	    xdelta3_stub.c \
-	    -L$(XZ64)/lib -llzma \
-	    $(LIBS) \
-	    -o $@
-	$(STRIP64) $@
-	@echo "Built: $@  ($$(du -sh $@ | cut -f1))"
-
-# xdelta3 stub x86
-$(OUT)/xdelta3_x86.exe: xdelta3_stub.c stub_common.h | $(OUT)
-	$(CC32) $(CFLAGS_XD3_32) \
-	    xdelta3_stub.c \
-	    -L$(XZ32)/lib -llzma \
 	    $(LIBS) \
 	    -o $@
 	$(STRIP32) $@

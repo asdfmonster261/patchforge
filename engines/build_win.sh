@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# build_win.sh — Cross-compile the three patcher engines for Windows x64
+# build_win.sh — Cross-compile the patcher engines for Windows x64
 # using MinGW-w64. Outputs to engines/win-x64/.
 #
 # Engines:
 #   HDiffPatch  -> hdiffz.exe, hpatchz.exe
-#   xdelta3     -> xdelta3.exe
 #   JojoDiff    -> jdiff.exe, jptch.exe
 #
 # Run from anywhere; the script discovers paths from its own location.
@@ -63,25 +62,6 @@ build_hdiffpatch() {
 }
 
 # ---------------------------------------------------------------------------
-# xdelta3 — single-file compile with upstream Makefile.mingw recipe
-# ---------------------------------------------------------------------------
-build_xdelta3() {
-    echo "==> Building xdelta3 (xdelta3.exe)"
-    local work="$BUILD_TMP/xdelta3"
-    rm -rf "$work"
-    cp -a "$SRC/xdelta3" "$work"
-    pushd "$work" > /dev/null
-    "$CC" -Wall -Wshadow -fno-builtin -O3 xdelta3.c -o xdelta3.exe \
-        -DXD3_STDIO=0 -DXD3_POSIX=0 -DXD3_WIN32=1 -DEXTERNAL_COMPRESSION=0 \
-        -DREGRESSION_TEST=0 -DSECONDARY_DJW=1 -DSECONDARY_FGK=1 \
-        -DXD3_DEBUG=0 -DXD3_MAIN=1 -DXD3_USE_LARGEFILE64=1 \
-        -static -lm
-    "$STRIP" xdelta3.exe
-    cp xdelta3.exe "$OUT/"
-    popd > /dev/null
-}
-
-# ---------------------------------------------------------------------------
 # JojoDiff — patched main.cpp; link winpthreads statically
 # ---------------------------------------------------------------------------
 build_jojodiff() {
@@ -101,7 +81,6 @@ build_jojodiff() {
 }
 
 build_hdiffpatch
-build_xdelta3
 build_jojodiff
 
 echo

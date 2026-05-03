@@ -35,7 +35,7 @@ class ProjectSettings:
     output_dir: str = ""   # where to write the output .exe
 
     # Engine + compression
-    engine: str = "hdiffpatch"       # "hdiffpatch" | "xdelta3" | "jojodiff"
+    engine: str = "hdiffpatch"       # "hdiffpatch" | "jojodiff"
     compression: str = "set6_lzma2"  # engine-specific preset key; hdiffpatch default
 
     # Verification
@@ -52,11 +52,10 @@ class ProjectSettings:
     # Stub architecture
     arch: str = "x64"   # "x64" | "x86"
 
-    # Thread count for patch generation (HDiffPatch: -p-N; xdelta3/jojodiff dir mode)
+    # Thread count for patch generation (HDiffPatch: -p-N; jojodiff dir mode).
     threads: int = 1
 
-    # Compressor quality for HDiffPatch (fast/normal/max).
-    # Ignored by xdelta3 and JojoDiff.
+    # Compressor quality for HDiffPatch (fast/normal/max).  Ignored by JojoDiff.
     compressor_quality: str = "max"
 
     # Optional icon (.ico) to embed in the output exe

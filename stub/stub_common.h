@@ -84,7 +84,7 @@ typedef struct {
     char company_info[256];
     char window_title[256];     /* title bar text; falls back to app_name */
     char patch_exe_version[64]; /* informational version of the patch exe */
-    char engine[32];        /* "xdelta3", "jojodiff", "hdiffpatch" */
+    char engine[32];        /* "jojodiff", "hdiffpatch" */
     char compression[32];
     char verify_method[32]; /* "crc32c", "md5", "filesize" */
     char find_method[32];   /* "manual", "registry", "ini" */

@@ -1,5 +1,5 @@
 """
-PFMD container format — directory-mode patches for xdelta3 and JojoDiff.
+PFMD container format — directory-mode patches for JojoDiff.
 
 Wire format (version 2):
   4 bytes  magic "PFMD"

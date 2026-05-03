@@ -137,12 +137,11 @@ def _add_build(sub):
                    help="Informational version string for the patch exe (e.g. 1.0.0.0)")
 
     # Engine + compression
-    p.add_argument("--engine", choices=["hdiffpatch", "xdelta3", "jojodiff"],
+    p.add_argument("--engine", choices=["hdiffpatch", "jojodiff"],
                    help="Patch engine (default: hdiffpatch)")
     p.add_argument("--compression", metavar="PRESET",
                    help="Compression preset key for the chosen engine "
                         "(hdiffpatch: set1_lzma2…set6_bzip2; "
-                        "xdelta3: none/paul44/lzma_mem; "
                         "jojodiff: minimal/good/optimal)")
     p.add_argument("--threads", metavar="N", type=int,
                    help="Worker threads for patch generation (default: 1)")
@@ -362,7 +361,7 @@ def _add_new_project(sub):
     p.add_argument("--window-title", metavar="TEXT", dest="window_title")
     p.add_argument("--patch-exe-name",    metavar="STEM", dest="patch_exe_name")
     p.add_argument("--patch-exe-version", metavar="VER",  dest="patch_exe_version")
-    p.add_argument("--engine",      choices=["hdiffpatch", "xdelta3", "jojodiff"])
+    p.add_argument("--engine",      choices=["hdiffpatch", "jojodiff"])
     p.add_argument("--compression", metavar="PRESET")
     p.add_argument("--threads",     metavar="N", type=int)
     p.add_argument("--quality",     metavar="LEVEL", dest="compressor_quality",

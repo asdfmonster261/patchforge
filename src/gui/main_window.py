@@ -33,7 +33,6 @@ from ..core.engines.hdiffpatch import (
     HDiffPatchEngine, THREAD_OPTIONS, DEFAULT_QUALITY,
 )
 from ..core.engines.jojodiff import JojoDiffEngine
-from ..core.engines.xdelta3 import XDelta3Engine
 from ..core.project import ProjectSettings, save as save_project, load as load_project
 from ..core.patch_builder import build, BuildResult
 from ..core.repack_project import RepackSettings, save as save_repack, load as load_repack
@@ -495,7 +494,6 @@ class MainWindow(QMainWindow):
         # Items carry their settings key as UserRole data so callers can
         # use currentData() / findData() instead of position-based indexing.
         self.engine_combo.addItem("HDiffPatch 4.12.2", userData="hdiffpatch")
-        self.engine_combo.addItem("xdelta3 3.0.8",     userData="xdelta3")
         self.engine_combo.addItem("JojoDiff 0.8.1",    userData="jojodiff")
         eg.addWidget(self.engine_combo, 0, 1)
 
@@ -1122,19 +1120,11 @@ class MainWindow(QMainWindow):
                     self.comp_combo.setCurrentIndex(i)
                     break
             self.comp_combo.setEnabled(True)
-        elif engine == "jojodiff":
+        else:  # jojodiff
             for key, lbl in JojoDiffEngine.presets().items():
                 self.comp_combo.addItem(lbl, userData=key)
             for i in range(self.comp_combo.count()):
                 if self.comp_combo.itemData(i) == JojoDiffEngine.default_preset():
-                    self.comp_combo.setCurrentIndex(i)
-                    break
-            self.comp_combo.setEnabled(True)
-        else:  # xdelta3
-            for key, lbl in XDelta3Engine.presets().items():
-                self.comp_combo.addItem(lbl, userData=key)
-            for i in range(self.comp_combo.count()):
-                if self.comp_combo.itemData(i) == XDelta3Engine.default_preset():
                     self.comp_combo.setCurrentIndex(i)
                     break
             self.comp_combo.setEnabled(True)

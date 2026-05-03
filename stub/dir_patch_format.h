@@ -1,5 +1,5 @@
 /*
- * dir_patch_format.h — PFMD container parser for xdelta3 / JojoDiff directory patches.
+ * dir_patch_format.h — PFMD container parser for JojoDiff directory patches.
  *
  * Wire format (version 2):
  *   4 bytes  magic "PFMD"

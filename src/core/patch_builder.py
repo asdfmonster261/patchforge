@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from .engines import HDiffPatchEngine, JojoDiffEngine, XDelta3Engine, PatchEngine
+from .engines import HDiffPatchEngine, JojoDiffEngine, PatchEngine
 from .exe_packager import package
 from .fmt import files_equal, walk_file_pair
 from .project import ProjectSettings
@@ -25,7 +25,6 @@ ENGINE_DIR = Path(__file__).parent.parent.parent / "engines" / _ENGINE_ARCH
 _ENGINE_MAP = {
     "hdiffpatch": HDiffPatchEngine,
     "jojodiff":   JojoDiffEngine,
-    "xdelta3":    XDelta3Engine,
 }
 
 
