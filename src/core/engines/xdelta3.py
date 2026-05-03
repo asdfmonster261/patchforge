@@ -128,10 +128,17 @@ class XDelta3Engine(PatchEngine):
                 # back-references from late target windows can always reach
                 # any earlier source position — xdelta3's encoder otherwise
                 # bails with XD3_TOOFARBACK on multi-GB sources.  Floor at
-                # the preset's 512 MB so small files don't shrink the window
-                # unnecessarily.
+                # the preset's 512 MB so small files don't shrink the
+                # window unnecessarily.  xdelta3 hard-caps -B at
+                # XD3_MAXSRCWINSZ = 2 GiB - 1 (32-bit hash addresses); for
+                # sources bigger than that the encoder may still trip
+                # XD3_TOOFARBACK on non-local matches, but at least the
+                # cmdline parses and most game updates have localised
+                # changes that fit inside the 2 GiB window.
+                XD3_MAX_B = (1 << 31) - 1
                 src_size = src_file.stat().st_size
                 srcwin   = max(src_size, 512 * 1024 * 1024)
+                srcwin   = min(srcwin, XD3_MAX_B)
                 cmd = ([binary, "-e", "-f"] + args_no_B
                        + ["-B", str(srcwin)] + extra
                        + ["-s", str(src_file), str(tgt_file), str(tmp_path)])
