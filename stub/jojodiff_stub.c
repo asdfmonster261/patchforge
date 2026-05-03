@@ -593,8 +593,22 @@ void log_message(const char *fmt, ...)
 void set_status(const char *msg, COLORREF col)
 {
     (void)col;
-    if (g_hwnd_status) {
-        SetWindowTextA(g_hwnd_status, msg);
+    if (!g_hwnd_status) return;
+    SetWindowTextA(g_hwnd_status, msg);
+    /* When a backdrop bitmap is set, WM_CTLCOLORSTATIC returns
+     * NULL_BRUSH so the static label paints text without erasing —
+     * old longer text bleeds through the new shorter text.  Force
+     * the parent to repaint the label's rect (which redraws the
+     * backdrop pixels underneath) before the STATIC repaints its
+     * text on top. */
+    HWND parent = GetParent(g_hwnd_status);
+    if (parent && g_backdrop_bmp) {
+        RECT r;
+        GetWindowRect(g_hwnd_status, &r);
+        MapWindowPoints(NULL, parent, (POINT *)&r, 2);
+        InvalidateRect(parent, &r, TRUE);
+        UpdateWindow(parent);
+    } else {
         InvalidateRect(g_hwnd_status, NULL, TRUE);
     }
 }
