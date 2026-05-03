@@ -172,7 +172,6 @@ def run_post_pipeline(archives, app_meta, previous_buildid, creds, *,
                 warn(tb_line)
 
     # platform -> url map for notify + bbcode rendering
-    from . import notify as _notify_helpers  # for _platform_from_archive_stem
     platform_links: dict[str, str] = {}
     for stem, url in stem_to_url.items():
         plat = _platform_from_archive_stem(stem)

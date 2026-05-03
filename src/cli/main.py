@@ -851,15 +851,6 @@ def _apply_optional(settings, args, names):
             setattr(settings, name, v)
 
 
-def _apply_renamed(settings, args, mapping):
-    """For each (arg_attr, settings_attr), copy when the arg is truthy.
-    Use this when the CLI flag dest differs from the settings field name."""
-    for arg_attr, settings_attr in mapping:
-        v = getattr(args, arg_attr, None)
-        if v:
-            setattr(settings, settings_attr, v)
-
-
 def _emit_validation_errors(errors: list[str], json_mode: bool) -> None:
     """Print validation errors and exit EXIT_INPUT.  In --json mode the
     errors come out as a single object on stdout; otherwise each error is

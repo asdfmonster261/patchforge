@@ -25,19 +25,6 @@ def _import_steam():
     return GeventTimeout, SteamClient, CDNClient, EResult
 
 
-def _retry(label: str, fn, max_retries: int):
-    GeventTimeout, *_ = _import_steam()
-    for attempt in range(max_retries + 1):
-        try:
-            return fn()
-        except GeventTimeout:
-            if attempt < max_retries:
-                print(f"warning: timed out {label}, retrying ({attempt + 1}/{max_retries})...")
-            else:
-                print(f"error: timed out {label} after {max_retries} retries.")
-                raise SessionDead(f"Timed out {label} after {max_retries} retries.")
-
-
 def login(tokens: dict):
     """Connect SteamClient + CDNClient using saved refresh-token credentials.
 

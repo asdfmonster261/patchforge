@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 
