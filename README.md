@@ -1,9 +1,10 @@
 # PatchForge
 
-A video game binary patch and installer generator that produces self-contained Windows executables. Two modes:
+A video game binary patch and installer generator that produces self-contained Windows executables.  Three modes:
 
 - **Update Patch** — diff an old and new copy of a game directory and produce a standalone patcher `.exe` users double-click to update their install
 - **Repack** — compress a complete game directory into a standalone installer `.exe` users double-click to install the game from scratch
+- **Archive** — log into Steam, watch one or more `appid`s, download every new build to a 7z archive, optionally crack + upload + post — fully automated mirroring of game updates
 
 Full documentation is on the [wiki](https://github.com/asdfmonster261/patchforge/wiki).
 
@@ -18,15 +19,18 @@ Full documentation is on the [wiki](https://github.com/asdfmonster261/patchforge
 - `zstd` CLI (for Zstandard repack compression)
 - MinGW-w64 cross-compiler (only needed to rebuild stubs from source)
 
+For Steam archive mode (downloads, polling, BBCode posts), install with the optional `archive` extra: `pip install -e ".[archive]"`.
+
 ## Installation
 
 ```bash
 git clone https://github.com/asdfmonster261/patchforge
 cd patchforge
-pip install -e .
+pip install -e .                    # patch + repack mode only
+pip install -e ".[archive]"         # + Steam archive mode (steam[client], gevent, etc.)
 ```
 
-The Linux engine binaries (`engines/linux-x64/`) are included in the repository. They are statically linked against everything except `libc` and run on any x86-64 Linux.
+The Linux engine binaries (`engines/linux-x64/`) are included in the repository.  They are statically linked against everything except `libc` and run on any x86-64 Linux.
 
 ---
 
@@ -52,6 +56,12 @@ patchforge repack \
   --codec lzma \
   --compression max \
   --threads 8
+
+# Archive mode — log in once, then watch an appid
+patchforge archive login           # one-shot QR / password login
+patchforge archive download \
+  --project mygame.xarchive \
+  --restart-delay 1800             # poll every 30 minutes
 ```
 
-For the full CLI reference, engine presets, repack options, project file format, and binary format documentation see the [wiki](https://github.com/asdfmonster261/patchforge/wiki).
+For the full CLI reference, engine presets, repack options, archive-mode polling cadence, project file formats, and binary format documentation see the [wiki](https://github.com/asdfmonster261/patchforge/wiki).
