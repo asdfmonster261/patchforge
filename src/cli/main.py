@@ -1187,6 +1187,25 @@ def _add_archive(sub):
     p_show.add_argument("project", metavar="FILE", help="Path to .xarchive file")
     p_show.set_defaults(func=_cmd_archive_show_project)
 
+    p_add = asub.add_parser("add-app",
+                            help="Append an app to an existing .xarchive project")
+    p_add.add_argument("project", metavar="FILE", help="Path to .xarchive file")
+    p_add.add_argument("app_id",  metavar="APPID", type=int,
+                       help="Steam application ID to track")
+    p_add.add_argument("--branch", metavar="NAME", default="public",
+                       help="Branch name (default: public)")
+    p_add.add_argument("--platform", metavar="NAME",
+                       choices=["windows", "linux", "macos"],
+                       help="Platform for this app (overrides default_platform)")
+    p_add.set_defaults(func=_cmd_archive_add_app)
+
+    p_rm = asub.add_parser("remove-app",
+                           help="Remove an app from an existing .xarchive project")
+    p_rm.add_argument("project", metavar="FILE", help="Path to .xarchive file")
+    p_rm.add_argument("app_id",  metavar="APPID", type=int,
+                      help="Steam application ID to drop")
+    p_rm.set_defaults(func=_cmd_archive_remove_app)
+
     p.set_defaults(func=lambda args: p.print_help())
 
 
@@ -1350,6 +1369,50 @@ def _cmd_archive_new_project(args):
     print(f"Archive project created: {out}")
     print(f"  apps:        {len(proj.apps)}")
     print(f"  default_platform: {proj.default_platform}")
+
+
+def _cmd_archive_add_app(args):
+    from src.core.archive.project import (
+        AppEntry, load as load_proj, save as save_proj,
+    )
+
+    project_path = Path(args.project)
+    try:
+        proj = load_proj(project_path)
+    except Exception as exc:
+        _die(f"Failed to load archive project: {exc}", EXIT_INPUT)
+
+    if any(int(a.app_id) == int(args.app_id) for a in proj.apps):
+        _die(f"App {args.app_id} is already in {project_path}", EXIT_INPUT)
+
+    entry = AppEntry(app_id=int(args.app_id), branch=args.branch)
+    if args.platform:
+        entry.platform = args.platform
+    proj.apps.append(entry)
+    save_proj(proj, project_path)
+    print(f"Added app {args.app_id} (branch={args.branch}"
+          + (f", platform={args.platform}" if args.platform else "")
+          + f") to {project_path}")
+    print(f"  total apps: {len(proj.apps)}")
+
+
+def _cmd_archive_remove_app(args):
+    from src.core.archive.project import load as load_proj, save as save_proj
+
+    project_path = Path(args.project)
+    try:
+        proj = load_proj(project_path)
+    except Exception as exc:
+        _die(f"Failed to load archive project: {exc}", EXIT_INPUT)
+
+    before = len(proj.apps)
+    proj.apps = [a for a in proj.apps if int(a.app_id) != int(args.app_id)]
+    if len(proj.apps) == before:
+        _die(f"App {args.app_id} not found in {project_path}", EXIT_INPUT)
+
+    save_proj(proj, project_path)
+    print(f"Removed app {args.app_id} from {project_path}")
+    print(f"  total apps: {len(proj.apps)}")
 
 
 def _cmd_archive_show_project(args):
