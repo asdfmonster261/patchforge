@@ -306,6 +306,17 @@ class LiveDisplaySubscriber:
         active = [(n, f) for n, f in self._files.items() if f["active"]]
         total_speed = sum(self._file_speed(f["samples"]) for _, f in active)
 
+        # Nothing in flight — clear any old multi-line block we drew
+        # last cycle and stay silent so the next caller (poll-cycle
+        # countdown, stage line, etc.) can write its own row without
+        # the per-cycle "0 active   X uploaded   …" footer racing it.
+        if not active:
+            if self._prev_lines:
+                sys.stdout.write(f"\033[{self._prev_lines}A\033[J")
+                sys.stdout.flush()
+                self._prev_lines = 0
+            return
+
         moved_bytes, moved_label = self._phase_counters()
 
         if not _TTY:
