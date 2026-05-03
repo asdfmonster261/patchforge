@@ -58,6 +58,10 @@ class LiveDisplaySubscriber:
         self._prev_lines = 0
         self._greenlet   = None
         self._closed     = False
+        # True while an in-place app-info progress line is being
+        # rewritten with \r so the next non-app-info event knows to
+        # prepend a newline before it draws.
+        self._appinfo_active = False
         # "download" vs "upload" toggles the per-file dict semantics and the
         # footer label.  upload_started flips to "upload"; the next
         # download (rare, but possible if a future caller chains pipelines)
@@ -119,15 +123,43 @@ class LiveDisplaySubscriber:
             sys.stdout.flush()
 
         elif kind == "app_info_progress":
-            # Per-app product-info batch progress.  Render as a
-            # single-line `app X / N (id)` so the rolling redraw greenlet
-            # doesn't fight the per-file rows of an active download.
-            self._erase()
-            sys.stdout.write(
-                f"{_BOLD}~  {_RESET}app-info {ev.done}/{ev.total}"
-                f"  (last: {ev.name})\n"
-            )
-            sys.stdout.flush()
+            # Per-app product-info batch progress.  TTY: render as a
+            # single self-overwriting line with a [bar] graphic so 67
+            # apps don't print 67 stacked log lines.  Non-TTY: only emit
+            # when done == total so log files don't fill with each tick.
+            done  = int(ev.done or 0)
+            total = max(int(ev.total or 1), 1)
+            if not _TTY:
+                if done == total:
+                    sys.stdout.write(
+                        f"~  app-info {done}/{total}  (last: {ev.name})\n"
+                    )
+                    sys.stdout.flush()
+            else:
+                # Only erase prior multi-line content (per-file rows
+                # etc.).  If the last emit was also an app-info tick,
+                # the \r at the start of `line` already overwrites it
+                # in place — we must NOT call _erase, since that would
+                # terminate the in-place line with a newline.
+                if self._prev_lines:
+                    sys.stdout.write(f"\033[{self._prev_lines}A\033[J")
+                    self._prev_lines = 0
+                pct = done / total
+                bar_w = 20
+                filled = int(pct * bar_w)
+                bar = "█" * filled + "░" * (bar_w - filled)
+                line = (
+                    f"\r{_BOLD}~  {_RESET}app-info "
+                    f"{_CYAN}[{bar}]{_RESET} "
+                    f"{done}/{total}  (last: {ev.name})"
+                )
+                sys.stdout.write(line)
+                if done >= total:
+                    sys.stdout.write("\n")
+                    self._appinfo_active = False
+                else:
+                    self._appinfo_active = True
+                sys.stdout.flush()
 
         elif kind == "error":
             self._erase()
@@ -254,6 +286,11 @@ class LiveDisplaySubscriber:
     def _erase(self) -> None:
         if not _TTY:
             return
+        # Terminate any in-place app-info progress line so the cursor
+        # advances to a fresh row before whatever the caller draws next.
+        if self._appinfo_active:
+            sys.stdout.write("\n")
+            self._appinfo_active = False
         if self._prev_lines:
             sys.stdout.write(f"\033[{self._prev_lines}A\033[J")
             sys.stdout.flush()
@@ -420,7 +457,13 @@ class PlainLogSubscriber:
             self._write(f"[stage]    {ev.stage_msg}")
 
         elif kind == "app_info_progress":
-            self._write(f"[app-info] {ev.done}/{ev.total}  (last: {ev.name})")
+            # Plain log: emit a single summary line at the end of the
+            # batch instead of one per app — non-TTY logs would
+            # otherwise fill with 67-line cycles.
+            done  = int(ev.done or 0)
+            total = max(int(ev.total or 1), 1)
+            if done >= total:
+                self._write(f"[app-info] {done}/{total} apps queried")
 
         elif kind == "error":
             target = f" ({ev.name})" if ev.name else ""
