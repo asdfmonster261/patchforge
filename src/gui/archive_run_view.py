@@ -319,8 +319,21 @@ class ArchiveRunView(QWidget):
             return
 
         if kind == "stage":
-            self.summary_label.setText(ev.stage_msg or "")
-            self._on_log(ev.stage_msg or "", "info")
+            msg = ev.stage_msg or ""
+            # Per-platform download starts with "Fetching manifests for
+            # platform 'X'" — also fires for the first platform of every
+            # new app, so clearing here gives a fresh file/upload pane
+            # per (app, platform) instead of interleaving rows.
+            if msg.startswith("Fetching manifests for platform"):
+                self.files_list.clear()
+                self._file_rows.clear()
+                self.upload_list.clear()
+                self._upload_rows.clear()
+                self._agg_total = 0
+                self._agg_done = 0
+                self._refresh_agg()
+            self.summary_label.setText(msg)
+            self._on_log(msg, "info")
             return
 
         if kind == "error":
