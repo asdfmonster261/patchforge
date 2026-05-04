@@ -13,22 +13,13 @@ from pathlib import Path
 
 from ..utils import run_in_thread
 from .gse import (
-    _download_image,
-    _process_dll,
-    _resolve_api_key,
-    _resolve_user_config,
-    _steam_image_url,
-    _has_lan_multiplayer,
-    _write_configs_user,
-    db_save,
+    build_shared_settings,
+    copy_settings_payload,
     detect_binary_arch,
     download_gbe_archive,
-    fetch_achievements,
-    fetch_dlcs,
     find_steam_apis,
     get_latest_gbe,
     is_linux_so,
-    download_achievements,
     write_configs_overlay,
     unstub_exes,
 )
@@ -99,71 +90,18 @@ def _extract_from_archive(archive: Path, inner: str, dest: Path) -> bool:
         return False
 
 
-def _build_steam_settings(appid: str, app_data: dict, settings_dir: Path,
-                          identity) -> dict:
-    """Populate steam_settings/ and return the user config dict."""
-    settings_dir.mkdir(parents=True, exist_ok=True)
-
-    (settings_dir / "steam_appid.txt").write_text(appid + "\n", encoding="utf-8")
-
-    header_dest = settings_dir / "header.jpg"
-    if not header_dest.exists():
-        img_url = _steam_image_url(appid)
-        if _download_image(img_url, header_dest):
-            print("  [x] Header image saved to steam_settings/header.jpg")
-        else:
-            print("  [!] Could not download header image")
-
-    print("\n  [ ] Fetching DLCs...")
-    dlcs = fetch_dlcs(appid, use_db=True)
-    if dlcs:
-        with open(settings_dir / "configs.app.ini", "w", encoding="utf-8") as fh:
-            fh.write("[app::dlcs]\n")
-            fh.write("unlock_all=0\n")
-            for dlc_id, name in dlcs.items():
-                fh.write(f"{dlc_id}={name}\n")
-        db_save(appid, dlcs)
-        print(f"  [x] {len(dlcs)} DLC(s) written to configs.app.ini")
-    else:
-        print("  [x] No DLCs.")
-
-    lang_data = app_data.get("common", {}).get("languages", {})
-    langs = list(lang_data.keys()) if lang_data else ["english"]
-    (settings_dir / "supported_languages.txt").write_text(
-        "\n".join(langs) + "\n", encoding="utf-8"
-    )
-    print(f"  [x] Languages: {', '.join(langs)}")
-
-    has_lan = _has_lan_multiplayer(app_data)
-    if not has_lan:
-        print("  [i] No LAN multiplayer detected — listen port will be skipped.")
-    user_cfg = _resolve_user_config(identity, langs, has_lan=has_lan)
-    _write_configs_user(settings_dir, user_cfg)
-    print("  [x] configs.user.ini written.")
-
-    print("\n  [ ] Fetching achievements...")
-    print(f"  Available languages: {', '.join(langs)}")
-    if identity.achievement_language and identity.achievement_language in langs:
-        print(f"  Achievement language: {identity.achievement_language}  (from project)")
-        ach_lang = identity.achievement_language
-    else:
-        from .gse import _prompt
-        ach_lang = _prompt("Achievement language", user_cfg["language"])
-        if ach_lang not in langs:
-            ach_lang = user_cfg["language"]
-        identity.achievement_language = ach_lang
-
-    api_key = _resolve_api_key()
-    achievements = fetch_achievements(appid, ach_lang, api_key=api_key)
-    if achievements:
-        print(f"  [ ] Downloading {len(achievements)} achievement(s)...")
-        download_achievements(appid, achievements, settings_dir)
+def _populate_steam_settings(appid: str, app_data: dict, settings_dir: Path,
+                             identity, *,
+                             shared_settings: Path | None) -> None:
+    """Populate ColdClient's emu/steam_settings/.  When shared_settings is
+    provided, copy the canonical payload from disk and add ColdClient's
+    extra configs.overlay.ini on top.  Otherwise build from scratch."""
+    if shared_settings is not None and shared_settings.exists():
+        copy_settings_payload(shared_settings, settings_dir)
         write_configs_overlay(settings_dir)
-        print("  [x] Achievements done.")
-    else:
-        print("  [x] No achievements found.")
-
-    return user_cfg
+        return
+    build_shared_settings(appid, app_data, identity, settings_dir,
+                          want_overlay=True)
 
 
 def _deploy_loader(bits: str, appid: str, app_data: dict, game_dest: Path,
@@ -243,46 +181,53 @@ def _deploy_loader(bits: str, appid: str, app_data: dict, game_dest: Path,
 
 def crack_coldclient(app_id: int, app_data: dict, dest: Path, game_dest: Path,
                      *, identity,
-                     unstub_options: dict | None = None) -> Path | None:
-    """Deploy the ColdClient loader for app_id into a gse_config_{app_id}/
+                     unstub_options: dict | None = None,
+                     output_base: Path | None = None,
+                     shared_settings: Path | None = None) -> Path | None:
+    """Deploy the ColdClient loader for app_id into a gse_config_{app_id}/coldclient/
     folder.  All ColdClient files land at game root level regardless of
-    where steam_api.dll lives.  Linux .so files fall back to standard
-    Goldberg.
+    where steam_api.dll lives.
 
     identity — CrackIdentity dataclass loaded from .xarchive.  Mutated in
     place when prompts fill in missing fields.
 
-    Returns the gse_config directory, or None if no Steam API binary was found.
+    Linux/macOS binaries are NOT handled here — the orchestrator skips
+    coldclient on non-Windows platforms.  Use --crack all to also generate
+    the Goldberg emulator subdir on the same archive.
+
+    Returns the combined gse_config_{app_id}/ directory, or None if no
+    Windows Steam API binary was found.
     """
     print("\n[ ] Setting up ColdClient loader...")
     appid = str(app_id)
 
+    combined_dir   = output_base if output_base is not None else dest / f"gse_config_{appid}"
+    coldclient_dir = combined_dir / "coldclient"
+
     found = find_steam_apis(game_dest)
-    gse_output_dir = dest / f"gse_config_{appid}"
 
     if not found:
         print(f"  [!] No Steam API binary found under {game_dest} — skipping.")
-        unstub_exes(game_dest, gse_output_dir, unstub_options)
-        return gse_output_dir if gse_output_dir.exists() else None
+        unstub_exes(game_dest, coldclient_dir, unstub_options)
+        return combined_dir if combined_dir.exists() else None
 
     dlls = [p for p in found if not is_linux_so(p)]
-    sos  = [p for p in found if is_linux_so(p)]
 
-    if sos and not dlls:
-        print("  [i] Only Linux binary found — using standard Goldberg emulator.")
-        from .gse import crack_game
-        return crack_game(app_id, app_data, dest, game_dest,
-                          identity=identity, unstub_options=unstub_options)
+    if not dlls:
+        print("  [!] No Windows Steam API DLL found — ColdClient is Windows-only. "
+              "Use --crack all (or --crack gse) for Linux/macOS binaries.")
+        return combined_dir if combined_dir.exists() else None
 
     dll_path = dlls[0]
     bits = detect_binary_arch(dll_path)
     print(f"  [i] Detected architecture: {bits}  ({dll_path.name})")
 
-    loader_dir   = gse_output_dir / game_dest.name
+    loader_dir   = coldclient_dir / game_dest.name
     emu_dir      = loader_dir / "emu"
     settings_dir = emu_dir / "steam_settings"
 
-    _build_steam_settings(appid, app_data, settings_dir, identity)
+    _populate_steam_settings(appid, app_data, settings_dir, identity,
+                             shared_settings=shared_settings)
 
     print("\n  [ ] Fetching latest Goldberg release (Windows)...")
     release_name, asset_filename = get_latest_gbe(linux=False)
@@ -298,22 +243,7 @@ def crack_coldclient(app_id: int, app_data: dict, dest: Path, game_dest: Path,
     _deploy_loader(bits, appid, app_data, game_dest,
                    loader_dir, emu_dir, settings_dir, archive)
 
-    if sos:
-        print("\n  [i] Linux binary also found — applying standard Goldberg for Linux.")
-        try:
-            so_rel = sos[0].parent.relative_to(game_dest.parent)
-            so_output_dir = gse_output_dir / so_rel
-        except ValueError:
-            so_output_dir = gse_output_dir
-        _process_dll(sos[0], settings_dir, so_output_dir)
-        if so_output_dir != loader_dir:
-            alt_settings = so_output_dir / "steam_settings"
-            if alt_settings.exists():
-                shutil.rmtree(alt_settings)
-            shutil.copytree(settings_dir, alt_settings)
-            print(f"  [x] steam_settings copied to {so_output_dir}")
-
     unstub_exes(game_dest, loader_dir, unstub_options)
 
-    print(f"\n[+] ColdClient setup complete — {gse_output_dir.name}/ at {gse_output_dir}")
-    return gse_output_dir
+    print(f"\n[+] ColdClient setup complete — {combined_dir.name}/coldclient/ at {coldclient_dir}")
+    return combined_dir

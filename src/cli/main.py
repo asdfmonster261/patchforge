@@ -1032,10 +1032,12 @@ def _add_archive(sub):
                       help="Read app IDs from FILE (one per line, comma-separated OK)")
     p_dl.add_argument("--no-progress", action="store_true", dest="no_progress",
                       help="Plain log mode instead of tqdm progress bars")
-    p_dl.add_argument("--crack", choices=["coldclient", "gse"], default=None,
+    p_dl.add_argument("--crack", choices=["coldclient", "gse", "all"], default=None,
                       help="Generate a Goldberg / ColdClient emulator config "
                            "alongside the archive (requires --project for "
-                           "crack identity persistence).")
+                           "crack identity persistence).  Use 'all' to "
+                           "generate both — coldclient is Windows-only, so "
+                           "Linux/macOS runs still produce only the gse subdir.")
     p_dl.add_argument("--experimental", action="store_true",
                       help="Use the Goldberg experimental build for the crack "
                            "step (default: regular).")
