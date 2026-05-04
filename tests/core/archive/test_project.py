@@ -331,3 +331,57 @@ def test_archive_project_persists_crack_mode_field(tmp_path):
     project_mod.save(proj, target)
     loaded = project_mod.load(target)
     assert loaded.crack_mode == "coldclient"
+
+
+# ---------------------------------------------------------------------------
+# Per-app crack_mode override (Phase 6.3)
+# ---------------------------------------------------------------------------
+
+def test_app_entry_crack_mode_default_blank():
+    """A bare AppEntry must default to crack_mode == "" so the
+    project-level / CLI value still wins for legacy projects."""
+    from src.core.archive import project as project_mod
+    e = project_mod.AppEntry(app_id=730)
+    assert e.crack_mode == ""
+
+
+def test_app_entry_crack_mode_roundtrips(tmp_path):
+    """Per-app crack_mode survives save/load — the override is what lets
+    a mixed project run gse on one app and coldclient on another with
+    a single archive download invocation."""
+    from src.core.archive import project as project_mod
+    proj = project_mod.new_project(name="t")
+    proj.apps.append(project_mod.AppEntry(app_id=730,        crack_mode="gse"))
+    proj.apps.append(project_mod.AppEntry(app_id=4048390,    crack_mode="all"))
+    proj.apps.append(project_mod.AppEntry(app_id=12345,      crack_mode="off"))
+    proj.apps.append(project_mod.AppEntry(app_id=999))   # blank → inherit
+    target = tmp_path / "p.xarchive"
+    project_mod.save(proj, target)
+    loaded = project_mod.load(target)
+    by_id = {a.app_id: a for a in loaded.apps}
+    assert by_id[730].crack_mode      == "gse"
+    assert by_id[4048390].crack_mode  == "all"
+    assert by_id[12345].crack_mode    == "off"
+    assert by_id[999].crack_mode      == ""
+
+
+def test_app_entry_crack_mode_legacy_projects_load_blank(tmp_path):
+    """A pre-Phase-6.3 .xarchive (no crack_mode key on app entries) must
+    load cleanly with the new field defaulting to "".  Otherwise the
+    legacy project would lose every AppEntry the moment it touched a
+    new build."""
+    import json
+    from src.core.archive import project as project_mod
+    legacy = {
+        "schema_version": 1,
+        "name": "t",
+        "apps": [
+            {"app_id": 730, "branch": "public", "platform": "windows"},
+        ],
+        "crack_mode": "gse",
+    }
+    target = tmp_path / "legacy.xarchive"
+    target.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = project_mod.load(target)
+    assert loaded.apps[0].crack_mode == ""
+    assert loaded.crack_mode         == "gse"

@@ -996,3 +996,46 @@ def test_runner_session_dead_no_relogin_aborts(tmp_path,
             log=lambda m: None, warn=lambda m: None,
         )
     # Test passes if we returned without hanging.
+
+
+# ---------------------------------------------------------------------------
+# Per-app crack_mode override (Phase 6.3)
+# ---------------------------------------------------------------------------
+
+def test_resolve_app_crack_override_beats_project_default():
+    """An AppEntry.crack_mode value other than "" or "off" wins over
+    whatever the project default + CLI flag landed on."""
+    e = project_mod.AppEntry(app_id=730, crack_mode="all")
+    assert runner_mod._resolve_app_crack(e, "gse") == "all"
+    assert runner_mod._resolve_app_crack(e, None)  == "all"
+
+
+def test_resolve_app_crack_blank_inherits_project():
+    """The default empty crack_mode must inherit whatever the project /
+    CLI resolved to — that's the whole point of having a sentinel."""
+    e = project_mod.AppEntry(app_id=730, crack_mode="")
+    assert runner_mod._resolve_app_crack(e, "gse") == "gse"
+    assert runner_mod._resolve_app_crack(e, None)  is None
+
+
+def test_resolve_app_crack_off_skips_even_when_project_set():
+    """`off` is the explicit per-app skip — it must override the
+    project default, not inherit it.  Without this, mixed projects
+    couldn't carve out individual apps."""
+    e = project_mod.AppEntry(app_id=730, crack_mode="off")
+    assert runner_mod._resolve_app_crack(e, "gse") is None
+    assert runner_mod._resolve_app_crack(e, "all") is None
+
+
+def test_resolve_app_crack_handles_missing_entry():
+    """When the AppEntry isn't in apps_by_id (untracked --app-ids run),
+    fall through to the project value."""
+    assert runner_mod._resolve_app_crack(None, "gse") == "gse"
+    assert runner_mod._resolve_app_crack(None, None)  is None
+
+
+def test_resolve_app_crack_is_case_insensitive():
+    e = project_mod.AppEntry(app_id=730, crack_mode="OFF")
+    assert runner_mod._resolve_app_crack(e, "gse") is None
+    e2 = project_mod.AppEntry(app_id=730, crack_mode="ALL")
+    assert runner_mod._resolve_app_crack(e2, "gse") == "all"

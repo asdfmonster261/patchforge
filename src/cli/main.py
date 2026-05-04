@@ -1199,6 +1199,10 @@ def _add_archive(sub):
     p_add.add_argument("--platform", metavar="NAME",
                        choices=["windows", "linux", "macos"],
                        help="Platform for this app (overrides default_platform)")
+    p_add.add_argument("--crack", metavar="MODE",
+                       choices=["off", "gse", "coldclient", "all"],
+                       help="Per-app crack override (off = skip crack for this "
+                            "app even when project default sets one)")
     p_add.set_defaults(func=_cmd_archive_add_app)
 
     p_rm = asub.add_parser("remove-app",
@@ -1390,11 +1394,18 @@ def _cmd_archive_add_app(args):
     entry = AppEntry(app_id=int(args.app_id), branch=args.branch)
     if args.platform:
         entry.platform = args.platform
+    crack_arg = getattr(args, "crack", None)
+    if crack_arg:
+        entry.crack_mode = crack_arg
     proj.apps.append(entry)
     save_proj(proj, project_path)
-    print(f"Added app {args.app_id} (branch={args.branch}"
-          + (f", platform={args.platform}" if args.platform else "")
-          + f") to {project_path}")
+    extras = []
+    if args.platform:
+        extras.append(f"platform={args.platform}")
+    if crack_arg:
+        extras.append(f"crack={crack_arg}")
+    extras_s = (", " + ", ".join(extras)) if extras else ""
+    print(f"Added app {args.app_id} (branch={args.branch}{extras_s}) to {project_path}")
     print(f"  total apps: {len(proj.apps)}")
 
 
@@ -1859,12 +1870,24 @@ def _cmd_archive_download(args):
     opts = _resolve_archive_run_options(args, project_obj)
     effective_crack = opts.get("crack")
 
+    # Per-app crack_mode overrides (Phase 6.3) can request a crack even
+    # when the project default + CLI flag are both empty.  Treat the
+    # presence of any non-empty AppEntry.crack_mode (other than "off")
+    # as a signal to prepare crack identity + unstub options just like
+    # a project-level crack would.
+    needs_crack_setup = bool(effective_crack) or (
+        project_obj is not None and any(
+            (e.crack_mode or "").strip().lower() not in ("", "off")
+            for e in project_obj.apps
+        )
+    )
+
     # Crack identity falls out of the project when present, or a fresh
     # CrackIdentity that prompts will fill in.  Crack functions mutate it
     # in place; we save back to .xarchive after the run so users don't
     # get re-prompted on every invocation.
     crack_identity = None
-    if effective_crack:
+    if needs_crack_setup:
         crack_identity = (
             project_obj.crack if project_obj is not None
             else project_mod.CrackIdentity()
@@ -1916,7 +1939,7 @@ def _cmd_archive_download(args):
             "realign":        opts["unstub"].realign,
             "recalcchecksum": opts["unstub"].recalcchecksum,
         }
-        if effective_crack else None
+        if needs_crack_setup else None
     )
     # ---- Phase 5 polling-mode validation ------------------------------
     restart_delay = int(opts.get("restart_delay") or 0)
