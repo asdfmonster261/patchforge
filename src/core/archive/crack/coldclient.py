@@ -112,7 +112,7 @@ def _deploy_loader(bits: str, appid: str, app_data: dict, game_dest: Path,
     launch_exe = _get_launch_exe(app_data)
     if launch_exe:
         exe_rel = Path(launch_exe)
-        loader_exe = f"start_{Path(launch_exe).name}"
+        loader_exe = f"start_{Path(launch_exe).name}".replace(" ", "_")
         print(f"  [i] Main exe (from Steam): {exe_rel}")
     else:
         main_exe = _find_main_exe(game_dest)
@@ -121,7 +121,7 @@ def _deploy_loader(bits: str, appid: str, app_data: dict, game_dest: Path,
                 exe_rel = main_exe.relative_to(game_dest)
             except ValueError:
                 exe_rel = Path(main_exe.name)
-            loader_exe = f"start_{main_exe.name}"
+            loader_exe = f"start_{main_exe.name}".replace(" ", "_")
             print(f"  [i] Main exe (by size): {exe_rel}")
         else:
             exe_rel = Path("")
