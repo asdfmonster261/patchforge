@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QComboBox, QHBoxLayout, QHeaderView, QLabel,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
 from ..core.archive import project as project_mod
@@ -25,9 +25,15 @@ COLS = [
     ("Branch",            100),
     ("Branch password",   140),
     ("Platform",          90),
+    ("Crack",             110),
     ("current_buildid",   140),
     ("previous_buildid",  140),
 ]
+
+# Empty string in AppEntry.crack_mode means "inherit project default";
+# the "(default)" label is the user-facing rendering of that.
+_CRACK_LABELS  = ["(default)", "off", "gse", "coldclient", "all"]
+_CRACK_VALUES  = ["",           "off", "gse", "coldclient", "all"]
 
 
 class AppsPage(ArchivePageBase):
@@ -80,19 +86,36 @@ class AppsPage(ArchivePageBase):
         self.table.itemChanged.connect(self._on_item_changed)
 
     # ---------------------------------------------------------- helpers
+    def _make_crack_combo(self, current: str) -> QComboBox:
+        cb = QComboBox()
+        cb.addItems(_CRACK_LABELS)
+        try:
+            idx = _CRACK_VALUES.index((current or "").strip().lower())
+        except ValueError:
+            idx = 0
+        cb.setCurrentIndex(idx)
+        cb.currentIndexChanged.connect(self._on_combo_changed)
+        return cb
+
+    def _read_crack_combo(self, row: int) -> str:
+        cb = self.table.cellWidget(row, 5)
+        if cb is None or not isinstance(cb, QComboBox):
+            return ""
+        return _CRACK_VALUES[cb.currentIndex()]
+
     def _set_row(self, row: int, entry: project_mod.AppEntry) -> None:
-        values = [
-            str(entry.app_id) if entry.app_id else "",
-            entry.name,
-            entry.branch or "public",
-            entry.branch_password,
-            entry.platform,
-            entry.current_buildid.buildid,
-            entry.previous_buildid.buildid,
+        text_values = [
+            (0, str(entry.app_id) if entry.app_id else ""),
+            (1, entry.name),
+            (2, entry.branch or "public"),
+            (3, entry.branch_password),
+            (4, entry.platform),
+            (6, entry.current_buildid.buildid),
+            (7, entry.previous_buildid.buildid),
         ]
-        for col, val in enumerate(values):
-            item = QTableWidgetItem(val)
-            self.table.setItem(row, col, item)
+        for col, val in text_values:
+            self.table.setItem(row, col, QTableWidgetItem(val))
+        self.table.setCellWidget(row, 5, self._make_crack_combo(entry.crack_mode))
 
     def _read_row(self, row: int) -> project_mod.AppEntry:
         def _t(c: int) -> str:
@@ -108,8 +131,9 @@ class AppsPage(ArchivePageBase):
             branch           = _t(2) or "public",
             branch_password  = _t(3),
             platform         = _t(4),
-            current_buildid  = project_mod.BuildIdRecord(buildid=_t(5)),
-            previous_buildid = project_mod.BuildIdRecord(buildid=_t(6)),
+            crack_mode       = self._read_crack_combo(row),
+            current_buildid  = project_mod.BuildIdRecord(buildid=_t(6)),
+            previous_buildid = project_mod.BuildIdRecord(buildid=_t(7)),
         )
 
     # ---------------------------------------------------------- buttons
@@ -133,6 +157,11 @@ class AppsPage(ArchivePageBase):
         self.refresh()
 
     def _on_item_changed(self, _item):
+        if self._building:
+            return
+        self._panel.mark_dirty()
+
+    def _on_combo_changed(self, _idx):
         if self._building:
             return
         self._panel.mark_dirty()
@@ -165,6 +194,7 @@ class AppsPage(ArchivePageBase):
                 existing.branch           = row_entry.branch
                 existing.branch_password  = row_entry.branch_password
                 existing.platform         = row_entry.platform
+                existing.crack_mode       = row_entry.crack_mode
                 existing.current_buildid.buildid  = row_entry.current_buildid.buildid
                 existing.previous_buildid.buildid = row_entry.previous_buildid.buildid
                 new_apps.append(existing)

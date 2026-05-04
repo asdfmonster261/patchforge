@@ -231,6 +231,22 @@ def _platform_from_archive_stem(stem: str) -> str | None:
     return None
 
 
+def _resolve_app_crack(entry, project_crack: str | None) -> str | None:
+    """Resolve the effective crack mode for one app.
+
+      entry.crack_mode == ""    → inherit project-level crack
+      entry.crack_mode == "off" → explicitly skip crack for this app
+                                  even if project default sets one
+      entry.crack_mode == "X"   → use X regardless of project default
+    """
+    cm = ""
+    if entry is not None:
+        cm = (entry.crack_mode or "").strip().lower()
+    if cm == "off":
+        return None
+    return cm or project_crack
+
+
 def run_one_app(app_id: int, previous_buildid: str, *,
                 client, cdn, output_dir: Path,
                 platform: str, opts: dict,
@@ -517,7 +533,8 @@ def run_session(*,
                         app_id, prev, app_info_hint=info,
                         client=client, cdn=cdn, output_dir=output_dir,
                         platform=platform, opts=opts,
-                        creds=creds, branch=branch, crack=crack,
+                        creds=creds, branch=branch,
+                        crack=_resolve_app_crack(apps_by_id.get(app_id), crack),
                         crack_identity=crack_identity,
                         unstub_options=unstub_options,
                         volume_size=volume_size, depot_names=depot_names,
@@ -587,7 +604,8 @@ def run_session(*,
                     app_id, previous_buildid,
                     client=client, cdn=cdn, output_dir=output_dir,
                     platform=platform, opts=opts,
-                    creds=creds, branch=branch, crack=crack,
+                    creds=creds, branch=branch,
+                    crack=_resolve_app_crack(entry, crack),
                     crack_identity=crack_identity,
                     unstub_options=unstub_options,
                     volume_size=volume_size, depot_names=depot_names,

@@ -80,6 +80,11 @@ class AppEntry:
     branch:           str  = "public"      # public, beta, etc.
     branch_password:  str  = ""            # for password-protected branches
     platform:         str  = ""            # "" = use project default
+    # Per-app crack mode override.  "" = inherit project.crack_mode (or
+    # CLI --crack); "off" = explicitly skip the crack pipeline for this
+    # app even when the project default sets one.  Other values:
+    # "gse" / "coldclient" / "all".
+    crack_mode:       str  = ""
 
     # Last seen build for poll-on-change, plus the PICS timeupdated for
     # that build.  Nested record so the timestamp lives next to its

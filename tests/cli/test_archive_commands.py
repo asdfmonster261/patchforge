@@ -592,3 +592,48 @@ def test_polling_driver_loops_then_exits_on_keyboard_interrupt(
     # Project saved at end of each iteration → current_buildid persisted.
     reloaded = pm.load(project_path)
     assert reloaded.apps[0].current_buildid.buildid == "new"
+
+
+# ---------------------------------------------------------------------------
+# add-app --crack: per-app crack override at append time
+# ---------------------------------------------------------------------------
+
+def test_cmd_archive_add_app_crack_flag_writes_field(tmp_path):
+    """`patchforge archive add-app PROJ APPID --crack all` must persist
+    the override into AppEntry.crack_mode so the per-app override
+    machinery picks it up on the next download."""
+    from src.cli import main as cli_main
+    from src.core.archive import project as pm
+
+    project_path = tmp_path / "p.xarchive"
+    pm.save(pm.new_project(name="t"), project_path)
+
+    args = mock.Mock(
+        project=str(project_path),
+        app_id=730, branch="public", platform=None, crack="all",
+    )
+    cli_main._cmd_archive_add_app(args)
+
+    loaded = pm.load(project_path)
+    assert len(loaded.apps) == 1
+    assert loaded.apps[0].app_id     == 730
+    assert loaded.apps[0].crack_mode == "all"
+
+
+def test_cmd_archive_add_app_no_crack_keeps_default(tmp_path):
+    """add-app without --crack must leave crack_mode at "" so the
+    project-level / CLI default still applies."""
+    from src.cli import main as cli_main
+    from src.core.archive import project as pm
+
+    project_path = tmp_path / "p.xarchive"
+    pm.save(pm.new_project(name="t"), project_path)
+
+    args = mock.Mock(
+        project=str(project_path),
+        app_id=730, branch="public", platform=None, crack=None,
+    )
+    cli_main._cmd_archive_add_app(args)
+
+    loaded = pm.load(project_path)
+    assert loaded.apps[0].crack_mode == ""
