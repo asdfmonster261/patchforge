@@ -260,4 +260,89 @@ class ArchiveWorker(QObject):
         }
 
 
-__all__ = ["ArchiveWorker"]
+class HistoricalPullWorker(QObject):
+    """Drives a single download_manifest call on a QThread.
+
+    Mirrors ArchiveWorker's signal surface so ArchiveRunView.attach()
+    can listen to either kind of run without branching on type.  Used
+    by the Manifest history page's "Pull selected build" button.
+    """
+    # Mirror ArchiveWorker's stream signals.
+    event           = Signal(object)
+    log_line        = Signal(str, str)
+    countdown_tick  = Signal(int)        # unused; kept for attach() parity
+    started         = Signal()
+    finished        = Signal(object)
+    failed          = Signal(str)
+
+    def __init__(self, *,
+                 app_id: int, depot_id: int, manifest_gid: str,
+                 branch: str = "public",
+                 branch_password: str = "",
+                 output_dir: Path,
+                 workers: int = 8,
+                 max_retries: int = 1):
+        super().__init__()
+        self._app_id          = int(app_id)
+        self._depot_id        = int(depot_id)
+        self._manifest_gid    = str(manifest_gid)
+        self._branch          = branch or "public"
+        self._branch_password = branch_password or ""
+        self._output_dir      = Path(output_dir)
+        self._workers         = workers
+        self._max_retries     = max_retries
+
+    def request_abort(self) -> None:
+        # download_manifest has no abort hook today; kill -9 is the only
+        # way to interrupt a wedged depot pull.  Stub kept so the run-view
+        # Stop button can connect without blowing up.
+        pass
+
+    def run(self) -> None:
+        self.started.emit()
+        try:
+            from src.core.archive            import credentials as creds_mod
+            from src.core.archive.appinfo    import login as cm_login
+            from src.core.archive.download   import download_manifest
+        except ImportError as exc:
+            self.failed.emit(f"archive extras not installed: {exc}")
+            return
+
+        try:
+            creds = creds_mod.load()
+            if not creds.has_login_tokens():
+                raise RuntimeError(
+                    "No saved Steam tokens — run `patchforge archive login` "
+                    "in a terminal first."
+                )
+
+            tokens = {
+                "username":             creds.username,
+                "steam_id":             creds.steam_id,
+                "client_refresh_token": creds.client_refresh_token,
+            }
+            self.log_line.emit(
+                f"=== historical pull: app {self._app_id} depot "
+                f"{self._depot_id} manifest {self._manifest_gid} ===",
+                "info",
+            )
+            client, cdn = cm_login(tokens)
+            dest = download_manifest(
+                client=client, cdn=cdn,
+                app_id=self._app_id, depot_id=self._depot_id,
+                manifest_gid=int(self._manifest_gid),
+                output_dir=self._output_dir,
+                branch=self._branch,
+                branch_password=self._branch_password or None,
+                workers=self._workers,
+                max_retries=self._max_retries,
+                on_event=lambda ev: self.event.emit(ev),
+            )
+            self.log_line.emit(f"Wrote depot tree to {dest}", "info")
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(None)
+
+
+__all__ = ["ArchiveWorker", "HistoricalPullWorker"]

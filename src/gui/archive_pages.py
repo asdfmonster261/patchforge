@@ -66,6 +66,9 @@ def build_page(key: str, *, panel: "ArchivePanel") -> ArchivePageBase:
     if key == "bbcode":
         from .archive_pages_bbcode import BBCodePage
         return BBCodePage(panel)
+    if key == "history":
+        from .archive_pages_history import ManifestHistoryPage
+        return ManifestHistoryPage(panel)
     if key == "creds":
         from .archive_pages_creds import CredentialsPage
         return CredentialsPage(panel)

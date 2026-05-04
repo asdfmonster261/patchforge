@@ -10,7 +10,7 @@ from src.core.archive import project as project_mod
 def test_archive_panel_constructs(qapp):
     from src.gui.archive_panel import ArchivePanel
     p = ArchivePanel()
-    assert p.stack.count()     == 6
+    assert p.stack.count()     == 7
     assert p.body_tabs.count() == 2
 
 

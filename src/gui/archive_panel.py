@@ -20,17 +20,18 @@ from PySide6.QtWidgets import (
 from ..core.archive import project as project_mod
 from . import archive_pages
 from .archive_run_view import ArchiveRunView
-from .archive_worker import ArchiveWorker
+from .archive_worker import ArchiveWorker, HistoricalPullWorker
 
 
 SIDEBAR_ENTRIES: list[tuple[str, str]] = [
     # (label, page key — passed to archive_pages.build_page)
-    ("Apps",            "apps"),
-    ("Crack identity",  "crack"),
-    ("BBCode template", "bbcode"),
-    ("Run options",     "run"),
-    ("Polling",         "poll"),
-    ("Credentials",     "creds"),
+    ("Apps",             "apps"),
+    ("Crack identity",   "crack"),
+    ("BBCode template",  "bbcode"),
+    ("Run options",      "run"),
+    ("Polling",          "poll"),
+    ("Manifest history", "history"),
+    ("Credentials",      "creds"),
 ]
 
 
@@ -323,6 +324,38 @@ class ArchivePanel(QWidget):
 
     def _on_run_failed(self, _msg: str) -> None:
         self._cleanup_worker()
+
+    # ─── Historical pull ────────────────────────────────────────────
+    def start_historical_pull(self, params: dict) -> None:
+        """Spawn a HistoricalPullWorker for one (app, depot, manifest)
+        triple and route its events through the live-run view, the same
+        way `_on_run` does for the full download pipeline.
+
+        Called by the Manifest history page's "Pull selected" button.
+        """
+        if self._worker is not None:
+            QMessageBox.information(
+                self, "Run in progress",
+                "Wait for the current run to finish before starting another.")
+            return
+
+        self._worker = HistoricalPullWorker(
+            app_id          = params["app_id"],
+            depot_id        = params["depot_id"],
+            manifest_gid    = params["manifest_gid"],
+            branch          = params.get("branch", "public"),
+            branch_password = params.get("branch_password", ""),
+            output_dir      = params["output_dir"],
+        )
+        self._worker_thread = QThread(self)
+        self._worker.moveToThread(self._worker_thread)
+        self._worker_thread.started.connect(self._worker.run)
+        self._worker.finished.connect(self._on_run_finished)
+        self._worker.failed.connect(self._on_run_failed)
+        self.run_view.attach(self._worker)
+        self.body_tabs.setCurrentWidget(self.run_view)
+        self.btn_run.setEnabled(False)
+        self._worker_thread.start()
 
     def _cleanup_worker(self) -> None:
         if self._worker_thread is not None:
