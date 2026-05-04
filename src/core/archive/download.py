@@ -123,6 +123,32 @@ def _get_available_platforms(app_data: dict) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Crack mode normalization
+# ---------------------------------------------------------------------------
+
+def _normalize_crack(value: str | None, platform: str) -> list[str]:
+    """Resolve a --crack value into the ordered list of engines that
+    actually run for this platform.
+
+      ""           → []
+      "gse"        → ["gse"]
+      "coldclient" → ["coldclient"]   (Windows only; [] elsewhere)
+      "all"        → ["gse", "coldclient"] on Windows;
+                     ["gse"]              on Linux/macOS
+    """
+    if not value:
+        return []
+    v = value.strip().lower()
+    if v == "all":
+        modes = ["gse", "coldclient"]
+    else:
+        modes = [v]
+    if platform != "windows":
+        modes = [m for m in modes if m != "coldclient"]
+    return modes
+
+
+# ---------------------------------------------------------------------------
 # Core: download one platform's depots into dest
 # ---------------------------------------------------------------------------
 
@@ -438,32 +464,66 @@ def _download_platform(cdn, client, app_id: int, app_data: dict, dest: Path,
     # ---- Crack step (Phase 3) -------------------------------------------
     gse_dir: Path | None = None
     if crack:
-        _emit(on_event, kind="stage",
-              stage_msg=f"Running crack: {crack}")
-        # Suspend the live download display while the crack step runs — it
-        # uses print() heavily (achievement fetch, DLL processing, prompts)
-        # and would otherwise interleave with the redraw greenlet.
-        _emit(on_event, kind="crack_started")
-        try:
-            if crack == "coldclient":
+        crack_modes = _normalize_crack(crack, platform)
+        if not crack_modes:
+            _emit(on_event, kind="stage",
+                  stage_msg=f"Crack skipped: {crack!r} not applicable to {platform}")
+        else:
+            label = "+".join(crack_modes)
+            _emit(on_event, kind="stage",
+                  stage_msg=f"Running crack: {label}")
+            # Suspend the live download display while the crack step runs — it
+            # uses print() heavily (achievement fetch, DLL processing, prompts)
+            # and would otherwise interleave with the redraw greenlet.
+            _emit(on_event, kind="crack_started")
+            try:
+                from .crack.gse import (
+                    build_shared_settings, crack_game, copy_settings_payload,
+                )
                 from .crack.coldclient import crack_coldclient
-                gse_dir = crack_coldclient(
-                    app_id, app_data, dest, game_dest,
-                    identity=crack_identity,
-                    unstub_options=unstub_options,
-                )
-            elif crack == "gse":
-                from .crack.gse import crack_game
-                gse_dir = crack_game(
-                    app_id, app_data, dest, game_dest,
-                    identity=crack_identity,
-                    experimental=experimental,
-                    unstub_options=unstub_options,
-                )
-            else:
-                raise ValueError(f"Unknown crack mode: {crack!r}")
-        finally:
-            _emit(on_event, kind="crack_finished")
+
+                combined_dir = dest / f"gse_config_{app_id}"
+                combined_dir.mkdir(parents=True, exist_ok=True)
+
+                # Build the canonical steam_settings payload exactly once
+                # whenever 2+ engines will run; for single-engine runs each
+                # engine fetches inline (no temp dir, no double cleanup).
+                shared_dir: Path | None = None
+                if len(crack_modes) > 1:
+                    shared_dir = combined_dir / "_shared_settings"
+                    if shared_dir.exists():
+                        shutil.rmtree(shared_dir)
+                    build_shared_settings(
+                        str(app_id), app_data, crack_identity, shared_dir,
+                        want_overlay=False,
+                    )
+
+                try:
+                    for mode in crack_modes:
+                        if mode == "gse":
+                            gse_dir = crack_game(
+                                app_id, app_data, dest, game_dest,
+                                identity=crack_identity,
+                                experimental=experimental,
+                                unstub_options=unstub_options,
+                                output_base=combined_dir,
+                                shared_settings=shared_dir,
+                            )
+                        elif mode == "coldclient":
+                            gse_dir = crack_coldclient(
+                                app_id, app_data, dest, game_dest,
+                                identity=crack_identity,
+                                unstub_options=unstub_options,
+                                output_base=combined_dir,
+                                shared_settings=shared_dir,
+                            )
+                        else:
+                            raise ValueError(f"Unknown crack mode: {mode!r}")
+                finally:
+                    if shared_dir is not None and shared_dir.exists():
+                        shutil.rmtree(shared_dir, ignore_errors=True)
+            finally:
+                _emit(on_event, kind="crack_finished")
 
     archives = compress_platform(
         dest, archive_stem, password, compression_level, volume_size,

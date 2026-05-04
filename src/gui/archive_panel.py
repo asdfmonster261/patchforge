@@ -131,6 +131,7 @@ class ArchivePanel(QWidget):
         self.run_crack.addItem("(off)",       userData=None)
         self.run_crack.addItem("coldclient",  userData="coldclient")
         self.run_crack.addItem("gse",         userData="gse")
+        self.run_crack.addItem("all",         userData="all")
         run_row.addWidget(self.run_crack)
 
         run_row.addSpacing(12)
@@ -186,7 +187,7 @@ class ArchivePanel(QWidget):
         self.path_label.setText(str(self._project_path or ""))
         # Default the per-run crack picker from the project's stored
         # crack_mode whenever a project is loaded / cleared.
-        crack_keys = {"": 0, "coldclient": 1, "gse": 2}
+        crack_keys = {"": 0, "coldclient": 1, "gse": 2, "all": 3}
         self.run_crack.setCurrentIndex(
             crack_keys.get(self._project.crack_mode, 0)
         )

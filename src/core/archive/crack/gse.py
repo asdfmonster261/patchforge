@@ -828,52 +828,24 @@ def unstub_exes(game_dest: Path, gse_install_dir: Path,
 
 
 # ---------------------------------------------------------------------------
-# Main entry point
+# Shared steam_settings build (used by both gse and coldclient)
 # ---------------------------------------------------------------------------
 
-def crack_game(app_id: int, app_data: dict, dest: Path, game_dest: Path,
-               *, identity, experimental: bool = False,
-               unstub_options: dict | None = None) -> Path | None:
-    """Generate Goldberg Steam Emulator config + emulator binaries into a
-    gse_config_{app_id}/ folder alongside depotcache/ and steamapps/.
+def build_shared_settings(appid: str, app_data: dict, identity,
+                          settings_dir: Path, *,
+                          want_overlay: bool = False) -> dict:
+    """Populate settings_dir with the canonical steam_settings payload —
+    steam_appid.txt, header.jpg, configs.app.ini (DLCs), supported_languages.txt,
+    configs.user.ini, achievements/ + images/, and optionally configs.overlay.ini.
 
-    identity — CrackIdentity dataclass loaded from .xarchive.  Mutated in
-    place when prompts fill in missing fields, so callers can persist
-    updates back to the project file.
+    Both crack engines call this once per app; the resulting directory is
+    then copied into each engine's expected steam_settings location so DLC
+    + achievement fetches happen exactly once even when the user runs both
+    engines via --crack all.
 
-    Returns the gse_config directory, or None if no Steam API binary was found.
+    Returns the resolved user_cfg dict so callers can pass it to other
+    helpers (e.g. ColdClientLoader.ini Exe= resolution) without re-prompting.
     """
-    print("\n[ ] Setting up Goldberg Steam Emulator...")
-    appid = str(app_id)
-
-    found = find_steam_apis(game_dest)
-    gse_output_dir = dest / f"gse_config_{appid}"
-
-    if not found:
-        print(f"  [!] No Steam API binary found under {game_dest} — skipping GSE setup.")
-        unstub_exes(game_dest, gse_output_dir, unstub_options)
-        return gse_output_dir if gse_output_dir.exists() else None
-
-    dlls = [p for p in found if p.suffix == ".dll"]
-    sos  = [p for p in found if p.name == "libsteam_api.so"]
-    binaries_to_process = ([dlls[0]] if dlls else []) + ([sos[0]] if sos else [])
-
-    skipped = [p for p in found if p not in binaries_to_process]
-    for p in skipped:
-        print(f"  [i] Skipping duplicate binary: {p}")
-
-    if len(binaries_to_process) > 1:
-        print("  [i] Found both Windows and Linux Steam API binaries — processing both.")
-
-    dll_path = binaries_to_process[0]
-
-    try:
-        rel = dll_path.parent.relative_to(game_dest.parent)
-        dll_output_dir = gse_output_dir / rel
-    except ValueError:
-        dll_output_dir = gse_output_dir
-
-    settings_dir = dll_output_dir / "steam_settings"
     settings_dir.mkdir(parents=True, exist_ok=True)
 
     (settings_dir / "steam_appid.txt").write_text(appid + "\n", encoding="utf-8")
@@ -929,7 +901,7 @@ def crack_game(app_id: int, app_data: dict, dest: Path, game_dest: Path,
     if achievements:
         print(f"  [ ] Downloading {len(achievements)} achievement(s)...")
         download_achievements(appid, achievements, settings_dir)
-        if experimental:
+        if want_overlay:
             write_configs_overlay(settings_dir)
         else:
             print("  [i] Skipping configs.overlay.ini (regular build).")
@@ -937,12 +909,84 @@ def crack_game(app_id: int, app_data: dict, dest: Path, game_dest: Path,
     else:
         print("  [x] No achievements found.")
 
+    return user_cfg
+
+
+def copy_settings_payload(src: Path, dst: Path) -> None:
+    """Copy a pre-built steam_settings payload into dst, replacing any
+    existing dst contents.  Used when both crack engines run for the same
+    app — the second engine reuses what the first one (or the orchestrator)
+    already fetched."""
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+def crack_game(app_id: int, app_data: dict, dest: Path, game_dest: Path,
+               *, identity, experimental: bool = False,
+               unstub_options: dict | None = None,
+               output_base: Path | None = None,
+               shared_settings: Path | None = None) -> Path | None:
+    """Generate Goldberg Steam Emulator config + emulator binaries into a
+    gse_config_{app_id}/ folder alongside depotcache/ and steamapps/.
+
+    identity — CrackIdentity dataclass loaded from .xarchive.  Mutated in
+    place when prompts fill in missing fields, so callers can persist
+    updates back to the project file.
+
+    Returns the gse_config directory, or None if no Steam API binary was found.
+    """
+    print("\n[ ] Setting up Goldberg Steam Emulator...")
+    appid = str(app_id)
+
+    combined_dir = output_base if output_base is not None else dest / f"gse_config_{appid}"
+    emulator_dir = combined_dir / "emulator"
+
+    found = find_steam_apis(game_dest)
+
+    if not found:
+        print(f"  [!] No Steam API binary found under {game_dest} — skipping GSE setup.")
+        unstub_exes(game_dest, emulator_dir, unstub_options)
+        return combined_dir if combined_dir.exists() else None
+
+    dlls = [p for p in found if p.suffix == ".dll"]
+    sos  = [p for p in found if p.name == "libsteam_api.so"]
+    binaries_to_process = ([dlls[0]] if dlls else []) + ([sos[0]] if sos else [])
+
+    skipped = [p for p in found if p not in binaries_to_process]
+    for p in skipped:
+        print(f"  [i] Skipping duplicate binary: {p}")
+
+    if len(binaries_to_process) > 1:
+        print("  [i] Found both Windows and Linux Steam API binaries — processing both.")
+
+    dll_path = binaries_to_process[0]
+
+    try:
+        rel = dll_path.parent.relative_to(game_dest.parent)
+        dll_output_dir = emulator_dir / rel
+    except ValueError:
+        dll_output_dir = emulator_dir
+
+    settings_dir = dll_output_dir / "steam_settings"
+    if shared_settings is not None and shared_settings.exists():
+        copy_settings_payload(shared_settings, settings_dir)
+        if experimental:
+            write_configs_overlay(settings_dir)
+    else:
+        build_shared_settings(appid, app_data, identity, settings_dir,
+                              want_overlay=experimental)
+
     for binary in binaries_to_process:
         try:
             rel = binary.parent.relative_to(game_dest.parent)
-            binary_output_dir = gse_output_dir / rel
+            binary_output_dir = emulator_dir / rel
         except ValueError:
-            binary_output_dir = gse_output_dir
+            binary_output_dir = emulator_dir
         _process_dll(binary, settings_dir, binary_output_dir, experimental=experimental)
         if binary_output_dir != dll_output_dir:
             alt_settings = binary_output_dir / "steam_settings"
@@ -953,5 +997,5 @@ def crack_game(app_id: int, app_data: dict, dest: Path, game_dest: Path,
 
     unstub_exes(game_dest, dll_output_dir, unstub_options)
 
-    print(f"\n[+] GSE setup complete — {gse_output_dir.name}/ at {gse_output_dir}")
-    return gse_output_dir
+    print(f"\n[+] GSE setup complete — {combined_dir.name}/emulator/ at {emulator_dir}")
+    return combined_dir
